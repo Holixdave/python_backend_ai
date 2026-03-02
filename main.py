@@ -195,7 +195,7 @@ class AIQuery(BaseModel):
 # Routes
 @app.post("/echo")
 def echo_message(msg: Message):
-    return {"you_sent": msg.text}
+    return {"message": "AI Backend is running successfully🚀"}
 
 # <-- REPLACE your old /ai-query with this one
 @app.post("/ai-query")
