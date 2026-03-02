@@ -397,6 +397,76 @@ label_to_answer = {
         "Multiply both sides to isolate x and solve.",
         "Solve for x by reversing the division operation."
     ],
+    "vowel": [
+        "A vowel is a speech sound produced without blocking the airflow. The main English vowels are a, e, i, o, u.",
+        "The five primary vowels in English are A, E, I, O, and U. Sometimes Y can function as a vowel.",
+        "Vowel sounds can be short (as in 'cat') or long (as in 'cake').",
+        "In the word provided, identify letters a, e, i, o, u as vowels.",
+        "Vowels are pronounced with an open mouth and no friction.",
+        "Examples of vowel sounds include /a/ as in 'cat', /e/ as in 'bed', /i/ as in 'sit', /o/ as in 'hot', /u/ as in 'sun'.",
+        "The vowel in that word can be found among a, e, i, o, u depending on pronunciation.",
+        "English vowels form the core sound of syllables in words.",
+        "Some words contain multiple vowels that create diphthongs like 'ea' or 'oo'.",
+        "Short vowel example: 'pen'. Long vowel example: 'phone'."
+    ],
+
+    "consonant": [
+        "A consonant is any letter that is not a vowel.",
+        "Consonants are speech sounds made with some blockage of airflow.",
+        "Examples of consonants include b, c, d, f, g, h, j, k, l, m.",
+        "Consonants usually require the tongue, lips, or teeth to restrict airflow.",
+        "In English, there are 21 consonant letters.",
+        "A consonant sound can be voiced like 'b' or voiceless like 'p'.",
+        "Consonants combine with vowels to form syllables.",
+        "Letters other than a, e, i, o, u are consonants."
+    ],
+
+    "simile": [
+        "A simile compares two things using the words 'like' or 'as'.",
+        "Similes help create vivid imagery by comparing one thing to another.",
+        "Example: 'as brave as a lion' is a simile.",
+        "Example: 'She shines like the sun' is a simile.",
+        "A simile always contains comparison words such as 'like' or 'as'.",
+        "Similes make descriptions more expressive and interesting.",
+        "If a sentence compares using 'like' or 'as', it is a simile.",
+        "Example: 'as light as a feather' shows comparison clearly.",
+        "Writers use similes to make writing more colorful.",
+        "To create a simile, compare something to a familiar object."
+    ],
+
+    "grammar": [
+        "Grammar refers to the rules that govern sentence structure.",
+        "A sentence typically has a subject and a predicate.",
+        "A noun names a person, place, or thing.",
+        "A verb expresses action or state of being.",
+        "An adjective describes a noun.",
+        "An adverb describes a verb, adjective, or another adverb.",
+        "A preposition shows relationship in space or time.",
+        "A conjunction joins words or clauses.",
+        "An interjection expresses sudden emotion.",
+        "Correct grammar ensures clarity and proper communication.",
+        "Tenses show the time of an action.",
+        "Plural forms often add 's' but some are irregular.",
+        "Subject-verb agreement must be maintained in sentences.",
+        "A paragraph contains related sentences about one idea."
+    ],
+
+    "jamb": [
+        "For JAMB-style questions, ensure correct subject-verb agreement.",
+        "Check whether the noun is singular or plural.",
+        "Irregular plurals include child → children, goose → geese, man → men.",
+        "In tense questions, look for time indicators like yesterday or tomorrow.",
+        "The subject performs the action in a sentence.",
+        "The object receives the action.",
+        "Choose options that follow proper grammar rules.",
+        "Avoid common errors like 'He go' instead of 'He goes'.",
+        "In English exams, pay attention to concord rules.",
+        "Vocabulary questions test synonyms and antonyms.",
+        "Sentence correction requires identifying grammatical mistakes.",
+        "Comprehension questions require understanding context.",
+        "Lexis and structure are important in JAMB English.",
+        "Always check for agreement between subject and verb."
+    ]
 }
 
 
