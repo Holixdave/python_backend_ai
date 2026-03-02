@@ -1,0 +1,28 @@
+question,label
+Hello,greeting
+Hi,greeting
+Hey,greeting
+Good morning,greeting
+Good afternoon,greeting
+Good evening,greeting
+How are you?,status
+How's it going?,status
+What's up?,status
+
+What is Python?,python
+Who created Python?,python
+Explain Python,python
+
+What is AI?,ai
+What is machine learning?,ai
+Explain AI,ai
+
+What is a function in Python?,function
+What is a list in Python?,list
+What is a tuple in Python?,tuple
+What is a dictionary in Python?,dictionary
+What is a variable in Python?,variable
+What is a string in Python?,string
+What is an integer?,integer
+What is a float?,float
+What is a boolean?,boolean
