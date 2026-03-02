@@ -182,6 +182,152 @@ label_to_answer = {
     "networking": [
         "Networking deals with connecting computers and devices to share data and resources."
     ],
+     "greeting": [
+        "Hello! How can I help you today?",
+        "Hi there! Ready to learn something new?",
+        "Hey! What topic do you want to explore today?",
+        "Good day! How can I assist you?",
+        "Hello! Hope you’re having a great day!"
+    ],
+    "status": [
+        "I’m just a program, but I’m running smoothly!",
+        "All systems operational! How can I help?",
+        "I’m here and ready to answer your questions!",
+        "Everything is working fine on my side!"
+    ],
+    "python": [
+        "Python is a high-level programming language used for coding.",
+        "Python is versatile and widely used for web, data, AI, and scripting.",
+        "Python was created by Guido van Rossum and emphasizes readability.",
+        "Python lets you write clear and concise code quickly."
+    ],
+    "function": [
+        "A function is a block of code that performs a specific task.",
+        "Functions help reuse code and organize logic in Python.",
+        "You can define a function in Python using the 'def' keyword.",
+        "Functions may take input arguments and return results."
+    ],
+    "list": [
+        "A list is an ordered collection of items in Python, enclosed in brackets [].",
+        "Lists allow you to store multiple values together and access them by index.",
+        "You can add, remove, or modify items in a Python list.",
+        "Lists can contain elements of different data types."
+    ],
+    "tuple": [
+        "A tuple is an ordered and immutable collection of items in Python.",
+        "Tuples are defined using parentheses () and cannot be changed after creation.",
+        "Tuples are useful for fixed collections of data.",
+        "You can access tuple elements by index, just like lists."
+    ],
+    "dictionary": [
+        "A dictionary stores key-value pairs in Python.",
+        "Dictionaries are defined using curly braces {} with keys and values.",
+        "You can access values by their keys in a dictionary.",
+        "Dictionaries are unordered but allow fast lookup using keys."
+    ],
+    "variable": [
+        "A variable stores data that can be used later in a program.",
+        "Variables can hold numbers, strings, lists, or other types of data.",
+        "You can assign a value to a variable using the '=' operator.",
+        "Variable names should be descriptive and follow Python naming rules."
+    ],
+    "string": [
+        "A string is a sequence of characters enclosed in quotes.",
+        "Strings can store text, sentences, or any sequence of characters.",
+        "You can manipulate strings using methods like .upper(), .lower(), and .split().",
+        "Strings are immutable in Python, meaning they cannot be changed directly."
+    ],
+    "integer": [
+        "An integer is a whole number without decimals.",
+        "Integers can be positive, negative, or zero.",
+        "You can perform arithmetic operations like addition, subtraction, and multiplication with integers.",
+        "Integers are one of Python's basic numeric types."
+    ],
+    "float": [
+        "A float is a number with decimal points.",
+        "Floats can represent fractional values like 3.14 or 0.001.",
+        "You can perform arithmetic operations with floats, including division.",
+        "Python automatically treats numbers with decimals as floats."
+    ],
+    "boolean": [
+        "A boolean is a data type that can be True or False.",
+        "Booleans are often used for conditions and logical comparisons.",
+        "In Python, comparisons like 5 > 3 return a boolean value.",
+        "Boolean values can control the flow of programs using if statements."
+    ],
+    "loop": [
+        "A loop allows you to repeat a block of code multiple times.",
+        "Python has 'for' loops for iterating over sequences and 'while' loops for conditions.",
+        "Loops help automate repetitive tasks in code.",
+        "You can control loops using break, continue, and pass statements."
+    ],
+    "condition": [
+        "An if statement lets you execute code only if a condition is true.",
+        "You can use elif and else to handle multiple conditions.",
+        "Conditions use comparison operators like ==, !=, <, >, <=, >=.",
+        "Conditional statements help programs make decisions."
+    ],
+    "oop": [
+        "Object-Oriented Programming (OOP) is a programming paradigm using classes and objects.",
+        "A class defines a blueprint for objects, and objects are instances of classes.",
+        "OOP concepts include inheritance, encapsulation, and polymorphism.",
+        "OOP helps organize complex programs and promote code reuse."
+    ],
+    "module": [
+        "A module is a Python file containing functions, classes, or variables.",
+        "You can import modules into your program using the 'import' keyword.",
+        "Packages are collections of modules organized in directories.",
+        "Modules help organize code into reusable pieces."
+    ],
+    "error": [
+        "An exception is an error that occurs during program execution.",
+        "Python raises exceptions for problems like division by zero or invalid input.",
+        "You can handle exceptions using try and except blocks.",
+        "Debugging helps find and fix errors in your code."
+    ],
+    "algorithm": [
+        "An algorithm is a step-by-step procedure to solve a problem.",
+        "Recursion is when a function calls itself to solve smaller parts of a problem.",
+        "Algorithms are essential for computer science and programming.",
+        "Efficient algorithms help programs run faster and use less memory."
+    ],
+    "data_structure": [
+        "Data structures store and organize data for efficient access and modification.",
+        "Stacks follow LIFO (last-in, first-out) order, while queues follow FIFO (first-in, first-out).",
+        "Linked lists are sequences of nodes connected by pointers.",
+        "Sets store unique items without order, and dictionaries store key-value pairs."
+    ],
+    "web": [
+        "APIs allow programs to communicate with each other over the web.",
+        "HTTP is the protocol for transferring data on the web.",
+        "HTML is used to structure web pages, and CSS styles them.",
+        "JavaScript adds interactivity to web pages.",
+        "JSON and XML are common formats for data exchange."
+    ],
+    "database": [
+        "A database stores structured data for easy retrieval and management.",
+        "SQL is used for relational databases, while NoSQL is used for document-based storage.",
+        "You can query, insert, update, and delete data in databases.",
+        "Databases are crucial for web and software applications."
+    ],
+    "devops": [
+        "Git is a version control system to track code changes.",
+        "GitHub is a platform to host Git repositories and collaborate on code.",
+        "Version control helps teams work together and manage code safely."
+    ],
+    "cloud": [
+        "Cloud computing provides computing resources over the internet.",
+        "It allows you to host apps, store data, and scale services easily.",
+        "Popular cloud providers include AWS, Google Cloud, and Azure."
+    ],
+    "ai": [
+        "AI stands for Artificial Intelligence, where machines simulate human intelligence.",
+        "Machine Learning is a subset of AI that lets computers learn from data.",
+        "Deep Learning uses neural networks to analyze complex patterns.",
+        "Natural Language Processing (NLP) helps computers understand human language.",
+        "Computer vision is AI that analyzes images and videos.",
+        "Supervised, unsupervised, and reinforcement learning are key AI techniques."
+    ]
 }
 
 
