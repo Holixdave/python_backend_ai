@@ -327,7 +327,59 @@ label_to_answer = {
         "Natural Language Processing (NLP) helps computers understand human language.",
         "Computer vision is AI that analyzes images and videos.",
         "Supervised, unsupervised, and reinforcement learning are key AI techniques."
-    ]
+    ],
+      "addition": [
+        "Just add the numbers together.",
+        "Add the two numbers to get the answer."
+    ],
+    "subtraction": [
+        "Subtract the second number from the first.",
+        "Find the difference between the two numbers."
+    ],
+    "multiplication": [
+        "Multiply the numbers to get the product.",
+        "The answer is the product of the numbers."
+    ],
+    "division": [
+        "Divide the first number by the second.",
+        "The answer is the quotient of the numbers."
+    ],
+    "linear_equation": [
+        "Solve the equation to find the value of x.",
+        "Isolate x and calculate its value."
+    ],
+    "area_rectangle": [
+        "Multiply length by width to get the area of a rectangle.",
+        "Area = length × width."
+    ],
+    "perimeter_square": [
+        "Multiply the side length by 4 to get the perimeter.",
+        "Perimeter = 4 × side."
+    ],
+    "simplify_fraction": [
+        "Divide numerator and denominator by their greatest common divisor.",
+        "Reduce the fraction to its simplest form."
+    ],
+    "square_number": [
+        "Multiply the number by itself to get the square.",
+        "The square of a number is the number times itself."
+    ],
+    "cube_number": [
+        "Multiply the number by itself twice to get the cube.",
+        "The cube of a number is number × number × number."
+    ],
+    "percentage": [
+        "Multiply the number by the percentage (as a decimal) to find the result.",
+        "Percentage calculation: value × (percentage ÷ 100)."
+    ],
+    "decimal_to_fraction": [
+        "Convert the decimal to a fraction and simplify.",
+        "Write the decimal as numerator/denominator in simplest form."
+    ],
+    "division_equation": [
+        "Multiply both sides to isolate x and solve.",
+        "Solve for x by reversing the division operation."
+    ],
 }
 
 

@@ -1,230 +1,266 @@
 question,label
-Hello,greeting
-Hi,greeting
-Hey,greeting
-Good morning,greeting
-Good afternoon,greeting
-Good evening,greeting
-How are you?,status
-How's it going?,status
-What's up?,status
-
-What is Python?,python
-Who created Python?,python
-Explain Python,python
-
-What is AI?,ai
-What is machine learning?,ai
-Explain AI,ai
-
-What is a function in Python?,function
-What is a list in Python?,list
-What is a tuple in Python?,tuple
-What is a dictionary in Python?,dictionary
-What is a variable in Python?,variable
-What is a string in Python?,string
-What is an integer?,integer
-What is a float?,float
-What is a boolean?,boolean
-Hello,greeting
-Hi,greeting
-Hey there,greeting
-Good morning,greeting
-Good afternoon,greeting
-Good evening,greeting
-How are you?,status
-How’s it going?,status
-What’s up?,status
-How are things?,status
-I’m checking in,status
-What is Python?,python
-Explain Python,python
-Define Python,python
-Who created Python?,python
-What do you know about Python?,python
-What is a function?,function
-Define a function,function
-Explain function,function
-Give me details about function,function
-What is a list?,list
-Explain a list,list
-Define list,list
-Give an example of a list,list
-What is a tuple?,tuple
-Explain a tuple,tuple
-Define tuple,tuple
-Give me details about tuple,tuple
-What is a dictionary?,dictionary
-Define a dictionary,dictionary
-Explain dictionary,dictionary
-Give an example of dictionary,dictionary
-What is a variable?,variable
-Explain variable,variable
-Define variable,variable
-Give an example of a variable,variable
-What is a string?,string
-Define string,string
-Explain string,string
-Give an example of a string,string
-What is an integer?,integer
-Define integer,integer
-Explain integer,integer
-Give an example of an integer,integer
-What is a float?,float
-Define float,float
-Explain float,float
-Give an example of a float,float
-What is a boolean?,boolean
-Explain boolean,boolean
-Define boolean,boolean
-Give an example of boolean,boolean
-What is a loop?,loop
-Explain loop,loop
-Define loop,loop
-Give an example of a loop,loop
-What is an if statement?,condition
-Explain if statement,condition
-Define if statement,condition
-Give an example of an if statement,condition
-What is a class?,oop
-Explain class,oop
-Define class,oop
-Give an example of a class,oop
-What is an object?,oop
-Explain object,oop
-Define object,oop
-Give an example of an object,oop
-What is inheritance?,oop
-Explain inheritance,oop
-Define inheritance,oop
-Give an example of inheritance,oop
-What is encapsulation?,oop
-Explain encapsulation,oop
-Define encapsulation,oop
-Give an example of encapsulation,oop
-What is polymorphism?,oop
-Explain polymorphism,oop
-Define polymorphism,oop
-Give an example of polymorphism,oop
-What is a module?,module
-Explain module,module
-Define module,module
-Give an example of a module,module
-What is a package?,module
-Explain package,module
-Define package,module
-Give an example of a package,module
-What is an exception?,error
-Explain exception,error
-Define exception,error
-Give an example of exception,error
-What is debugging?,error
-Explain debugging,error
-Define debugging,error
-Give an example of debugging,error
-What is recursion?,algorithm
-Explain recursion,algorithm
-Define recursion,algorithm
-Give an example of recursion,algorithm
-What is a stack?,data_structure
-Explain stack,data_structure
-Define stack,data_structure
-Give an example of stack,data_structure
-What is a queue?,data_structure
-Explain queue,data_structure
-Define queue,data_structure
-Give an example of queue,data_structure
-What is a linked list?,data_structure
-Explain linked list,data_structure
-Define linked list,data_structure
-Give an example of linked list,data_structure
-What is a set?,data_structure
-Explain set,data_structure
-Define set,data_structure
-Give an example of set,data_structure
-What is a dictionary comprehension?,python
-Explain dictionary comprehension,python
-Give an example of dictionary comprehension,python
-What is a list comprehension?,python
-Explain list comprehension,python
-Give an example of list comprehension,python
-What is a lambda function?,function
-Explain lambda,function
-Give an example of a lambda,function
-What is a map function?,function
-Explain map,function
-Give an example of map,function
-What is a filter function?,function
-Explain filter,function
-Give an example of filter,function
-What is a reduce function?,function
-Explain reduce,function
-Give an example of reduce,function
-What is an API?,web
-Explain API,web
-Give an example of API,web
-What is HTTP?,web
-Explain HTTP,web
-Give an example of HTTP,web
-What is HTML?,web
-Explain HTML,web
-Give an example of HTML,web
-What is CSS?,web
-Explain CSS,web
-Give an example of CSS,web
-What is JavaScript?,web
-Explain JavaScript,web
-Give an example of JavaScript,web
-What is a database?,database
-Explain database,database
-Give an example of a database,database
-What is SQL?,database
-Explain SQL,database
-Give an example of SQL,database
-What is NoSQL?,database
-Explain NoSQL,database
-Give an example of NoSQL,database
-What is JSON?,web
-Explain JSON,web
-Give an example of JSON,web
-What is XML?,web
-Explain XML,web
-Give an example of XML,web
-What is Git?,devops
-Explain Git,devops
-Define Git,devops
-Give an example of Git,devops
-What is GitHub?,devops
-Explain GitHub,devops
-Define GitHub,devops
-Give an example of GitHub,devops
-What is version control?,devops
-Explain version control,devops
-Give an example of version control,devops
-What is cloud computing?,cloud
-Explain cloud computing,cloud
-Give an example of cloud computing,cloud
-What is AI?,ai
-Explain AI,ai
-Give an example of AI,ai
-What is Machine Learning?,ai
-Explain Machine Learning,ai
-Give an example of Machine Learning,ai
-What is Deep Learning?,ai
-Explain Deep Learning,ai
-Give an example of Deep Learning,ai
-What is NLP?,ai
-Explain NLP,ai
-Give an example of NLP,ai
-What is computer vision?,ai
-Explain computer vision,ai
-Give an example of computer vision,ai
-What is supervised learning?,ai
-Explain supervised learning,ai
-Give an example of supervised learning,ai
-What is unsupervised learning?,ai
-Explain unsupervised learning,ai
-Give an example of unsupervised learning,ai
-What is reinforcement learning?,ai
-Explain reinforcement learning,ai
-Give an example of reinforcement learning,ai
+"Hello","greeting"
+"Hi","greeting"
+"Hey","greeting"
+"Good morning","greeting"
+"Good afternoon","greeting"
+"Good evening","greeting"
+"How are you?","status"
+"How's it going?","status"
+"What's up?","status"
+"What is Python?","python"
+"Who created Python?","python"
+"Explain Python","python"
+"What is AI?","ai"
+"What is machine learning?","ai"
+"Explain AI","ai"
+"What is a function in Python?","function"
+"What is a list in Python?","list"
+"What is a tuple in Python?","tuple"
+"What is a dictionary in Python?","dictionary"
+"What is a variable in Python?","variable"
+"What is a string in Python?","string"
+"What is an integer?","integer"
+"What is a float?","float"
+"What is a boolean?","boolean"
+"Hello","greeting"
+"Hi","greeting"
+"Hey there","greeting"
+"Good morning","greeting"
+"Good afternoon","greeting"
+"Good evening","greeting"
+"How are you?","status"
+"How's it going?","status"
+"What's up?","status"
+"How are things?","status"
+"I'm checking in","status"
+"What is Python?","python"
+"Explain Python","python"
+"Define Python","python"
+"Who created Python?","python"
+"What do you know about Python?","python"
+"What is a function?","function"
+"Define a function","function"
+"Explain function","function"
+"Give me details about function","function"
+"What is a list?","list"
+"Explain a list","list"
+"Define list","list"
+"Give an example of a list","list"
+"What is a tuple?","tuple"
+"Explain a tuple","tuple"
+"Define tuple","tuple"
+"Give details about tuple","tuple"
+"What is a dictionary?","dictionary"
+"Define a dictionary","dictionary"
+"Explain dictionary","dictionary"
+"Give an example of dictionary","dictionary"
+"What is a variable?","variable"
+"Explain variable","variable"
+"Define variable","variable"
+"Give an example of a variable","variable"
+"What is a string?","string"
+"Define string","string"
+"Explain string","string"
+"Give an example of a string","string"
+"What is an integer?","integer"
+"Define integer","integer"
+"Explain integer","integer"
+"Give an example of an integer","integer"
+"What is a float?","float"
+"Define float","float"
+"Explain float","float"
+"Give an example of a float","float"
+"What is a boolean?","boolean"
+"Explain boolean","boolean"
+"Define boolean","boolean"
+"Give an example of a boolean","boolean"
+"What is a loop?","loop"
+"Explain loop","loop"
+"Define loop","loop"
+"Give an example of a loop","loop"
+"What is an if statement?","condition"
+"Explain if statement","condition"
+"Define if statement","condition"
+"Give an example of an if statement","condition"
+"What is a class?","oop"
+"Explain class","oop"
+"Define class","oop"
+"Give an example of a class","oop"
+"What is an object?","oop"
+"Explain object","oop"
+"Define object","oop"
+"Give an example of an object","oop"
+"What is inheritance?","oop"
+"Explain inheritance","oop"
+"Define inheritance","oop"
+"Give an example of inheritance","oop"
+"What is encapsulation?","oop"
+"Explain encapsulation","oop"
+"Define encapsulation","oop"
+"Give an example of encapsulation","oop"
+"What is polymorphism?","oop"
+"Explain polymorphism","oop"
+"Define polymorphism","oop"
+"Give an example of polymorphism","oop"
+"What is a module?","module"
+"Explain module","module"
+"Define module","module"
+"Give an example of a module","module"
+"What is a package?","module"
+"Explain package","module"
+"Define package","module"
+"Give an example of a package","module"
+"What is an exception?","error"
+"Explain exception","error"
+"Define exception","error"
+"Give an example of exception","error"
+"What is debugging?","error"
+"Explain debugging","error"
+"Define debugging","error"
+"Give an example of debugging","error"
+"What is recursion?","algorithm"
+"Explain recursion","algorithm"
+"Define recursion","algorithm"
+"Give an example of recursion","algorithm"
+"What is a stack?","data_structure"
+"Explain stack","data_structure"
+"Define stack","data_structure"
+"Give an example of stack","data_structure"
+"What is a queue?","data_structure"
+"Explain queue","data_structure"
+"Define queue","data_structure"
+"Give an example of queue","data_structure"
+"What is a linked list?","data_structure"
+"Explain linked list","data_structure"
+"Define linked list","data_structure"
+"Give an example of linked list","data_structure"
+"What is a set?","data_structure"
+"Explain set","data_structure"
+"Define set","data_structure"
+"Give an example of set","data_structure"
+"What is a dictionary comprehension?","python"
+"Explain dictionary comprehension","python"
+"Give an example of dictionary comprehension","python"
+"What is a list comprehension?","python"
+"Explain list comprehension","python"
+"Give an example of list comprehension","python"
+"What is a lambda function?","function"
+"Explain lambda","function"
+"Give an example of a lambda","function"
+"What is a map function?","function"
+"Explain map","function"
+"Give an example of map","function"
+"What is a filter function?","function"
+"Explain filter","function"
+"Give an example of filter","function"
+"What is a reduce function?","function"
+"Explain reduce","function"
+"Give an example of reduce","function"
+"What is an API?","web"
+"Explain API","web"
+"Give an example of API","web"
+"What is HTTP?","web"
+"Explain HTTP","web"
+"Give an example of HTTP","web"
+"What is HTML?","web"
+"Explain HTML","web"
+"Give an example of HTML","web"
+"What is CSS?","web"
+"Explain CSS","web"
+"Give an example of CSS","web"
+"What is JavaScript?","web"
+"Explain JavaScript","web"
+"Give an example of JavaScript","web"
+"What is a database?","database"
+"Explain database","database"
+"Give an example of a database","database"
+"What is SQL?","database"
+"Explain SQL","database"
+"Give an example of SQL","database"
+"What is NoSQL?","database"
+"Explain NoSQL","database"
+"Give an example of NoSQL","database"
+"What is JSON?","web"
+"Explain JSON","web"
+"Give an example of JSON","web"
+"What is XML?","web"
+"Explain XML","web"
+"Give an example of XML","web"
+"What is Git?","devops"
+"Explain Git","devops"
+"Define Git","devops"
+"Give an example of Git","devops"
+"What is GitHub?","devops"
+"Explain GitHub","devops"
+"Define GitHub","devops"
+"Give an example of GitHub","devops"
+"What is version control?","devops"
+"Explain version control","devops"
+"Give an example of version control","devops"
+"What is cloud computing?","cloud"
+"Explain cloud computing","cloud"
+"Give an example of cloud computing","cloud"
+"What is AI?","ai"
+"Explain AI","ai"
+"Give an example of AI","ai"
+"What is Machine Learning?","ai"
+"Explain Machine Learning","ai"
+"Give an example of Machine Learning","ai"
+"What is Deep Learning?","ai"
+"Explain Deep Learning","ai"
+"Give an example of Deep Learning","ai"
+"What is NLP?","ai"
+"Explain NLP","ai"
+"Give an example of NLP","ai"
+"What is computer vision?","ai"
+"Explain computer vision","ai"
+"Give an example of computer vision","ai"
+"What is supervised learning?","ai"
+"Explain supervised learning","ai"
+"Give an example of supervised learning","ai"
+"What is unsupervised learning?","ai"
+"Explain unsupervised learning","ai"
+"Give an example of unsupervised learning","ai"
+"What is reinforcement learning?","ai"
+"Explain reinforcement learning","ai"
+"Give an example of reinforcement learning","ai"
+"What is 5 + 3?","addition"
+"Calculate 12 + 7","addition"
+"Add 45 and 55","addition"
+"Subtract 9 from 20","subtraction"
+"What is 100 - 45?","subtraction"
+"Find the difference between 75 and 30","subtraction"
+"Multiply 7 by 8","multiplication"
+"What is 9 × 6?","multiplication"
+"Find the product of 12 and 4","multiplication"
+"Divide 20 by 5","division"
+"What is 144 ÷ 12?","division"
+"Split 81 into 9 equal parts","division"
+"Solve x + 5 = 12","linear_equation"
+"Find x: 3x = 21","linear_equation"
+"Solve 2x - 4 = 10","linear_equation"
+"What is the area of a rectangle with length 5 and width 3?","area_rectangle"
+"Calculate the area of a rectangle: 8 by 4","area_rectangle"
+"Find the area of a rectangle 6m × 9m","area_rectangle"
+"What is the perimeter of a square with side 7?","perimeter_square"
+"Calculate perimeter of square side 10","perimeter_square"
+"Find the perimeter if square side = 12","perimeter_square"
+"Simplify 3/6","simplify_fraction"
+"Reduce 15/20 to simplest form","simplify_fraction"
+"Simplify 9/12","simplify_fraction"
+"What is the square of 7?","square_number"
+"Calculate 12²","square_number"
+"Find the square of 15","square_number"
+"What is the cube of 3?","cube_number"
+"Calculate 4³","cube_number"
+"Find 5 cubed","cube_number"
+"What is 10% of 200?","percentage"
+"Calculate 25% of 80","percentage"
+"Find 15% of 60","percentage"
+"Convert 0.75 to a fraction","decimal_to_fraction"
+"Write 0.2 as a fraction","decimal_to_fraction"
+"Convert 0.125 to fraction","decimal_to_fraction"
+"Solve for x: x/3 = 5","division_equation"
+"Solve 2x/4 = 6","division_equation"
+"Find x if x/5 = 10","division_equation"
