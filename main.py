@@ -2,12 +2,29 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 import joblib
 import random
+from sympy import symbols, Eq, solve, sympify
 
 app = FastAPI()
 
 # Load trained model
 model = joblib.load("ai_model.pkl")
 
+def solve_math_safe(question):
+    x = symbols('x')
+    
+    if "solve" in question.lower():
+        if "=" in question:
+            lhs, rhs = question.split("=")
+            try:
+                eq = Eq(sympify(lhs.strip()), sympify(rhs.strip()))
+                solution = solve(eq, x)
+                return f"Solution: {solution}"
+            except Exception as e:
+                return f"Error parsing equation: {e}"
+        else:
+            return "Equation must contain '='"
+    
+    return "Not a solvable math question"
 # Map labels to actual answers
 label_to_answer = {
     "greeting": [
@@ -402,20 +419,24 @@ def home():
 async def ai_query(request: AIQuery):
     user_query = request.query.lower().strip()
 
-    # Check if greeting first
+    # Check greetings first
     if any(word in user_query for word in ["hi", "hello", "hey", "good morning", "good afternoon", "good evening"]):
         response = random.choice(label_to_answer["greeting"])
+
+    # Check if it's a math question
+    elif "solve" in user_query:
+        response = solve_math_safe(user_query)
+
+    # Check status queries
     elif any(word in user_query for word in ["how are you", "how’s it going", "what’s up", "how are things"]):
         response = random.choice(label_to_answer["status"])
+
     else:
-        # Predict label using trained model
+        # Use your trained model
         predicted_label = model.predict([user_query])[0]
         responses = label_to_answer.get(predicted_label)
         if responses:
-            if isinstance(responses, list):
-                response = random.choice(responses)  # pick random if multiple responses
-            else:
-                response = responses
+            response = random.choice(responses) if isinstance(responses, list) else responses
         else:
             response = "Sorry, I don't understand that yet."
 
