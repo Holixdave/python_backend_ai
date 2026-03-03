@@ -8,7 +8,7 @@ from sympy import symbols, Eq, solve, sympify
 app = FastAPI()
 
 # Load trained model
-qa_model = joblib.load("ai_model.pkl")
+model = joblib.load("ai_model.pkl")
 question_gen_model = joblib.load("question_gen_model.pkl")
 
 def solve_math_safe(question):
@@ -407,6 +407,18 @@ label_to_answer = {
         "Some words contain multiple vowels that create diphthongs like 'ea' or 'oo'.",
         "Short vowel example: 'pen'. Long vowel example: 'phone'."
     ],
+      "general_knowledge": [
+        "The human body has 206 bones",
+        "The Earth revolves around the Sun",
+        "The currency of Japan is Yen",
+        "The tallest building in the world is Burj Khalifa",
+        "The internet was invented in the late 20th century",
+        "Shakespeare wrote 'Romeo and Juliet'",
+        "The Great Wall of China is visible from space → False",
+        "Lightbulb was invented by Thomas Edison",
+        "Water freezes at 0°C",
+        "Lightning is hotter than the surface of the sun"
+    ],
 
     "consonant": [
         "A consonant is any letter that is not a vowel.",
@@ -447,6 +459,16 @@ label_to_answer = {
         "Plural forms often add 's' but some are irregular.",
         "Subject-verb agreement must be maintained in sentences.",
         "A paragraph contains related sentences about one idea."
+         "The past tense of 'go' is 'went'",
+        "Adjective: 'beautiful' in 'She is beautiful'",
+        "Plural of 'mouse' is 'mice'",
+        "Synonym for 'big' is 'large'",
+        "Antonym for 'hot' is 'cold'",
+        "Correct sentence: 'He doesn't like apples.'",
+        "The verb in 'She runs fast' → runs",
+        "The pronoun in 'He gave her the book' → her",
+        "The article in 'I saw a cat' → a",
+        "Use 'have' with plural subjects: 'They have a dog'"
     ],
 
     "jamb": [
@@ -494,6 +516,16 @@ label_to_answer = {
         "Chemistry explains how substances interact at a molecular level.",
         "Stoichiometry allows chemists to calculate reactants and products."
         "Chemistry studies the composition, properties, and reactions of substances."
+         "Water's chemical formula is H₂O",
+        "NaCl is common table salt",
+        "pH < 7 is acidic, pH > 7 is basic",
+        "Covalent bonds share electrons",
+        "Ionic bonds transfer electrons",
+        "Oxygen supports combustion",
+        "Carbon forms 4 covalent bonds",
+        "Acids donate protons, bases accept protons",
+        "The periodic table organizes elements by atomic number",
+        "Electrolysis splits compounds using electricity"
     ],
     "biology": [
         "Biology is the study of living organisms and their functions.",
@@ -523,6 +555,16 @@ label_to_answer = {
         "Force equals mass times acceleration (F = ma).",
         "Energy can be potential, kinetic, or thermal.",
         "Electricity and magnetism are major topics in physics."
+        "Newton's first law states that an object in motion stays in motion unless acted upon by a force.",
+        "Acceleration = change in velocity / time",
+        "The unit of force is the Newton (N)",
+        "Speed = distance / time",
+        "Gravity on Earth is approximately 9.8 m/s²",
+        "Kinetic energy = 1/2 * mass * velocity²",
+        "Potential energy = mass * gravity * height",
+        "Light travels at about 3 × 10⁸ m/s",
+        "The formula for work is Work = Force × Distance",
+        "The power of a device is energy / time"
     ],
     "mathematics": [
         "Mathematics is the study of numbers, shapes, and patterns.",
@@ -663,6 +705,16 @@ label_to_answer = {
         "Hormones regulate body processes.",
         "Vaccines help prevent diseases.",
         "Chlorophyll absorbs sunlight for photosynthesis."
+        "Mitochondria produce energy in the cell.",
+        "The basic unit of life is the cell.",
+        "DNA carries genetic information.",
+        "Ribosomes are responsible for protein synthesis.",
+        "Osmosis is the movement of water across a semi-permeable membrane.",
+        "Plants make food via photosynthesis.",
+        "Circulatory system transports oxygen in humans.",
+        "Enzymes catalyze biochemical reactions.",
+        "White blood cells fight infection.",
+        "The powerhouse of the cell is the mitochondria."
     ],
 
     "chemistry": [
