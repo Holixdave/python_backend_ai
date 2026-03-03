@@ -1,26 +1,29 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-import pickle
+import joblib
 import os
 import csv
 import random
 
-app = FastAPI()
+app = FastAPI(title="UTME26 AI Backend")
 
 # ----------------------------
-# Load Intent Classification Model
+# Load Trained Models
 # ----------------------------
-with open("intent_model.pkl", "rb") as f:
-    intent_model = pickle.load(f)
+try:
+    intent_model = joblib.load("ai_model.pkl")
+    print("✅ Intent classification model loaded")
+except Exception as e:
+    print(f"❌ Failed to load ai_model.pkl: {e}")
+
+try:
+    question_gen_model = joblib.load("question_gen_model.pkl")
+    print("✅ Question generation model loaded")
+except Exception as e:
+    print(f"❌ Failed to load question_gen_model.pkl: {e}")
 
 # ----------------------------
-# Load Question Generation Model (optional)
-# ----------------------------
-with open("question_gen_model.pkl", "rb") as f:
-    question_gen_model = pickle.load(f)
-
-# ----------------------------
-# Load All Answers From /answers Folder
+# Load Answers from /answers folder
 # ----------------------------
 label_to_answer = {}
 
@@ -28,20 +31,26 @@ def load_answers():
     folder_path = "answers"
 
     if not os.path.exists(folder_path):
-        print("⚠️ answers folder not found.")
+        print("⚠️ answers folder not found")
         return
 
     for filename in os.listdir(folder_path):
         if filename.endswith(".csv"):
             file_path = os.path.join(folder_path, filename)
-            with open(file_path, newline='', encoding="utf-8") as file:
-                reader = csv.DictReader(file)
-                for row in reader:
-                    label = row["label"].strip()
-                    answer = row["answer"].strip()
-                    label_to_answer[label] = answer
+            try:
+                with open(file_path, newline='', encoding="utf-8") as file:
+                    reader = csv.DictReader(file)
+                    for row in reader:
+                        label = row["label"].strip()
+                        answer = row["answer"].strip()
+                        if label in label_to_answer:
+                            label_to_answer[label].append(answer)
+                        else:
+                            label_to_answer[label] = [answer]
+            except Exception as e:
+                print(f"❌ Error reading {filename}: {e}")
 
-    print(f"✅ Loaded {len(label_to_answer)} answers.")
+    print(f"✅ Loaded answers for {len(label_to_answer)} labels")
 
 load_answers()
 
@@ -60,22 +69,18 @@ class GenerateRequest(BaseModel):
 @app.post("/ask")
 async def ask_ai(request: QuestionRequest):
     user_question = request.question.strip()
-
     try:
         predicted_label = intent_model.predict([user_question])[0]
 
-        answer = label_to_answer.get(predicted_label)
-
-        if answer:
-            return {
-                "label": predicted_label,
-                "answer": answer
-            }
+        if predicted_label in label_to_answer:
+            answer = random.choice(label_to_answer[predicted_label])
         else:
-            return {
-                "label": predicted_label,
-                "answer": "I'm not fully trained on this topic yet."
-            }
+            answer = "I'm not fully trained on this topic yet."
+
+        return {
+            "label": predicted_label,
+            "answer": answer
+        }
 
     except Exception as e:
         return {"error": f"AI processing error: {e}"}
@@ -90,3 +95,10 @@ async def generate_question(request: GenerateRequest):
         return {"question": generated}
     except Exception as e:
         return {"error": f"Generation failed: {e}"}
+
+# ----------------------------
+# Health Check
+# ----------------------------
+@app.get("/")
+async def root():
+    return {"message": "UTME26 AI backend running!"}
