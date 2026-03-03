@@ -1,10 +1,24 @@
 question,label
-"Hello","greeting"
-"Hi","greeting"
-"Hey","greeting"
-"Good morning","greeting"
-"Good afternoon","greeting"
-"Good evening","greeting"
+Hello,greeting_hello
+Hi,greeting_hi
+Hey,greeting_hey
+Good morning,greeting_good_morning
+Good afternoon,greeting_good_afternoon
+Good evening,greeting_good_evening
+Yo,greeting_yo
+Sup,greeting_sup
+What's up,greeting_whats_up
+How are you,greeting_how_are_you
+How far,greeting_how_far
+Greetings,greeting_greetings
+Nice to meet you,greeting_nice_to_meet_you
+Long time no see,greeting_long_time_no_see
+Good day,greeting_good_day
+How is it going,greeting_how_is_it_going
+What’s good,greeting_whats_good
+Thanks,greeting_thank_you
+Thank you,greeting_thank_you
+You’re welcome,greeting_welcome
 "How are you?","status"
 "How's it going?","status"
 "What's up?","status"
