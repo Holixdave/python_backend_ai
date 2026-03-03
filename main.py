@@ -8,7 +8,8 @@ from sympy import symbols, Eq, solve, sympify
 app = FastAPI()
 
 # Load trained model
-model = joblib.load("ai_model.pkl")
+qa_model = joblib.load("ai_model.pkl")
+question_gen_model = joblib.load("question_gen_model.pkl")
 
 def solve_math_safe(question):
     x = symbols('x')
@@ -1135,7 +1136,8 @@ label_to_answer = {
 # Input models
 class AIQuery(BaseModel):
     query: str
-
+class GeneratePrompt(BaseModel):
+    prompt: str  # e.g., "Generate a Python question"
 def solve_math_safe(question):
     x = symbols('x')
     if "solve" in question.lower() and "=" in question:
@@ -1196,3 +1198,19 @@ async def ai_query(request: AIQuery):
             response = add_emoji(response, predicted_label if responses else "question")
 
     return {"answer": response}
+
+# -------------------------
+# Endpoint to generate question
+# -------------------------
+@app.post("/generate-question")
+async def generate_question(request: GeneratePrompt):
+    user_prompt = request.prompt.strip()
+    
+    # Predict a completion
+    try:
+        predicted_questions = question_gen_model.predict([user_prompt])
+        # pick a random one if multiple returned (for variation)
+        question = random.choice(predicted_questions)
+        return {"question": question}
+    except Exception as e:
+        return {"error": f"Failed to generate question: {e}"}
