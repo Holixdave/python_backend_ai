@@ -10,17 +10,10 @@ app = FastAPI(title="UTME26 AI Backend")
 # ----------------------------
 # Load Trained Models
 # ----------------------------
-try:
-    intent_model = joblib.load("ai_model.pkl")
-    print("✅ Intent classification model loaded")
-except Exception as e:
-    print(f"❌ Failed to load ai_model.pkl: {e}")
-
-try:
+intent_model = joblib.load("ai_model.pkl")
+question_gen_model = None
+if os.path.exists("question_gen_model.pkl"):
     question_gen_model = joblib.load("question_gen_model.pkl")
-    print("✅ Question generation model loaded")
-except Exception as e:
-    print(f"❌ Failed to load question_gen_model.pkl: {e}")
 
 # ----------------------------
 # Load Answers from /answers folder
@@ -29,9 +22,8 @@ label_to_answer = {}
 
 def load_answers():
     folder_path = "answers"
-
     if not os.path.exists(folder_path):
-        print("⚠️ answers folder not found")
+        print("⚠️ answers folder not found.")
         return
 
     for filename in os.listdir(folder_path):
@@ -55,10 +47,10 @@ def load_answers():
 load_answers()
 
 # ----------------------------
-# Request Models
+# Request Models (match Flutter)
 # ----------------------------
 class QuestionRequest(BaseModel):
-    question: str
+    query: str  # matches Flutter's {"query": "..."} payload
 
 class GenerateRequest(BaseModel):
     prompt: str
@@ -68,7 +60,7 @@ class GenerateRequest(BaseModel):
 # ----------------------------
 @app.post("/ai-query")
 async def ask_ai(request: QuestionRequest):
-    user_question = request.question.strip()
+    user_question = request.query.strip()
     try:
         predicted_label = intent_model.predict([user_question])[0]
 
@@ -77,10 +69,7 @@ async def ask_ai(request: QuestionRequest):
         else:
             answer = "I'm not fully trained on this topic yet."
 
-        return {
-            "label": predicted_label,
-            "answer": answer
-        }
+        return {"label": predicted_label, "answer": answer}
 
     except Exception as e:
         return {"error": f"AI processing error: {e}"}
@@ -90,6 +79,8 @@ async def ask_ai(request: QuestionRequest):
 # ----------------------------
 @app.post("/generate-question")
 async def generate_question(request: GenerateRequest):
+    if question_gen_model is None:
+        return {"error": "Question generation model not trained."}
     try:
         generated = question_gen_model.predict([request.prompt])[0]
         return {"question": generated}
