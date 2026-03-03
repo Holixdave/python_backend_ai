@@ -66,7 +66,7 @@ class GenerateRequest(BaseModel):
 # ----------------------------
 # AI Answer Endpoint
 # ----------------------------
-@app.post("/ask")
+@app.post("/ai-query")
 async def ask_ai(request: QuestionRequest):
     user_question = request.question.strip()
     try:
