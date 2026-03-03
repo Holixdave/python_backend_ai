@@ -32,8 +32,12 @@ label_to_answer = {
         "Hello! Nice to see you.",
         "Hey! How’s it going?",
         "Good day! How can I assist you?"
+         "Hello! How can I help you today?",
+        "Hi there! Ready to learn something new?",
+        "Hey! What topic do you want to explore today?",
+        "Good day! How can I assist you?",
+        "Hello! Hope you’re having a great day!"
     ],
-    "python": ["Python is a programming language used for coding."],
     "ai": ["AI stands for Artificial Intelligence, where machines simulate human intelligence."],
     "function": ["A function is a block of code that performs a specific task."],
     "list":[ "A list is a collection of items in a particular order, enclosed in square brackets."],
@@ -69,11 +73,6 @@ label_to_answer = {
     "adverb": [
         "An adverb modifies a verb, adjective, or another adverb.",
         "Adverbs explain how, when, where, or to what extent something happens."
-    ],
-
-    # Python Programming
-    "python": [
-        "Python is a versatile programming language used for many purposes including web development, data analysis, and AI."
     ],
     "function": [
         "A function is a block of code that performs a specific task.",
@@ -199,13 +198,6 @@ label_to_answer = {
     "networking": [
         "Networking deals with connecting computers and devices to share data and resources."
     ],
-     "greeting": [
-        "Hello! How can I help you today?",
-        "Hi there! Ready to learn something new?",
-        "Hey! What topic do you want to explore today?",
-        "Good day! How can I assist you?",
-        "Hello! Hope you’re having a great day!"
-    ],
     "status": [
         "I’m just a program, but I’m running smoothly!",
         "All systems operational! How can I help?",
@@ -217,6 +209,7 @@ label_to_answer = {
         "Python is versatile and widely used for web, data, AI, and scripting.",
         "Python was created by Guido van Rossum and emphasizes readability.",
         "Python lets you write clear and concise code quickly."
+        "Python is a versatile programming language used for many purposes including web development, data analysis, and AI."
     ],
     "function": [
         "A function is a block of code that performs a specific task.",
