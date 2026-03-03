@@ -1,6 +1,6 @@
-label,answer
-"greeting_hello","Hello! 😊 How can I assist you today?"
-"greeting_hi","Hi there! What can I help you with?"
-"greeting_good_morning","Good morning! 🌅 I hope you're having a productive day."
-"greeting_good_afternoon","Good afternoon! ☀️ How may I assist you?"
-"greeting_good_evening","Good evening! 🌙 What would you like help with?"
+question,label,answer
+Hello,greeting,Hello! 😊 How can I help you today?
+Hi,greeting,Hi there! What can I do for you?
+Good morning,greeting,Good morning! 🌅 I hope you have a great day.
+Good afternoon,greeting,Good afternoon! ☀️ How may I assist you?
+Good evening,greeting,Good evening! 🌙 What would you like to talk about?
