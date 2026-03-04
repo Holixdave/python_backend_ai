@@ -1,10 +1,13 @@
+# train_ai.py
 import os
 import pandas as pd
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import Pipeline
 import joblib
-
+from math_solver import solve_math_with_explanation  # Import the math solver
+import random
+from equation_solver import solve_equation_with_steps
 # -----------------------------
 # Folder containing all CSV files
 # -----------------------------
@@ -21,16 +24,25 @@ for file in os.listdir(answers_folder):
             print(f"⚠️ Failed to read {file}: {e}")
             continue
 
-        # Check columns
+        # Determine format
         if all(col in df.columns for col in ["question", "label", "answer"]):
+            # Full format
             qa_frames.append(df[["question", "label", "answer"]])
-            print(f"✅ Loaded {len(df)} rows from {file}")
+            print(f"✅ Loaded {len(df)} rows from {file} (question,label,answer format)")
+        elif all(col in df.columns for col in ["question", "label"]):
+            # Only question and label
+            qa_frames.append(df[["question", "label"]].rename(columns={"label": "answer"}))
+            print(f"✅ Loaded {len(df)} rows from {file} (question,label format)")
+        elif all(col in df.columns for col in ["label", "answer"]):
+            # label,answer format (we treat answer as input, label as answer)
+            qa_frames.append(df[["answer", "label"]].rename(columns={"answer": "question", "label": "answer"}))
+            print(f"✅ Loaded {len(df)} rows from {file} (label,answer format)")
         else:
-            print(f"⚠️ {file} skipped: missing required columns ['question','label','answer']")
+            print(f"⚠️ {file} skipped: missing required columns")
 
 # Check if we loaded any data
 if not qa_frames:
-    raise ValueError("No CSV files with required columns ['question','label','answer'] found!")
+    raise ValueError("No CSV files with the correct columns found!")
 
 # Combine all CSVs
 qa_data = pd.concat(qa_frames, ignore_index=True)
@@ -39,7 +51,6 @@ print(f"✅ Total loaded rows: {len(qa_data)}")
 # -----------------------------
 # Train QA model
 # -----------------------------
-# We'll use question → answer mapping
 qa_model = Pipeline([
     ('vectorizer', CountVectorizer()),
     ('classifier', MultinomialNB())
@@ -51,14 +62,41 @@ print("✅ Model training complete!")
 # Save the model
 joblib.dump(qa_model, "ai_model.pkl")
 print("✅ Model saved as ai_model.pkl")
+def format_math_answer(expr_result: str) -> str:
+    """
+    Wraps the math solution with friendly text and optional emoji.
+    """
+    greetings = [
+        "Here's what I got 🧮:", 
+        "After some quick math ✨:", 
+        "Let's solve that 📝:", 
+        "Crunching numbers 🔢:"
+    ]
+    
+    emojis = ["✅", "📊", "💡", "🧠", "🤓"]
+
+    greeting = random.choice(greetings)
+    emoji = random.choice(emojis)
+
+    return f"{greeting} {expr_result} {emoji}"
+
+def ask(question: str) -> str:
+    # 1️⃣ Try algebra equation solver FIRST
+    equation_answer = solve_equation_with_steps(question)
+    if equation_answer is not None:
+        return equation_answer
+
+    # 2️⃣ Then try arithmetic math solver
+    math_answer = solve_math_with_explanation(question)
+    if math_answer is not None:
+        return math_answer
+
+    # 3️⃣ Finally fallback to trained QA model
+    return qa_model.predict([question])[0]
 
 # -----------------------------
-# Optional: Quick test
+# Interactive testing
 # -----------------------------
-def ask(question):
-    answer = qa_model.predict([question])[0]
-    return answer
-
 if __name__ == "__main__":
     while True:
         user_input = input("\nAsk a question (or type 'exit'): ").strip()
