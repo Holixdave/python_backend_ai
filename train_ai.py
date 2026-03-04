@@ -79,19 +79,49 @@ def format_math_answer(expr_result: str) -> str:
     emoji = random.choice(emojis)
 
     return f"{greeting} {expr_result} {emoji}"
-
+conversation_state = {
+    "last_intent": None
+}
 def ask(question: str) -> str:
-    # 1️⃣ Try algebra equation solver FIRST
+    global conversation_state
+
+    q_lower = question.lower()
+
+    # -------------------------
+    # Detect equation intent
+    # -------------------------
+    if "equation" in q_lower:
+        conversation_state["last_intent"] = "solve_equation"
+        return "Sure 😊 Please send me the equation you want to solve."
+
+    # -------------------------
+    # If last intent was equation
+    # -------------------------
+    if conversation_state["last_intent"] == "solve_equation":
+        equation_answer = solve_equation_with_steps(question)
+        if equation_answer:
+            conversation_state["last_intent"] = None
+            return equation_answer
+        else:
+            return "Hmm 🤔 That doesn't look like a valid equation. Try again."
+
+    # -------------------------
+    # Normal Equation Detection
+    # -------------------------
     equation_answer = solve_equation_with_steps(question)
     if equation_answer is not None:
         return equation_answer
 
-    # 2️⃣ Then try arithmetic math solver
+    # -------------------------
+    # Arithmetic
+    # -------------------------
     math_answer = solve_math_with_explanation(question)
     if math_answer is not None:
         return math_answer
 
-    # 3️⃣ Finally fallback to trained QA model
+    # -------------------------
+    # Fallback to QA model
+    # -------------------------
     return qa_model.predict([question])[0]
 
 # -----------------------------
