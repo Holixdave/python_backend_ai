@@ -1,0 +1,25 @@
+question,label,answer
+what is mathematics,math,Mathematics is the science of numbers, shapes, patterns, and logic. 🔢 It includes arithmetic, algebra, geometry, calculus, statistics, and more. It is the foundation of science and technology!
+what is algebra,math,Algebra is a branch of mathematics that uses letters (variables) to represent unknown numbers. 📐 It involves solving equations like 2x + 3 = 7. The goal is to find the value of the unknown variable.
+what is geometry,math,Geometry is the branch of mathematics that studies shapes, sizes, angles, and properties of figures and spaces. 📐 It includes points, lines, triangles, circles, and 3D shapes.
+what is calculus,math,Calculus is the branch of mathematics dealing with rates of change (differentiation) and areas under curves (integration). 📈 Isaac Newton and Leibniz developed it independently in the 17th century.
+what is statistics,math,Statistics is the branch of mathematics that deals with collecting, analysing, interpreting, and presenting data. 📊 It includes mean, median, mode, standard deviation, and probability.
+what is a fraction,math,A fraction represents a part of a whole. 🔢 It has a numerator (top number) and denominator (bottom number). Example: ¾ means 3 parts out of 4. To add fractions, find a common denominator first.
+what is a percentage,math,A percentage is a fraction expressed out of 100. 📊 Symbol: %. Example: 75% = 75/100 = 0.75. To find a percentage: (part ÷ whole) × 100. To find a percentage of a number: (percentage ÷ 100) × number.
+what is the pythagorean theorem,math,The Pythagorean Theorem states that in a right-angled triangle: a² + b² = c² where c is the hypotenuse (longest side). 📐 Example: if a=3 and b=4, then c = √(9+16) = √25 = 5.
+what is a prime number,math,A prime number is a number greater than 1 that has only two factors: 1 and itself. 🔢 Examples: 2, 3, 5, 7, 11, 13, 17, 19, 23. Note: 2 is the only even prime number.
+what is the mean,math,The mean (average) is calculated by adding all values and dividing by the number of values. 📊 Formula: Mean = Sum of all values ÷ Number of values. Example: mean of 2,4,6 = (2+4+6)/3 = 4.
+what is the median,math,The median is the middle value when data is arranged in order. 📊 If there is an even number of values, the median is the average of the two middle values. Example: median of 1,3,5,7,9 = 5.
+what is the mode,math,The mode is the value that appears most frequently in a data set. 📊 A data set can have one mode, more than one mode, or no mode at all. Example: mode of 1,2,2,3,4 = 2.
+what is a quadratic equation,math,A quadratic equation is an equation of the form ax² + bx + c = 0 where a ≠ 0. 📐 It can be solved by factoring, completing the square, or using the quadratic formula: x = (-b ± √(b²-4ac)) / 2a.
+what is the quadratic formula,math,The quadratic formula is: x = (-b ± √(b²-4ac)) / 2a 📐 It solves any quadratic equation ax² + bx + c = 0. The discriminant (b²-4ac) tells you how many solutions: positive = 2 solutions, zero = 1 solution, negative = no real solutions.
+what is bodmas,math,BODMAS is the order of mathematical operations: Brackets, Orders (powers/roots), Division, Multiplication, Addition, Subtraction. 🔢 Always follow this order when solving expressions. Example: 2 + 3 × 4 = 2 + 12 = 14 (not 20!).
+what is a ratio,math,A ratio compares two quantities. 🔢 Written as a:b or a/b. Example: if there are 3 boys and 5 girls, the ratio of boys to girls is 3:5. Ratios can be simplified like fractions.
+what is a logarithm,math,A logarithm is the inverse of an exponent. 📐 log_b(x) = y means b^y = x. Example: log₁₀(100) = 2 because 10² = 100. Natural log (ln) uses base e ≈ 2.718.
+what is pi,math,Pi (π) is the ratio of a circle's circumference to its diameter. ⭕ π ≈ 3.14159... It is an irrational number (never ends, never repeats). Used in circle formulas: Area = πr², Circumference = 2πr.
+what is the area of a circle,math,The area of a circle = πr² where r is the radius. ⭕ Example: if radius = 5, area = π × 25 ≈ 78.54 square units. Remember: radius = diameter ÷ 2.
+what is the area of a triangle,math,The area of a triangle = ½ × base × height. 📐 Example: base = 6, height = 4, area = ½ × 6 × 4 = 12 square units. For all triangles, not just right-angled ones!
+what is simple interest,math,Simple Interest formula: SI = (P × R × T) / 100 💰 where P = Principal, R = Rate per year, T = Time in years. Example: P=1000, R=5%, T=2 years → SI = (1000×5×2)/100 = 100.
+what is compound interest,math,Compound Interest formula: A = P(1 + r/n)^(nt) 💰 where P = principal, r = annual rate (decimal), n = times compounded per year, t = years. Unlike simple interest, you earn interest on interest!
+what is a matrix,math,A matrix is a rectangular array of numbers arranged in rows and columns. 📊 Used to solve systems of equations, transformations in geometry, and in computer science. A 2×2 matrix has 2 rows and 2 columns.
+what is a vector,math,A vector is a quantity that has both magnitude (size) and direction. 📐 Examples: velocity, force, displacement. Represented as arrows or column matrices. Scalar quantities have magnitude only (e.g. speed, mass).

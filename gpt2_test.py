@@ -1,48 +1,52 @@
 # gpt2_test.py
-# NOTE: Despite the filename, this uses OpenAI's API (gpt-4o-mini).
-# If you want FREE local GPT-2, uncomment the HuggingFace section below
-# and comment out the OpenAI section. Install with: pip install transformers torch
+# Uses FREE local GPT-2 via HuggingFace Transformers — NO API key needed!
+# Install once with: pip install transformers torch
+# The model downloads automatically the first time (~500MB)
 
-import os
-from openai import OpenAI
+from transformers import pipeline
+
+_pipe = None
 
 
 def ask_gpt2(prompt: str) -> str:
     """
-    Calls OpenAI gpt-4o-mini. Requires OPENAI_API_KEY environment variable.
-    Falls back gracefully if key is missing.
+    Generates a response using the free local GPT-2 model.
+    No API key, no internet needed after first download.
     """
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return "⚠️ GPT request failed: OPENAI_API_KEY not set."
-
+    global _pipe
     try:
-        client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a helpful AI tutor for Nigerian students preparing for UTME exams."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=200,
-            temperature=0.7
+        if _pipe is None:
+            print("Loading GPT-2 model for the first time... (this takes a moment)")
+            _pipe = pipeline(
+                "text-generation",
+                model="gpt2",
+                pad_token_id=50256
+            )
+            print("GPT-2 model loaded!")
+
+        clean_prompt = prompt.strip()[:200]
+
+        result = _pipe(
+            clean_prompt,
+            max_new_tokens=80,
+            do_sample=True,
+            temperature=0.7,
+            top_p=0.9,
+            repetition_penalty=1.2,
+            num_return_sequences=1,
         )
-        return response.choices[0].message.content.strip()
+
+        full_text = result[0]["generated_text"]
+        new_text = full_text[len(clean_prompt):].strip()
+
+        if new_text:
+            for ending in ['. ', '! ', '? ', '.\n', '!\n', '?\n']:
+                idx = new_text.find(ending)
+                if idx != -1 and idx > 10:
+                    new_text = new_text[:idx + 1].strip()
+                    break
+
+        return new_text if new_text else "I'm not sure about that one. Try asking a more specific question!"
+
     except Exception as e:
-        return f"⚠️ GPT request failed: {e}"
-
-
-# -------------------------------------------------------
-# OPTIONAL: Real FREE local GPT-2 (no API key needed)
-# pip install transformers torch
-# Uncomment below and comment out the OpenAI version above
-# -------------------------------------------------------
-# from transformers import pipeline
-# _pipe = None
-#
-# def ask_gpt2(prompt: str) -> str:
-#     global _pipe
-#     if _pipe is None:
-#         _pipe = pipeline("text-generation", model="gpt2")
-#     result = _pipe(prompt, max_new_tokens=100, do_sample=True, temperature=0.7)
-#     return result[0]["generated_text"][len(prompt):].strip()
+        return f"GPT-2 unavailable: {e}"
