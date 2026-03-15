@@ -1,5 +1,6 @@
 # math_solver.py
 import re
+import math
 
 def solve_math_with_explanation(question: str) -> str | None:
     """
@@ -15,55 +16,64 @@ def solve_math_with_explanation(question: str) -> str | None:
     q = q.replace("times", "*").replace("multiplied by", "*").replace("multiply", "*")
     q = q.replace("divided by", "/").replace("divide", "/").replace("over", "/")
     q = q.replace("modulus", "%").replace("mod", "%")
-    q = q.replace("squared", "**2")
     q = re.sub(r"(\d+) to the power of (\d+)", r"\1**\2", q)
-    plus = re.search(r'(\d+)\s*plus\s*(\d+)', q)
-    minus = re.search(r'(\d+)\s*(minus|subtract)\s*(\d+)', q)
-    multiply = re.search(r'(\d+)\s*(times|multiply|x)\s*(\d+)', q)
-    divide = re.search(r'(\d+)\s*(divided by|/)\s*(\d+)', q)
+
+    # BUG FIX: These regex checks must happen BEFORE stripping non-numeric chars
+    plus = re.search(r'(\d+)\s*\+\s*(\d+)', q)
+    minus_m = re.search(r'(\d+)\s*-\s*(\d+)', q)
+    multiply = re.search(r'(\d+)\s*\*\s*(\d+)', q)
+    divide = re.search(r'(\d+)\s*/\s*(\d+)', q)
     square = re.search(r'square of (\d+)', q)
     sqrt = re.search(r'square root of (\d+)', q)
 
-    if plus:
-        a, b = int(plus[1]), int(plus[2])
-        return f"{a} + {b} = {a + b}"
-    if minus:
-        a, b = int(minus[1]), int(minus[3])
-        return f"{a} - {b} = {a - b}"
-    if multiply:
-        a, b = int(multiply[1]), int(multiply[3])
-        return f"{a} × {b} = {a * b}"
-    if divide:
-        a, b = int(divide[1]), int(divide[3])
-        return f"{a} ÷ {b} = {a / b}"
     if square:
-        a = int(square[1])
-        return f"{a}² = {a ** 2}"
+        a = int(square.group(1))
+        return f"{a}² = {a ** 2}"   # BUG FIX: was "a  2"
+
     if sqrt:
-        a = int(sqrt[1])
-        return f"√{a} = {a ** 0.5}"
-     # Handle "subtract X from Y" -> "Y - X"
-    subtract_match = re.match(r"subtract (\d+\.?\d*) from (\d+\.?\d*)", q)
+        a = int(sqrt.group(1))
+        return f"√{a} = {math.sqrt(a)}"  # BUG FIX: was "a  0.5"
+
+    if plus:
+        a, b = int(plus.group(1)), int(plus.group(2))
+        return f"{a} + {b} = {a + b}"
+
+    if minus_m:
+        a, b = int(minus_m.group(1)), int(minus_m.group(2))
+        return f"{a} - {b} = {a - b}"
+
+    if multiply:
+        a, b = int(multiply.group(1)), int(multiply.group(2))
+        return f"{a} × {b} = {a * b}"
+
+    if divide:
+        a, b = int(divide.group(1)), int(divide.group(2))
+        if b == 0:
+            return "❌ Cannot divide by zero."
+        return f"{a} ÷ {b} = {a / b}"
+
+    # Handle "subtract X from Y" -> "Y - X"
+    subtract_match = re.search(r"subtract (\d+\.?\d*) from (\d+\.?\d*)", q)
     if subtract_match:
         q = f"{subtract_match.group(2)} - {subtract_match.group(1)}"
 
     # Keep only numbers, operators, parentheses, decimal points
-    q_clean = re.sub(r"[^0-9+\-*/%.() ]", "", q)
+    q_clean = re.sub(r"[^0-9+\-*/%.() ]", "", q).strip()
+
+    if not q_clean:
+        return None
 
     try:
-        # Evaluate result
         result = eval(q_clean)
-        # Create an explanation string with friendly emoji
         explanation = (
-            f"🧮 Solving your math: {q_clean} = {result}\n"
-            f"✅ The answer is {result}. This is your solving here: {q_clean} = {result}"
+            f"🧮 Solving: {q_clean} = {result}\n"
+            f"✅ The answer is {result}."
         )
         return explanation
     except Exception:
         return None
 
 
-# Example standalone usage
 if __name__ == "__main__":
     while True:
         user_input = input("Math question: ").strip()

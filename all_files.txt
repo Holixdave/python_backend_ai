@@ -1,0 +1,593 @@
+ conversation_state.py
+# conversation_state.py
+conversation_state = {
+    "last_intent": None,
+    "last_subject": None,   # Tracks the main topic (e.g., "Einstein", "calculus problem")
+    "history": []           # Stores tuples of (user_question, ai_answer)
+}
+
+def set_intent(intent: str):
+    conversation_state["last_intent"] = intent
+
+def get_intent() -> str | None:
+    return conversation_state.get("last_intent")
+
+def set_subject(subject: str):
+    conversation_state["last_subject"] = subject
+
+def get_subject():
+    return conversation_state.get("last_subject")
+
+def add_history(question: str, answer: str):
+    conversation_state["history"].append((question, answer))
+
+def get_last_answer() -> str | None:
+    if conversation_state["history"]:
+        return conversation_state["history"][-1][1]
+    return None
+
+def get_last_question() -> str | None:
+    if conversation_state["history"]:
+        return conversation_state["history"][-1][0]
+    return None equation_solver.py
+# equation_solver.py
+import re
+from sympy import symbols, Eq, solve, sympify, expand
+
+# -----------------------------
+# Single-variable solver (current functionality)
+# -----------------------------
+def preprocess_equation(q: str) -> str:
+    """
+    Preprocess user input to handle worded math phrases and implicit multiplication.
+    """
+    q = q.lower()
+    # Fix common words
+    q = q.replace("plus", "+")
+    q = q.replace("minus", "-")
+    q = q.replace("times", "*")
+    q = q.replace("multiplied by", "*")
+    q = q.replace("x ", "*")
+    q = q.replace("divide by", "/")
+    q = q.replace("divided by", "/")
+    q = q.replace("dived by", "/")  # common typo
+    q = q.replace("equals", "=")
+    q = q.replace("equal to", "=")
+    q = q.replace("^", "**")
+    q = q.replace(" ", "")
+    # Fix implicit multiplication (2x -> 2*x)
+    q = re.sub(r"(\d)([a-z])", r"\1*\2", q)
+    return q
+
+def solve_equation_with_steps(question: str):
+    """
+    Solve single-variable linear or quadratic equations with step-by-step explanation.
+    """
+    try:
+        q = preprocess_equation(question)
+
+        if "=" not in q:
+            return None
+
+        left_str, right_str = q.split("=")
+
+        # Detect variables
+        vars_found = sorted(set(re.findall(r"[a-z]", q)))
+        if not vars_found:
+            return None
+
+        sympy_vars = symbols(vars_found)
+
+        # Convert strings to sympy expressions
+        left_expr = sympify(left_str)
+        right_expr = sympify(right_str)
+
+        # Build equation and standard form
+        equation = Eq(left_expr, right_expr)
+        standard_form = expand(left_expr - right_expr)
+
+        # Solve
+        solution = solve(equation, sympy_vars)
+
+        if not solution:
+            return "❌ No solution found."
+
+        # Build step-by-step explanation
+        steps = []
+        steps.append("📘 Step 1: Original Equation")
+        steps.append(f"   {left_str} = {right_str}")
+        steps.append("")
+
+        steps.append("📗 Step 2: Move all terms to one side")
+        steps.append(f"   {standard_form} = 0")
+        steps.append("")
+
+        if "**2" in str(standard_form):
+            steps.append("📙 Step 3: This is a Quadratic Equation")
+        else:
+            steps.append("📙 Step 3: Solve for variable(s)")
+        steps.append("")
+
+        # Format solution nicely
+        if isinstance(solution, dict):
+            for var in solution:
+                steps.append(f"   {var} = {solution[var]}")
+        else:
+            steps.append(f"   Solution: {solution}")
+
+        steps.append("")
+        steps.append("✅ Final Answer:")
+        steps.append(f"   {solution}")
+
+        return "\n".join(steps)
+
+    except Exception as e:
+        # Optional: print(e) for debugging
+        return "❌ Could not parse or solve the equation."
+
+# -----------------------------
+# Multi-variable solver (new functionality)
+# -----------------------------
+def solve_multi_variable_equation(equations: list[str]):
+    """
+    Solve a system of linear equations with multiple variables.
+    Returns step-by-step explanation.
+    Example:
+        equations = ["2*x + 3*y = 12", "x + y = 5"]
+    """
+    try:
+        processed_eqs = [preprocess_equation(eq) for eq in equations]
+
+        sympy_vars = sorted(set(re.findall(r"[a-z]", " ".join(processed_eqs))))
+        if not sympy_vars:
+            return "❌ No variables detected."
+
+        sympy_vars = symbols(sympy_vars)
+
+        sympy_eqs = []
+        for eq in processed_eqs:
+            if "=" not in eq:
+                return f"❌ Invalid equation format: {eq}"
+            left_str, right_str = eq.split("=")
+            left_expr = sympify(left_str)
+            right_expr = sympify(right_str)
+            sympy_eqs.append(Eq(left_expr, right_expr))
+
+        solutions = solve(sympy_eqs, sympy_vars, dict=True)
+
+        if not solutions:
+            return "❌ No solution found."
+
+        steps = ["📘 Solving system of equations:"]
+        for i, eq in enumerate(processed_eqs, 1):
+            steps.append(f"   Equation {i}: {eq}")
+
+
+            steps.append("")
+        steps.append("📙 Step: Solve using sympy")
+        steps.append(f"   Solution: {solutions}")
+
+        return "\n".join(steps)
+
+    except Exception as e:
+        return f"❌ Could not parse or solve the system: {e}"
+
+# -----------------------------
+# Example usage when running standalone
+# -----------------------------
+if __name__ == "__main__":
+    while True:
+        user_input = input("Solve equation (or system, type 'exit'): ").strip()
+        if user_input.lower() == "exit":
+            break
+
+        # Detect if user entered multiple equations separated by ;
+        if ";" in user_input:
+            eq_list = [eq.strip() for eq in user_input.split(";")]
+            result = solve_multi_variable_equation(eq_list)
+        else:
+            result = solve_equation_with_steps(user_input)
+
+        print(result or "I cannot solve that equation.") gpt2_test.py
+# gpt2_test.py
+
+import os
+from openai import OpenAI
+
+# Load API key from environment
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+def ask_gpt2(prompt: str) -> str:
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",   # cheap + good
+            messages=[
+                {"role": "system", "content": "You are a helpful AI tutor."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=200,
+            temperature=0.7
+        )
+
+        return response.choices[0].message.content.strip()
+
+    except Exception as e:
+        return f"⚠️ GPT request failed: {e}"// main.py
+from fastapi import FastAPI
+from pydantic import BaseModel
+import joblib
+import os
+import csv
+import random
+from math_solver import solve_math_with_explanation
+from equation_solver import solve_equation_with_steps
+
+app = FastAPI(title="UTME26 AI Backend")
+
+# ----------------------------
+# Load Trained QA Model
+# ----------------------------
+qa_model = joblib.load("ai_model.pkl")  # Trained on question → answer
+# Optional: question generation model
+question_gen_model = None
+if os.path.exists("question_gen_model.pkl"):
+    question_gen_model = joblib.load("question_gen_model.pkl")
+
+# ----------------------------
+# Load Answers from CSVs by label
+# ----------------------------
+label_to_answer = {}
+
+def load_answers():
+    folder_path = "answers"
+    if not os.path.exists(folder_path):
+        print("⚠️ answers folder not found.")
+        return
+
+    for filename in os.listdir(folder_path):
+        if filename.endswith(".csv"):
+            file_path = os.path.join(folder_path, filename)
+            try:
+                with open(file_path, newline='', encoding="utf-8") as file:
+                    reader = csv.DictReader(file)
+                    for row in reader:
+                        label = row.get("label", "").strip()
+                        answer = row.get("answer", "").strip()
+                        if label and answer:
+                            if label in label_to_answer:
+                                label_to_answer[label].append(answer)
+                            else:
+                                label_to_answer[label] = [answer]
+            except Exception as e:
+                print(f"❌ Error reading {filename}: {e}")
+
+    print(f"✅ Loaded answers for {len(label_to_answer)} labels")
+
+load_answers()
+
+# ----------------------------
+# Request Models
+# ----------------------------
+class QuestionRequest(BaseModel):
+    query: str
+
+class GenerateRequest(BaseModel):
+    prompt: str
+
+# ----------------------------
+# AI Answer Endpoint
+# ----------------------------
+@app.post("/ai-query")
+async def ask_ai(request: QuestionRequest):
+    user_question = request.query.strip()
+
+    # -------------------------
+    # 1️⃣ Try algebra equation solver
+    # -------------------------
+    eq_answer = solve_equation_with_steps(user_question)
+    if eq_answer:
+        return {"label": "algebra", "answer": eq_answer}
+
+    # -------------------------
+    # 2️⃣ Try arithmetic solver
+    # -------------------------
+    math_answer = solve_math_with_explanation(user_question)
+    if math_answer:
+        return {"label": "math", "answer": math_answer}
+
+    # -------------------------
+    # 3️⃣ Try QA Model Prediction
+    # -------------------------
+    try:
+        predicted_answer = qa_model.predict([user_question])[0]
+        if predicted_answer:
+            # Optional: find label if matches loaded answers
+            label = None
+            for lbl, answers in label_to_answer.items():
+                if predicted_answer in answers:
+                    label = lbl
+                    break
+            if not label:
+                label = "general"
+            return {"label": label, "answer": predicted_answer}
+    except Exception as e:
+        print(f"⚠️ QA model prediction failed: {e}")
+
+    # -------------------------
+    # 4️⃣ Fallback
+    # -------------------------
+    return {"label": "unknown", "answer": "I'm not fully trained on this topic yet."}
+
+# ----------------------------
+# Question Generation Endpoint
+# ----------------------------
+@app.post("/generate-question")
+async def generate_question(request: GenerateRequest):
+    if question_gen_model is None:
+        return {"error": "Question generation model not trained."}
+    try:
+        generated = question_gen_model.predict([request.prompt])[0]
+        return {"question": generated}
+    except Exception as e:
+        return {"error": f"Generation failed: {e}"}
+
+# ----------------------------
+# Health Check
+# ----------------------------
+@app.get("/")
+async def root():
+    return {"message": "UTME26 AI backend running!"} math_solver.py
+# math_solver.py
+import re
+
+def solve_math_with_explanation(question: str) -> str | None:
+    """
+    Solve arithmetic questions and return a step-by-step style explanation.
+    Returns None if it cannot parse as math.
+    """
+    q = question.lower()
+    q = re.sub(r"what is|calculate|compute|please|the result of|\?", "", q)
+
+    # Replace worded operations with symbols
+    q = q.replace("plus", "+").replace("add", "+")
+    q = q.replace("minus", "-").replace("subtract", "-")
+    q = q.replace("times", "*").replace("multiplied by", "*").replace("multiply", "*")
+    q = q.replace("divided by", "/").replace("divide", "/").replace("over", "/")
+    q = q.replace("modulus", "%").replace("mod", "%")
+    q = q.replace("squared", "**2")
+    q = re.sub(r"(\d+) to the power of (\d+)", r"\1**\2", q)
+    plus = re.search(r'(\d+)\s*plus\s*(\d+)', q)
+    minus = re.search(r'(\d+)\s*(minus|subtract)\s*(\d+)', q)
+    multiply = re.search(r'(\d+)\s*(times|multiply|x)\s*(\d+)', q)
+    divide = re.search(r'(\d+)\s*(divided by|/)\s*(\d+)', q)
+    square = re.search(r'square of (\d+)', q)
+    sqrt = re.search(r'square root of (\d+)', q)
+
+    if plus:
+        a, b = int(plus[1]), int(plus[2])
+        return f"{a} + {b} = {a + b}"
+    if minus:
+        a, b = int(minus[1]), int(minus[3])
+        return f"{a} - {b} = {a - b}"
+    if multiply:
+        a, b = int(multiply[1]), int(multiply[3])
+        return f"{a} × {b} = {a * b}"
+    if divide:
+        a, b = int(divide[1]), int(divide[3])
+        return f"{a} ÷ {b} = {a / b}"
+    if square:
+        a = int(square[1])
+        return f"{a}² = {a ** 2}"
+    if sqrt:
+        a = int(sqrt[1])
+        return f"√{a} = {a ** 0.5}"
+     # Handle "subtract X from Y" -> "Y - X"
+    subtract_match = re.match(r"subtract (\d+\.?\d*) from (\d+\.?\d*)", q)
+    if subtract_match:
+        q = f"{subtract_match.group(2)} - {subtract_match.group(1)}"
+
+    # Keep only numbers, operators, parentheses, decimal points
+    q_clean = re.sub(r"[^0-9+\-*/%.() ]", "", q)
+
+    try:
+        # Evaluate result
+        result = eval(q_clean)
+        # Create an explanation string with friendly emoji
+        explanation = (
+            f"🧮 Solving your math: {q_clean} = {result}\n"
+            f"✅ The answer is {result}. This is your solving here: {q_clean} = {result}"
+        )
+        return explanation
+    except Exception:
+        return None
+
+
+# Example standalone usage
+if __name__ == "__main__":
+    while True:
+        user_input = input("Math question: ").strip()
+        if user_input.lower() == "exit":
+            break
+        output = solve_math_with_explanation(user_input)
+        print(output or "❌ I cannot solve that math question.") question_gen_model.py
+ question_generation.csv
+prompt,completion
+"Generate a Python question","What is a list in Python?"
+"Generate a Python question","Explain how a for loop works in Python."
+"Generate a Python question","What is a dictionary in Python?"
+"Generate a Python question","Define a Python function."
+"Generate a Python question","Explain the difference between a tuple and a list."
+"Generate a Python question","What is a set in Python?"
+"Generate a Python question","How do you handle exceptions in Python?"
+"Generate a Python question","What is a lambda function in Python?"
+"Generate a Python question","Explain list comprehension in Python."
+"Generate a Python question","How do you import modules in Python?"
+"Generate a math addition question","What is 12 + 7?"
+"Generate a math addition question","Calculate 45 + 55."
+"Generate a math addition question","Add 100 and 250."
+"Generate a math addition question","Find the sum of 75 and 30."
+"Generate a math addition question","Calculate 18 + 27."
+"Generate a math subtraction question","What is 100 - 45?"
+"Generate a math subtraction question","Subtract 25 from 90."
+"Generate a math subtraction question","Find the difference between 60 and 15."
+"Generate a math subtraction question","Calculate 200 - 125."
+"Generate a math subtraction question","What is 80 minus 33?"
+"Generate a math multiplication question","Multiply 7 by 8."
+"Generate a math multiplication question","Find the product of 12 and 4."
+"Generate a math multiplication question","Calculate 9 × 6."
+"Generate a math multiplication question","Multiply 15 by 3."
+"Generate a math multiplication question","Find the product of 25 and 2."
+"Generate a math division question","Divide 20 by 5."
+"Generate a math division question","What is 144 ÷ 12?"
+"Generate a math division question","Split 81 into 9 equal parts."
+"Generate a math division question","Find 100 ÷ 25."
+"Generate a math division question","Divide 50 by 10."
+"Generate a biology question","Which organelle produces energy in a cell?"
+"Generate a biology question","What is the function of the nucleus?"
+"Generate a biology question","Explain the role of mitochondria."
+"Generate a biology question","What is the structure of DNA?"
+"Generate a biology question","Name the process by which plants make food."
+"Generate a physics question","What is Newton's first law?"
+"Generate a physics question","Explain the concept of velocity."
+"Generate a physics question","What is acceleration?"
+"Generate a physics question","Define gravitational force."
+"Generate a physics question","What is the formula for kinetic energy?"
+"Generate a chemistry question","What is the atomic number?"
+"Generate a chemistry question","Define molecule."
+"Generate a chemistry question","What is an element?"
+"Generate a chemistry question","Explain the difference between ionic and covalent bonds."
+"Generate a chemistry question","What is the pH scale?"
+"Generate an English question","Define a noun."
+"Generate an English question","Give examples of verbs."
+"Generate an English question","What is an adjective?"
+"Generate an English question","Explain a simile."
+"Generate an English question","What is a metaphor?"
+"Generate a geography question","Name the longest river in the world."
+"Generate a geography question","What is the capital of France?"
+"Generate a geography question","Explain what a delta is."
+"Generate a geography question","Name the continents."
+"Generate a geography question","What is the largest desert on Earth?"
+"Generate a history question","Who was the first president of the USA?"
+"Generate a history question","What caused World War I?"
+"Generate a history question","Explain the significance of the Berlin Wall."
+"Generate a history question","Who discovered America?"
+"Generate a history question","What was the Industrial Revolution?"
+"Generate a computer science question","What is an algorithm?"
+"Generate a computer science question","Define a variable."
+"Generate a computer science question","Explain object-oriented programming."
+"Generate a computer science question","What is a function?"
+"Generate a computer science question","What is recursion?"
+"Generate a economics question","Define supply and demand."
+"Generate a economics question","What is inflation?"
+"Generate a economics question","Explain GDP."
+"Generate a economics question","What is a budget deficit?"
+"Generate a economics question","Define opportunity cost."
+"Generate a civics question","What is the constitution?"
+"Generate a civics question","Explain democracy."
+"Generate a civics question","What is the role of the president?"
+"Generate a civics question","Define separation of powers."
+"Generate a civics question","What is the legislative branch?"
+"Generate a mathematics question","Solve for x: 2x + 3 = 7."
+"Generate a mathematics question","Find x: 5x - 10 = 0."
+"Generate a mathematics question","Solve for x: 3x + 4 = 19."
+"Generate a mathematics question","What is the solution of x/2 = 6?"
+"Generate a mathematics question","Find x if 4x - 8 = 12."
+"Generate a computer question","What is an IP address?"
+"Generate a computer question","Define HTTP."
+"Generate a computer question","What is a server?"
+"Generate a computer question","Explain DNS."
+"Generate a computer question","What is a firewall?"
+"Generate a programming question","What is a Python loop?"
+"Generate a programming question","Explain while loop in Python."
+"Generate a programming question","What is a list comprehension?"
+"Generate a programming question","What is a tuple?"
+"Generate a programming question","Explain dictionary in Python."
+"Generate a AI question","What is machine learning?"
+"Generate a AI question","Define artificial intelligence."
+"Generate a AI question","What is deep learning?"
+"Generate a AI question","Explain supervised learning."
+"Generate a AI question","What is unsupervised learning?"
+"Generate a AI question","What is reinforcement learning?"
+"Generate a AI question","What is NLP?"
+"Generate a AI question","What is computer vision?"
+"Generate a AI question","Explain neural networks."
+"Generate a AI question","What is backpropagation?"
+"Generate a AI question","Define activation function."
+"Generate a general knowledge question","Who is the CEO of Tesla?"
+"Generate a general knowledge question","What is the tallest building in the world?"
+"Generate a general knowledge question","Which planet is known as the Red Planet?"
+"Generate a general knowledge question","Name the largest ocean."
+"Generate a general knowledge question","Which language has the most native speakers?"
+"Generate a general knowledge question","What is the fastest land animal?"
+"Generate a general knowledge question","What is the capital of Japan?"
+"Generate a general knowledge question","Which country has the Great Wall?"
+"Generate a general knowledge question","What is the smallest country by area?"
+"Generate a mathematics question","Calculate the square of 7."
+"Generate a mathematics question","What is 12 squared?"
+"Generate a mathematics question","Find the cube of 3."
+"Generate a mathematics question","Calculate 4 cubed."
+"Generate a mathematics question","What is 5 cubed?"
+"Generate a mathematics question","Find 10% of 200."
+"Generate a mathematics question","Calculate 25% of 80."
+"Generate a mathematics question","Find 15% of 60."
+"Generate a mathematics question","Convert 0.75 to a fraction."
+"Generate a mathematics question","Write 0.2 as a fraction."
+"Generate a mathematics question","Convert 0.125 to fraction."
+"Generate a mathematics question","Solve for x: x/3 = 5."
+"Generate a mathematics question","Solve 2x/4 = 6."
+"Generate a mathematics question","Find x if x/5 = 10."
+"Generate a mathematics question","Find the area of a rectangle with length 5 and width 3."
+"Generate a mathematics question","Calculate the area of a rectangle: 8 by 4."
+"Generate a mathematics question","Find the area of a rectangle 6m × 9m."
+"Generate a mathematics question","What is the perimeter of a square with side 7?"
+"Generate a mathematics question","Calculate perimeter of square side 10."
+"Generate a mathematics question","Find the perimeter if square side = 12." requirements.txt
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.12.1
+click==8.3.1
+colorama==0.4.6
+fastapi==0.135.1
+h11==0.16.0
+idna==3.11
+joblib==1.5.3
+numpy==2.4.2
+pandas==3.0.1
+pydantic==2.12.5
+pydantic_core==2.41.5
+python-dateutil==2.9.0.post0
+scikit-learn==1.8.0
+scipy==1.17.1
+six==1.17.0
+sympy==1.12.0
+starlette==0.52.1
+threadpoolctl==3.6.0
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+tzdata==2025.3
+uvicorn==0.41.0
+ test.py
+import wikipedia
+
+print(wikipedia.summary("Jamb exam date",sentences=2)) train.py
+// answers/greetings.csv
+question,label,answer
+Hello,greeting,Hello! 😊 How can I help you today?.
+hello,greeting,Hey there How are you doing Need help on something?.
+Hi,greeting,Hi there! What can I do for you?
+Good morning,greeting,Good morning! 🌅 I hope you have a great day.
+Good afternoon,greeting,Good afternoon! ☀️ How may I assist you?
+Good evening,greeting,Good evening! 🌙 What would you like to talk about?
+How are you doing,greeting,I am just a Machine but am doing great!
+what is your name,greeting,Well you can call me Your Assistant😊
+Can i get an Advice from you,greeting,Why Not What do you want me to advice you on?
+hey,greeting,Hey there how are you doing?
+hey,greeting,Hey how are you doing?
+I am good and you,greeting,Same here 😊 what can i do for you?
+can you solve mathematical problems,greeting,Why not what the subject you are having isues on?
+can you solve mathematics problems,greeting,Why not what subject?
+I need An advice on How to answer questions on Jamb,greeting,Solving JAMB questions effectively requires a combination of early consistent study and smart fast-paced techniques in the examination hall. Top scorers emphasize using the official JAMB syllabus practicing with CBT-based past questions and mastering time management. 
+// answers/mathematics.csv
+question,label,answer
+What is 5 - 3?,mathematics,5 minus 3 equals 2.
+What is the square of 5?,mathematics,The square of 5 is 25.
