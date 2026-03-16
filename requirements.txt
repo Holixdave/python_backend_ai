@@ -10,8 +10,6 @@ pandas==3.0.1
 pydantic==2.12.5
 pydantic_core==2.41.5
 python-dateutil==2.9.0.post0
-scikit-learn==1.8.0
-scipy==1.17.1
 six==1.17.0
 sympy==1.12.0
 starlette==0.52.1
@@ -21,14 +19,14 @@ typing_extensions==4.15.0
 tzdata==2025.3
 uvicorn==0.41.0
 
-# GPT-2 / Transformers (compatible with Python 3.14)
-transformers>=4.47.0
-torch>=2.9.0
-tokenizers>=0.21.0
-huggingface-hub>=0.27.0
-safetensors>=0.4.5
-regex>=2024.11.6
-requests>=2.32.0
-tqdm>=4.67.0
-filelock>=3.16.0
-packaging>=24.2
+# GPT-2 / Transformers (no pinned versions — let pip pick what works on Python 3.14)
+transformers
+torch
+tokenizers
+huggingface-hub
+safetensors
+regex
+requests
+tqdm
+filelock
+packaging
