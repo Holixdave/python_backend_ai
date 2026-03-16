@@ -21,14 +21,14 @@ typing_extensions==4.15.0
 tzdata==2025.3
 uvicorn==0.41.0
 
-# GPT-2 / Transformers
-transformers==4.40.0
-torch==2.9.0
-tokenizers==0.19.1
-huggingface-hub==0.23.0
-safetensors==0.4.3
-regex==2024.4.16
-requests==2.31.0
-tqdm==4.66.2
-filelock==3.14.0
-packaging==24.0
+# GPT-2 / Transformers (compatible with Python 3.14)
+transformers>=4.47.0
+torch>=2.9.0
+tokenizers>=0.21.0
+huggingface-hub>=0.27.0
+safetensors>=0.4.5
+regex>=2024.11.6
+requests>=2.32.0
+tqdm>=4.67.0
+filelock>=3.16.0
+packaging>=24.2
