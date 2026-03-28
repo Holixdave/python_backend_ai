@@ -1,27 +1,25 @@
-annotated-types==0.7.0
-anyio==4.12.1
 click==8.3.1
 colorama==0.4.6
-fastapi==0.135.1
+fastapi
 h11==0.16.0
 idna==3.11
-numpy==2.4.2
-pandas==3.0.1
-pydantic==2.12.5
-pydantic_core==2.41.5
-python-dateutil==2.9.0.post0
+numpy
+pandas
+pydantic
+pydantic_core
+python-multipart
 six==1.17.0
-sympy==1.12.0
+sympy
 starlette==0.52.1
 threadpoolctl==3.6.0
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 tzdata==2025.3
-uvicorn==0.41.0
+uvicorn
 
 # GPT-2 / Transformers (no pinned versions — let pip pick what works on Python 3.14)
 transformers
-torch
+torch --index-url https://download.pytorch.org/whl/cpu
 tokenizers
 huggingface-hub
 safetensors
