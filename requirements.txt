@@ -1,30 +1,9 @@
-click==8.3.1
-colorama==0.4.6
 fastapi
-h11==0.16.0
-idna==3.11
-numpy
-pandas
+uvicorn
 pydantic
 pydantic_core
 python-multipart
-six==1.17.0
-sympy
-starlette==0.52.1
-threadpoolctl==3.6.0
-typing-inspection==0.4.2
-typing_extensions==4.15.0
-tzdata==2025.3
-uvicorn
-
-# GPT-2 / Transformers (no pinned versions — let pip pick what works on Python 3.14)
-transformers
-torch --index-url https://download.pytorch.org/whl/cpu
-tokenizers
-huggingface-hub
-safetensors
-regex
 requests
-tqdm
-filelock
-packaging
+sympy
+pandas
+numpy
