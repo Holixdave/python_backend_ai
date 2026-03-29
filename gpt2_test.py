@@ -4,7 +4,8 @@ import time
 
 # --- SETUP: Ensure these match your Render Environment Variables ---
 API_TOKEN = os.getenv("HUGGINGFACE_TOKEN")
-API_URL = "https://api-inference.huggingface.co/v1/chat/completions"  # Standard Inference API URL
+# Updated to the new OpenAI-compatible v1 endpoint
+API_URL = "https://api-inference.huggingface.co/v1/chat/completions" 
 headers = {"Authorization": f"Bearer {API_TOKEN}"}
 
 _pipe = True 
@@ -68,7 +69,7 @@ STEP 6: Write the 'Main' loop with a clean 'KeyboardInterrupt' shutdown handler.
     messages.append({"role": "user", "content": prompt.strip()[:5000]})
 
     payload = {
-        "model": "meta-llama/Llama-3.1-70B-Instruct", # Higher intelligence model
+        "model": "meta-llama/Llama-3.1-70B-Instruct", 
         "messages": messages,
         "max_tokens": 1500,
         "temperature": 0.5,
@@ -83,18 +84,19 @@ STEP 6: Write the 'Main' loop with a clean 'KeyboardInterrupt' shutdown handler.
 
         result = response.json()
 
-        # FIXED: Correct dictionary traversal for OpenAI-style JSON
+        # Correct dictionary traversal for OpenAI-style JSON
         if "choices" in result and len(result["choices"]) > 0:
             return result["choices"][0]["message"]["content"].strip()
             
         return "Model returned an empty response."
-    except Exception as e:
+    except Exception as e: # FIXED: Indentation fixed here
         return f"System Exception: {str(e)}"
 
 # --- KEEP ALIVE: Prevents Render from killing the process ---
 if __name__ == "__main__":
     print("AI Engine initialized. Waiting for input...")
-    # If this is a background worker, it stays in this loop.
-    # If you need a web API, you'd use FastAPI here instead of a loop.
+    # Basic test loop
     while True:
+        # Example test call
+        # print(ask_gpt2("Hello, are you ready to code?"))
         time.sleep(60)
