@@ -1,6 +1,7 @@
 # main.py
 from fastapi import FastAPI
 from pydantic import BaseModel
+from typing import List, Optional
 import os
 from math_solver import solve_math_with_explanation
 from equation_solver import solve_equation_with_steps
@@ -19,6 +20,13 @@ class QuestionRequest(BaseModel):
 
 class GenerateRequest(BaseModel):
     prompt: str
+class ChatMessage(BaseModel):
+    role: str # "user" or "assistant"
+    content: str
+
+class QuestionRequest(BaseModel):
+    query: str
+    history: Optional[List[ChatMessage]] = [] # The secret to memory!
 
 #--------------------------------------------------------
 # -------------------------------------------------------
@@ -62,44 +70,24 @@ def build_prompt(user_query: str) -> str:
 @app.post("/ai-query")
 async def ask_ai(request: QuestionRequest):
     user_question = request.query.strip()
+    
+    # Convert Pydantic history objects to simple dictionaries for the AI
+    chat_history = [m.dict() for m in request.history] if request.history else []
 
     if not user_question:
         return {"label": "unknown", "answer": "Please type a question!"}
 
-    # 1. Equation solver (handles algebra like "solve 2x + 3 = 7")
+    # 1. Check for Math/Algebra first (Calculators don't need history)
     eq_answer = solve_equation_with_steps(user_question)
     if eq_answer and "Could not" not in eq_answer:
         return {"label": "algebra", "answer": eq_answer}
 
-    # 2. Arithmetic solver (handles "what is 5 + 3", "square root of 144")
-    if is_math_question(user_question):
-        math_answer = solve_math_with_explanation(user_question)
-        if math_answer:
-            return {"label": "math", "answer": math_answer}
+    # 2. GPT-2/Llama-3 — Now with History!
+    # We no longer use build_prompt() because the Professor training 
+    # inside gpt2_test.py is much more intelligent.
+    gpt_answer = ask_gpt2(user_question, history=chat_history)
 
-    # 3. GPT-2 — primary AI responder for everything else
-    prompt = build_prompt(user_question)
-    gpt_answer = ask_gpt2(prompt)
-
-    # Clean up: remove the prompt echo if GPT-2 repeats it
-    if "UTME26 AI:" in gpt_answer:
-        gpt_answer = gpt_answer.split("UTME26 AI:")[-1].strip()
-    if "Student:" in gpt_answer:
-        gpt_answer = gpt_answer.split("Student:")[0].strip()
-
-    if gpt_answer and "unavailable" not in gpt_answer.lower() and len(gpt_answer) > 5:
-        return {"label": "general", "answer": gpt_answer}
-
-    # 4. Final fallback — only if GPT-2 completely fails
-    return {
-        "label": "unknown",
-        "answer": (
-            "I'm still thinking about that one! Try asking about "
-            "Math, Physics, Chemistry, Biology, English, History, "
-            "Geography, Economics, or Computer Science."
-        )
-    }
-
+    return {"label": "general", "answer": gpt_answer}
 
 # -------------------------------------------------------
 # POST /generate-question  — UNCHANGED for frontend

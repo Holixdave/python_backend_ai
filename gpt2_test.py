@@ -4,18 +4,23 @@ import os
 
 # Get your token from Render Environment Variables
 API_TOKEN = os.getenv("HUGGINGFACE_TOKEN")
-
-# The Featherless Router is perfect for Llama 3
 API_URL = "https://router.huggingface.co/v1/chat/completions"
 headers = {"Authorization": f"Bearer {API_TOKEN}"}
 
 # Keep this for your main.py health checks
 _pipe = True 
 
-def ask_gpt2(prompt: str) -> str:
-    # This is your "Massive Intelligence" Training Block (50+ lines of logic)
+def ask_gpt2(prompt: str, history: list = None) -> str:
+    """
+    history should be a list of previous messages: 
+    [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
+    """
+    if history is None:
+        history = []
+
+    # --- THE MASSIVE PROFESSOR TRAINING (50+ Lines of Logic) ---
     academic_training = (
-        "ROLE: You are Professor Zaid, a Senior Academic and Lead Researcher at the "
+        "ROLE: UTME26 Studeent Assistant, a Senior Academic and Lead Researcher at the "
         "Nigerian Institute of Advanced Legal and Economic Studies. "
         "CURRENT DATE: Sunday, March 29, 2026. "
         "POLITICAL CONTEXT: President Bola Ahmed Tinubu is the current President of Nigeria (serving since May 2023). "
@@ -52,45 +57,36 @@ def ask_gpt2(prompt: str) -> str:
         "Now, Professor, address the following student inquiry with your full intellectual capacity:"
     )
 
+    # --- BUILD THE BRAIN (System + History + New Prompt) ---
+    messages = [{"role": "system", "content": academic_training}]
+    
+    # Add history (this prevents the 'Amnesia' you saw in your image)
+    messages.extend(history)
+    
+    # Add the current question
+    messages.append({"role": "user", "content": prompt.strip()[:400]})
+
     payload = {
         "model": "meta-llama/Meta-Llama-3-8B-Instruct",
-        "messages": [
-            {"role": "system", "content": academic_training},
-            {"role": "user", "content": prompt.strip()[:400]}
-        ],
-        "max_tokens": 400, # Increased for longer, "Lecturer" style answers
+        "messages": messages, # Sends everything to the AI
+        "max_tokens": 500,
         "temperature": 0.7,
         "top_p": 0.9
     }
     
     try:
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=20)
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=25)
         
         if response.status_code != 200:
-            return f"Professor is unavailable (Error {response.status_code}): {response.text}"
+            return f"Professor is busy (Error {response.status_code}): {response.text}"
 
         result = response.json()
 
         if "choices" in result and len(result["choices"]) > 0:
             new_text = result["choices"][0]["message"]["content"]
-            # We skip _clean_response because we want the full academic structure
             return new_text.strip()
             
-        return "The Professor is currently reflecting. Please re-submit your inquiry."
+        return "Assistant is reflecting. Please try again."
 
     except Exception as e:
         return f"System Error: {str(e)}"
-
-
-def _clean_response(text: str) -> str:
-    """
-    Cleans the output to ensure professional delivery.
-    """
-    # Remove AI 'hallucinations' or roleplay artifacts
-    for stop in ["Student:", "UTME26 AI:", "Question:", "\n\n"]:
-        text = text.split(stop)[0].strip()
-
-    # Normalize whitespace
-    text = re.sub(r'\s+', ' ', text).strip()
-    
-    return text if text else "I'm not sure how to answer that. Can you rephrase?"

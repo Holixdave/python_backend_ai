@@ -7,3 +7,4 @@ requests
 sympy
 pandas
 numpy
+typing
