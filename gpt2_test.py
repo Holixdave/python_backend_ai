@@ -88,7 +88,7 @@ STEP 6: Write the 'Main' loop with a clean 'KeyboardInterrupt' shutdown handler.
             return result["choices"][0]["message"]["content"].strip()
             
         return "Model returned an empty response."
-except Exception as e:
+    except Exception as e:
         return f"System Exception: {str(e)}"
 
 # --- KEEP ALIVE: Prevents Render from killing the process ---
