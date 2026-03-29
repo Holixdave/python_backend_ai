@@ -1,35 +1,60 @@
-import requests
+"""
+AI Engine - Principal Software Engineer Persona
+================================================
+Uses HuggingFace Inference API (OpenAI-compatible v1 endpoint).
+
+Circuit Breaker Logic (for the AI persona's output):
+  - CLOSED: Normal operation, requests pass through.
+  - OPEN: After 3 consecutive failures, rejects all requests for 10 seconds.
+  - HALF-OPEN: After cooldown, allows one trial request to test recovery.
+
+Setup:
+  Set environment variable HUGGINGFACE_TOKEN before running.
+  Example: export HUGGINGFACE_TOKEN=hf_xxxxxxxxxxxx
+"""
+
 import os
 import time
+import requests
+from typing import Optional
 
-# --- SETUP: Ensure these match your Render Environment Variables ---
-API_TOKEN = os.getenv("HUGGINGFACE_TOKEN")
-# Updated to the new OpenAI-compatible v1 endpoint
-API_URL = "https://api-inference.huggingface.co/v1/chat/completions" 
-headers = {"Authorization": f"Bearer {API_TOKEN}"}
+# ---------------------------------------------------------------------------
+# CONFIG
+# ---------------------------------------------------------------------------
+API_TOKEN: Optional[str] = os.getenv("HUGGINGFACE_TOKEN")
+API_URL: str = "https://api-inference.huggingface.co/v1/chat/completions"
+MODEL: str = "meta-llama/Llama-3.1-70B-Instruct"
 
-_pipe = True 
+MAX_RETRIES: int = 3
+RETRY_BASE_DELAY: float = 2.0   # seconds (exponential backoff base)
+REQUEST_TIMEOUT: int = 60        # seconds
 
-def ask_gpt2(prompt: str, history: list = None) -> str:
-    """
-    Sends the prompt and history to the model with the Principal Engineer persona.
-    """
-    if history is None:
-        history = []
+# ---------------------------------------------------------------------------
+# VALIDATION
+# ---------------------------------------------------------------------------
+if not API_TOKEN:
+    raise EnvironmentError(
+        "HUGGINGFACE_TOKEN environment variable is not set. "
+        "Export it before running: export HUGGINGFACE_TOKEN=hf_xxxx"
+    )
 
-    # --- THE MASSIVE coding TRAINING (Full Persona) ---
-    academic_training = """
-Act as a Principal Software Engineer (L7) at a High-Frequency Trading firm. 
+HEADERS: dict = {"Authorization": f"Bearer {API_TOKEN}"}
+
+# ---------------------------------------------------------------------------
+# SYSTEM PROMPT / PERSONA
+# ---------------------------------------------------------------------------
+SYSTEM_PROMPT: str = """
+Act as a Principal Software Engineer (L7) at a High-Frequency Trading firm.
 You must design a "Real-Time Transaction Risk Engine" with zero-tolerance for data loss.
 
 ### TECHNICAL SPECIFICATIONS (STRICT COMPLIANCE REQUIRED):
 1. ARCHITECTURE: Implementation must follow the 'Clean Architecture' / 'Hexagonal' pattern.
 2. STATE ENCAPSULATION: Create a 'StateStore' using 'ContextVars' for thread-local safety.
-3. DATA INTEGRITY: 
+3. DATA INTEGRITY:
    - Define a 'Transaction' model using Pydantic V2.
    - Required Fields: tx_id (UUID), amount (Decimal), sender_key (str), signature (str).
    - Custom Validator: 'amount' must be > 0 and 'sender_key' must start with "0x".
-4. SECURITY LAYER: Implement a 'SignatureVerifier' protocol. Simulate a SHA-256 
+4. SECURITY LAYER: Implement a 'SignatureVerifier' protocol. Simulate a SHA-256
    checksum verification for every incoming transaction.
 5. CONCURRENCY CONTROL:
    - Use 'asyncio.Semaphore' to limit concurrent database writes to exactly 5.
@@ -50,53 +75,159 @@ You must design a "Real-Time Transaction Risk Engine" with zero-tolerance for da
 
 ### IMPLEMENTATION STEPS:
 STEP 1: Define Enums for 'TransactionStatus' and 'CircuitState'.
-STEP 2: Build the 'Transaction' Pydantic model with custom decorators.
+STEP 2: Build the 'Transaction' Pydantic model with custom validators.
 STEP 3: Develop the 'CircuitBreaker' logic with state transitions (Closed -> Open -> Half-Open).
 STEP 4: Implement the 'PriorityProcessor' logic for handling the 'PriorityQueue'.
 STEP 5: Create a 'MockAPI' that simulates a stream of 50 transactions (some malicious).
 STEP 6: Write the 'Main' loop with a clean 'KeyboardInterrupt' shutdown handler.
-
 ### OUTPUT FORMAT & QUALITY:
-- Code must be PEP8 compliant and use 'Type Hints' (mypy compatible).
+- Code must be PEP8 compliant and use Type Hints (mypy compatible).
 - Provide a 'Developer Readme' comment at the top explaining the 'Circuit Breaker' logic.
 - Include 'Unit Tests' (using a simple assert-based function) for the 'Validator'.
 - Efficiency: Minimize O(n) operations in the 'PriorityQueue' handling.
-"""
+""".strip()
 
-    # --- BUILD THE BRAIN (System + History + New Prompt) ---
-    messages = [{"role": "system", "content": academic_training}]
+
+# ---------------------------------------------------------------------------
+# CORE FUNCTION: ask_model
+# ---------------------------------------------------------------------------
+def ask_model(prompt: str, history: Optional[list] = None) -> str:
+    """
+    Sends a prompt + conversation history to the HuggingFace model.
+
+    Args:
+        prompt:  The user's current message.
+        history: List of prior {"role": ..., "content": ...} dicts.
+
+    Returns:
+        The model's reply as a plain string, or an error message.
+    """
+    if history is None:
+        history = []
+
+    # Truncate prompt gracefully at word boundary near 5000 chars
+    if len(prompt) > 5000:
+        prompt = prompt[:5000].rsplit(" ", 1)[0] + "..."
+        print("[WARN] Prompt truncated to 5000 characters.")
+
+    messages: list = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages.extend(history)
-    messages.append({"role": "user", "content": prompt.strip()[:5000]})
+    messages.append({"role": "user", "content": prompt.strip()})
 
-    payload = {
-        "model": "meta-llama/Llama-3.1-70B-Instruct", 
+    payload: dict = {
+        "model": MODEL,
         "messages": messages,
         "max_tokens": 1500,
         "temperature": 0.5,
-        "top_p": 0.9
+        "top_p": 0.9,
     }
-    
-    try:
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=45)
-        
-        if response.status_code != 200:
-            return f"API Error {response.status_code}: {response.text}"
 
-        result = response.json()
+    # --- Retry loop with exponential backoff ---
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = requests.post(
+                API_URL,
+                headers=HEADERS,
+                json=payload,
+                timeout=REQUEST_TIMEOUT,
+            )
 
-        # Correct dictionary traversal for OpenAI-style JSON
-        if "choices" in result and len(result["choices"]) > 0:
-            return result["choices"][0]["message"]["content"].strip()
-            
-        return "Model returned an empty response."
-    except Exception as e: # FIXED: Indentation fixed here
-        return f"System Exception: {str(e)}"
+            # Surface non-200 clearly
+            if response.status_code != 200:
+                error_msg = (
+                    f"[API Error {response.status_code}] {response.text[:300]}"
+                )
+                print(error_msg)
+                # Don't retry on auth or bad-request errors
+                if response.status_code in (400, 401, 403, 422):
+                    return error_msg
+                raise requests.HTTPError(error_msg)
 
-# --- KEEP ALIVE: Prevents Render from killing the process ---
+            result: dict = response.json()
+
+            # Parse OpenAI-compatible response
+            choices = result.get("choices", [])
+            if choices:
+                content = choices[0].get("message", {}).get("content", "").strip()
+                if content:
+                    return content
+
+            return "[Error] Model returned an empty response."
+
+        except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as e:
+            wait = RETRY_BASE_DELAY ** attempt
+            print(f"[Attempt {attempt}/{MAX_RETRIES}] Transient error: {e}. "
+                  f"Retrying in {wait:.1f}s...")
+            time.sleep(wait)
+
+        except Exception as e:
+            # Non-retryable unexpected error
+            return f"[Fatal Exception] {type(e).name}: {e}"
+
+    return f"[Error] All {MAX_RETRIES} retry attempts failed. Check your network or API token."
+
+
+# ---------------------------------------------------------------------------
+# SIMPLE UNIT TEST (run with: python ai_engine.py --test)
+# ---------------------------------------------------------------------------
+def _run_self_tests() -> None:
+    """Lightweight smoke tests that don't require a live API call."""
+    print("Running self-tests...")
+
+    # Test 1: Prompt truncation guard
+    long_prompt = "x" * 6000
+    truncated = long_prompt[:5000].rsplit(" ", 1)[0] + "..."
+    assert len(truncated) <= 5004, "Truncation failed"
+
+    # Test 2: History default is not shared across calls
+    def _get_history(h=None):
+        if h is None:
+            h = []
+        return h
+
+    a = _get_history()
+    b = _get_history()
+    a.append("item")
+    assert "item" not in b, "Mutable default argument leak!"
+
+    # Test 3: Token present
+    assert API_TOKEN, "Token must be set"
+
+    print("All self-tests passed.\n")
+    # ---------------------------------------------------------------------------
+# ENTRY POINT
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    print("AI Engine initialized. Waiting for input...")
-    # Basic test loop
-    while True:
-        # Example test call
-        # print(ask_gpt2("Hello, are you ready to code?"))
-        time.sleep(60)
+    import sys
+
+    if "--test" in sys.argv:
+        _run_self_tests()
+        sys.exit(0)
+
+    print("=" * 60)
+    print("AI Engine ready. Type your prompt and press Enter.")
+    print("Type 'exit' or Ctrl+C to quit.")
+    print("=" * 60)
+
+    conversation_history: list = []
+
+    try:
+        while True:
+            user_input = input("\nYou: ").strip()
+            if not user_input:
+                continue
+            if user_input.lower() in ("exit", "quit"):
+                print("Shutting down. Goodbye.")
+                break
+
+            reply = ask_model(user_input, history=conversation_history)
+            print(f"\nAssistant: {reply}\n")
+
+            # Maintain rolling history (last 10 turns = 20 messages)
+            conversation_history.append({"role": "user", "content": user_input})
+            conversation_history.append({"role": "assistant", "content": reply})
+            if len(conversation_history) > 20:
+                conversation_history = conversation_history[-20:]
+
+    except KeyboardInterrupt:
+        print("\n\n[Interrupted] Engine stopped cleanly.")
