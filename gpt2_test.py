@@ -1,21 +1,22 @@
 import requests
-import re
 import os
+import time
 
-# Get your token from Render Environment Variables
+# --- SETUP: Ensure these match your Render Environment Variables ---
 API_TOKEN = os.getenv("HUGGINGFACE_TOKEN")
-API_URL = "https://router.huggingface.co/v1/chat/completions"
+API_URL = "https://api-inference.huggingface.co" # Standard Inference API URL
 headers = {"Authorization": f"Bearer {API_TOKEN}"}
 
-# Keep this for your main.py health checks
 _pipe = True 
 
 def ask_gpt2(prompt: str, history: list = None) -> str:
+    """
+    Sends the prompt and history to the model with the Principal Engineer persona.
+    """
     if history is None:
         history = []
 
-    # --- THE MASSIVE coding TRAINING (50+ Lines of Logic) ---
-    ### SYSTEM ARCHITECTURE ROLE
+    # --- THE MASSIVE coding TRAINING (Full Persona) ---
     academic_training = """
 Act as a Principal Software Engineer (L7) at a High-Frequency Trading firm. 
 You must design a "Real-Time Transaction Risk Engine" with zero-tolerance for data loss.
@@ -59,42 +60,41 @@ STEP 6: Write the 'Main' loop with a clean 'KeyboardInterrupt' shutdown handler.
 - Provide a 'Developer Readme' comment at the top explaining the 'Circuit Breaker' logic.
 - Include 'Unit Tests' (using a simple assert-based function) for the 'Validator'.
 - Efficiency: Minimize O(n) operations in the 'PriorityQueue' handling.
-
-### EVALUATION BENCHMARK:
-- Does it correctly prioritize the $10k+ transactions?
-- Does the Circuit Breaker actually stop requests when the database "breaks"?
-- Is the code modular enough to swap the 'MockDatabase' for a real one?
+"""
 
     # --- BUILD THE BRAIN (System + History + New Prompt) ---
     messages = [{"role": "system", "content": academic_training}]
-    
-    # Add history (this prevents the 'Amnesia' you saw in your image)
     messages.extend(history)
-    
-    # Add the current question
     messages.append({"role": "user", "content": prompt.strip()[:5000]})
 
     payload = {
-        "model": "meta-llama/Meta-Llama-3.1-70B-Instruct",
-        "messages": messages, # Sends everything to the AI
+        "model": "meta-llama/Llama-3.1-70B-Instruct", # Higher intelligence model
+        "messages": messages,
         "max_tokens": 1500,
         "temperature": 0.5,
         "top_p": 0.9
     }
     
     try:
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=25)
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=45)
         
         if response.status_code != 200:
-            return f"Professor is busy (Error {response.status_code}): {response.text}"
+            return f"API Error {response.status_code}: {response.text}"
 
         result = response.json()
 
+        # FIXED: Correct dictionary traversal for OpenAI-style JSON
         if "choices" in result and len(result["choices"]) > 0:
-            new_text = result["choices"][0]["message"]["content"]
-            return new_text.strip()
+            return result["choices"][0]["message"]["content"].strip()
             
-        return "Assistant is reflecting. Please try again."
+        return "Model returned an empty response."
+except Exception as e:
+        return f"System Exception: {str(e)}"
 
-    except Exception as e:
-        return f"System Error: {str(e)}"
+# --- KEEP ALIVE: Prevents Render from killing the process ---
+if __name__ == "__main__":
+    print("AI Engine initialized. Waiting for input...")
+    # If this is a background worker, it stays in this loop.
+    # If you need a web API, you'd use FastAPI here instead of a loop.
+    while True:
+        time.sleep(60)
