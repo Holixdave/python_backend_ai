@@ -32,7 +32,7 @@ API_URL: str = "https://api.groq.com/openai/v1/chat/completions"
 #   "llama-3.1-70b-versatile"  ← most capable, still free
 #   "llama-3.1-8b-instant"     ← fastest, lightest
 #   "mixtral-8x7b-32768"       ← great for long contexts
-MODEL: str = "llama-3.1-70b-versatile"
+MODEL: str = "llama-3.3-70b-versatile"
 
 MAX_RETRIES: int = 3
 RETRY_BASE_DELAY: float = 2.0   # exponential backoff: 2s, 4s, 8s
