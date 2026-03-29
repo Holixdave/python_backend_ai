@@ -4,7 +4,7 @@ import time
 
 # --- SETUP: Ensure these match your Render Environment Variables ---
 API_TOKEN = os.getenv("HUGGINGFACE_TOKEN")
-API_URL = "https://api-inference.huggingface.co" # Standard Inference API URL
+API_URL = "https://api-inference.huggingface.co/v1/chat/completions"  # Standard Inference API URL
 headers = {"Authorization": f"Bearer {API_TOKEN}"}
 
 _pipe = True 
