@@ -5,7 +5,7 @@ import os
 # Get your token from Hugging Face Settings > Access Tokens
 # It's safer to set this as an Environment Variable in Render
 API_TOKEN = os.getenv("HUGGINGFACE_TOKEN")
-API_URL = "https://api-inference.huggingface.co"
+API_URL = "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta"
 headers = {"Authorization": f"Bearer {API_TOKEN}"}
 
 # Keep this for your main.py health checks
