@@ -1,7 +1,7 @@
 # main.py
 from fastapi import FastAPI
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, Field
+from typing import List
 import os
 from math_solver import solve_math_with_explanation
 from equation_solver import solve_equation_with_steps
@@ -15,8 +15,6 @@ app = FastAPI(
 # -------------------------------------------------------
 # Pydantic models — DO NOT CHANGE (frontend depends on these)
 # -------------------------------------------------------
-class QuestionRequest(BaseModel):
-    query: str
 
 class GenerateRequest(BaseModel):
     prompt: str
@@ -26,7 +24,7 @@ class ChatMessage(BaseModel):
 
 class QuestionRequest(BaseModel):
     query: str
-    history: Optional[List[ChatMessage]] = [] # The secret to memory!
+    history: List[ChatMessage] = Field(default_factory = list) # The secret to memory!
 
 #--------------------------------------------------------
 # -------------------------------------------------------
