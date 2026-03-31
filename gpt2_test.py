@@ -125,8 +125,8 @@ def ask_gpt2(prompt: str, history: Optional[list] = None) -> str:
         history = []
 
     # Truncate at word boundary
-    if len(prompt) > 5000:
-        prompt = prompt[:5000].rsplit(" ", 1)[0] + "..."
+    if len(prompt) > 15000:
+        prompt = prompt[:15000].rsplit(" ", 1)[0] + "..."
         print("[WARN] Prompt truncated to 5000 characters.")
 
     messages: list = [{"role": "system", "content": SYSTEM_PROMPT}]
