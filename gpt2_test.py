@@ -136,14 +136,14 @@ def ask_gpt2(prompt: str, history: Optional[list] = None) -> str:
     payload: dict = {
         "model": MODEL,
         "messages": messages,
-        "max_tokens": 1500,
+        "max_tokens": 10000,
         "temperature": 0.5,
         "top_p": 0.9,
         "stream": False,
     }
 
     # --- Retry loop with exponential backoff ---
-    for attempt in range(1, MAX_RETRIES + 1):
+    for attempt in range(1, MAX_RETRIES + 3):
         try:
             response = requests.post(
                 API_URL,
