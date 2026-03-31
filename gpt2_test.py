@@ -123,15 +123,21 @@ def ask_gpt2(prompt: str, history: Optional[list] = None) -> str:
     """
     if history is None:
         history = []
+    # 1. CLEAN: Remove "Control Characters" that break JSON (the cause of your 422 error)
+    # This keeps newlines, tabs, and normal text but strips "hidden" characters.
+    clean_prompt = "".join(ch for ch in prompt if ord(ch) >= 32 or ch in "\n\r\t")
 
-    # Truncate at word boundary
-    if len(prompt) > 15000:
-        prompt = prompt[:15000].rsplit(" ", 1)[0] + "..."
-        print("[WARN] Prompt truncated to 5000 characters.")
+    # 2. TRUNCATE: Set a safe limit (e.g., 12,000) to leave room for the System Prompt
+    MAX_LIMIT = 12000
+    if len(clean_prompt) > MAX_LIMIT:
+        clean_prompt = clean_prompt[:MAX_LIMIT].rsplit(" ", 1)[0] + "..."
+        print(f"[WARN] Prompt truncated to {MAX_LIMIT} characters.")
 
+    # 3. ASSEMBLE
     messages: list = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages.extend(history)
-    messages.append({"role": "user", "content": prompt.strip()})
+    messages.append({"role": "user", "content": clean_prompt.strip()})
+
 
     payload: dict = {
         "model": MODEL,
