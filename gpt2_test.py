@@ -36,7 +36,7 @@ MODEL: str = "llama-3.3-70b-versatile"
 
 MAX_RETRIES: int = 3
 RETRY_BASE_DELAY: float = 2.0   # exponential backoff: 2s, 4s, 8s
-REQUEST_TIMEOUT: int = 30        # Groq is fast — 30s is plenty
+REQUEST_TIMEOUT: int = 90        # Groq is fast — 30s is plenty
 
 # ---------------------------------------------------------------------------
 # VALIDATION — fail loud at startup, not mid-request
@@ -110,6 +110,20 @@ You are an expert in Clean Architecture Coding, and High-Performance systems acr
 # ---------------------------------------------------------------------------
 # CORE FUNCTION
 # ---------------------------------------------------------------------------
+def summarize_history(history: list, max_messages: int = 6):
+    """Keeps history lean by limiting messages and potentially stripping old code."""
+    return history[-max_messages:]
+def get_lean_history(history):
+    lean = []
+    for msg in history[-6:]: # Keep only the last 6 turns
+        content = msg["content"]
+        # If the old message is huge (contains code), truncate it 
+        # so the AI remembers the 'intent' but not every line of old code.
+        if len(content) > 2000:
+            content = content[:1000] + "... [Old Code Truncated to Save Space] ..."
+        
+        lean.append({"role": msg["role"], "content": content})
+    return lean
 def ask_gpt2(prompt: str, history: Optional[list] = None) -> str:
     """
     Sends a prompt + conversation history to Groq's Llama 3.1 70B model.
@@ -135,7 +149,7 @@ def ask_gpt2(prompt: str, history: Optional[list] = None) -> str:
 
     # 3. ASSEMBLE
     messages: list = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages.extend(history)
+    messages.extend(get_lean_history(history if history else []))
     messages.append({"role": "user", "content": clean_prompt.strip()})
 
 
