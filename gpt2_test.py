@@ -48,7 +48,7 @@ def get_lean_history(history: List[Dict]) -> List[Dict]:
 # ---------------------------------------------------------------------------
 # MAIN FUNCTION
 # ---------------------------------------------------------------------------
-def ask_gemini(prompt: str, history: Optional[List[Dict]] = None) -> str:
+def ask_gpt2(prompt: str, history: Optional[List[Dict]] = None) -> str:
     if history is None:
         history = []
 
