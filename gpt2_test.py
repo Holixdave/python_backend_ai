@@ -1,29 +1,22 @@
 import os
 import time
 import requests
-from typing import Optional
+from typing import Optional, List, Dict
 
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
 GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY")
-# Gemini OpenAI-compatible endpoint requires the key in the URL
-API_URL = f"https://generativelanguage.googleapis.com/v1beta/openai/chat/completions?key={GEMINI_API_KEY}"
-
-MODEL: str = "gemini-1.5-flash"
-
+MODEL: str = "models/chat-bison-001"  # Gemini's native chat model
 MAX_RETRIES: int = 5
 RETRY_BASE_DELAY: float = 2.0
 REQUEST_TIMEOUT: int = 90
 
-# ---------------------------------------------------------------------------
-# VALIDATION
-# ---------------------------------------------------------------------------
 if not GEMINI_API_KEY:
     raise EnvironmentError(
         "GEMINI_API_KEY environment variable is not set.\n"
-        "1. Get a key at https://google.com\n"
-        "2. Add it in Render: Environment Variables → GEMINI_API_KEY"
+        "1. Get a key at https://cloud.google.com/vertex-ai/docs/generative-ai\n"
+        "2. Set it in your environment variables as GEMINI_API_KEY"
     )
 
 HEADERS: dict = {
@@ -42,7 +35,8 @@ Always use Type Hints and follow PEP8. Provide full code without placeholders.
 # ---------------------------------------------------------------------------
 # HELPER FUNCTIONS
 # ---------------------------------------------------------------------------
-def get_lean_history(history):
+def get_lean_history(history: List[Dict]) -> List[Dict]:
+    """Keep only the last few messages, truncate long content."""
     lean = []
     for msg in history[-6:]:
         content = msg["content"]
@@ -51,32 +45,31 @@ def get_lean_history(history):
         lean.append({"role": msg["role"], "content": content})
     return lean
 
-def ask_gpt2(prompt: str, history: Optional[list] = None) -> str:
+# ---------------------------------------------------------------------------
+# MAIN FUNCTION
+# ---------------------------------------------------------------------------
+def ask_gemini(prompt: str, history: Optional[List[Dict]] = None) -> str:
     if history is None:
         history = []
 
     clean_prompt = "".join(ch for ch in prompt if ord(ch) >= 32 or ch in "\n\r\t")
 
-    messages: list = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages = [{"author": "system", "content": SYSTEM_PROMPT}]
     messages.extend(get_lean_history(history))
-    messages.append({"role": "user", "content": clean_prompt.strip()})
+    messages.append({"author": "user", "content": clean_prompt.strip()})
 
-    payload: dict = {
-        "model": MODEL,
+    payload = {
         "messages": messages,
         "temperature": 0.5,
         "top_p": 0.9,
-        "stream": False,
     }
+
+    # Gemini native endpoint
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateMessage?key={GEMINI_API_KEY}"
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response = requests.post(
-                API_URL,
-                headers=HEADERS,
-                json=payload,
-                timeout=REQUEST_TIMEOUT,
-            )
+            response = requests.post(api_url, headers=HEADERS, json=payload, timeout=REQUEST_TIMEOUT)
 
             if response.status_code != 200:
                 error_msg = f"[Gemini Error {response.status_code}] {response.text[:300]}"
@@ -85,14 +78,15 @@ def ask_gpt2(prompt: str, history: Optional[list] = None) -> str:
                 raise requests.HTTPError(error_msg)
 
             result = response.json()
-            choices = result.get("choices", [])
-            if choices:
-                return choices[0].get("message", {}).get("content", "")
+            # Gemini returns output in: result['candidates'][0]['content']
+            candidates = result.get("candidates", [])
+            if candidates:
+                return candidates[0].get("content", "")
             return "Error: No response content from Gemini."
 
         except Exception as e:
             if attempt == MAX_RETRIES:
                 return f"Error after {MAX_RETRIES} attempts: {str(e)}"
             time.sleep(RETRY_BASE_DELAY * attempt)
-    
+
     return "Error: Request failed."
