@@ -25,14 +25,14 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
-GROQ_API_KEY: Optional[str] = os.getenv("GROQ_API_KEY")
-API_URL: str = "https://api.groq.com/openai/v1/chat/completions"
+GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY")
+API_URL: str = f"https://googleapis.com{GEMINI_API_KEY}"
 
 # Fast + free on Groq. Alternatives:
 #   "llama-3.1-70b-versatile"  ← most capable, still free
 #   "llama-3.1-8b-instant"     ← fastest, lightest
 #   "mixtral-8x7b-32768"       ← great for long contexts
-MODEL: str = "llama-3.3-70b-versatile"
+MODEL: str = "gemini-1.5-flash"
 
 MAX_RETRIES: int = 5
 RETRY_BASE_DELAY: float = 2.0   # exponential backoff: 2s, 4s, 8s
@@ -41,11 +41,11 @@ REQUEST_TIMEOUT: int = 90        # Groq is fast — 30s is plenty
 # ---------------------------------------------------------------------------
 # VALIDATION — fail loud at startup, not mid-request
 # ---------------------------------------------------------------------------
-if not GROQ_API_KEY:
+if not GEMINI_API_KEY:
     raise EnvironmentError(
-        "GROQ_API_KEY environment variable is not set.\n"
-        "1. Get a free key at https://console.groq.com\n"
-        "2. Add it in Render: Environment Variables → GROQ_API_KEY"
+        "GEMINI_API_KEY environment variable is not set.\n"
+        "1. Get a key at https://google.com\n"
+        "2. Add it in Render: Environment Variables → GEMINI_API_KEY"
     )
 
 HEADERS: dict = {
@@ -156,14 +156,13 @@ def ask_gpt2(prompt: str, history: Optional[list] = None) -> str:
     payload: dict = {
         "model": MODEL,
         "messages": messages,
-        "max_tokens": 10000,
         "temperature": 0.5,
         "top_p": 0.9,
         "stream": False,
     }
 
     # --- Retry loop with exponential backoff ---
-    for attempt in range(1, MAX_RETRIES + 3):
+    for attempt in range(1, MAX_RETRIES + 1):
         try:
             response = requests.post(
                 API_URL,
@@ -180,22 +179,13 @@ def ask_gpt2(prompt: str, history: Optional[list] = None) -> str:
                     return error_msg
                 raise requests.HTTPError(error_msg)
 
-            result: dict = response.json()
+           result: dict = response.json()
             choices = result.get("choices", [])
             if choices:
-                content = choices[0].get("message", {}).get("content", "").strip()
-                if content:
-                    return content
-
-            return "[Error] Model returned an empty response."
-
-        except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as e:
-            wait = RETRY_BASE_DELAY ** attempt
-            print(f"[Attempt {attempt}/{MAX_RETRIES}] Transient error: {e}. "
-                  f"Retrying in {wait:.1f}s...")
-            time.sleep(wait)
+                return choices[0].get("message", {}).get("content", "")
+            return "Error: No response content from Gemini."
 
         except Exception as e:
-            return f"[Fatal Exception] {type(e).__name__}: {e}"
-
-    return "[Error] All retry attempts exhausted. Check GROQ_API_KEY or network."
+            if attempt == MAX_RETRIES:
+                return f"Error after {MAX_RETRIES} attempts: {str(e)}"
+            time.sleep(RETRY_BASE_DELAY * attempt)
