@@ -34,7 +34,7 @@ API_URL: str = "https://api.groq.com/openai/v1/chat/completions"
 #   "mixtral-8x7b-32768"       ← great for long contexts
 MODEL: str = "llama-3.3-70b-versatile"
 
-MAX_RETRIES: int = 3
+MAX_RETRIES: int = 5
 RETRY_BASE_DELAY: float = 2.0   # exponential backoff: 2s, 4s, 8s
 REQUEST_TIMEOUT: int = 90        # Groq is fast — 30s is plenty
 
