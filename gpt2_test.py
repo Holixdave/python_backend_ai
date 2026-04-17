@@ -27,6 +27,7 @@ if not GEMINI_API_KEY:
 
 HEADERS: dict = {
     "Content-Type": "application/json",
+    "Authorization": f"Bearer {GEMINI_API_KEY}"
 }
 
 # ---------------------------------------------------------------------------
