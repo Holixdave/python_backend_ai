@@ -8,7 +8,7 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY")
 # Gemini OpenAI-compatible endpoint requires the key in the URL
-API_URL: str = f"https://googleapis.com{GEMINI_API_KEY}"
+API_URL: str = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions" + f"?key={GEMINI_API_KEY}"
 MODEL: str = "gemini-1.5-flash"
 
 MAX_RETRIES: int = 5

@@ -124,7 +124,7 @@ async def root():
 # -------------------------------------------------------
 @app.get("/health")
 async def health():
-    from gpt2_test import _pipe
+    from gpt2_test import GEMINI_API_KEY
     return {
         "status": "healthy",
         "model_loaded": _pipe is not None
