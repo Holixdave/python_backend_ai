@@ -7,30 +7,23 @@ from typing import Optional
 # CONFIG - SWAPPING GEMINI FOR GROQ
 # ---------------------------------------------------------------------------
 GROQ_API_KEY: Optional[str] = os.getenv("GROQ_API_KEY")
-API_URL: str = "https://groq.com"
-# Using Llama-3 70B for the most intelligent "Elite" responses
+API_URL: str = "https://api.groq.com/openai/v1/chat/completions"
 MODEL: str = "llama3-70b-8192" 
 MAX_RETRIES: int = 3
 RETRY_BASE_DELAY: float = 1.0
-REQUEST_TIMEOUT: int = 30 # Groq is faster, we don't need 90s
+REQUEST_TIMEOUT: int = 30
 
 # ---------------------------------------------------------------------------
 # VALIDATION
 # ---------------------------------------------------------------------------
 if not GROQ_API_KEY:
-    raise EnvironmentError(
-        "GROQ_API_KEY environment variable is not set.\n"
-        "Ensure you have added it to your Render Environment Variables."
-    )
+    raise EnvironmentError("GROQ_API_KEY environment variable is not set.")
 
 HEADERS: dict = {
     "Content-Type": "application/json",
     "Authorization": f"Bearer {GROQ_API_KEY}"
 }
 
-# ---------------------------------------------------------------------------
-# SYSTEM PROMPT (UTME26 AI Personality)
-# ---------------------------------------------------------------------------
 SYSTEM_PROMPT: str = (
     "You are UTME26 AI, a brilliant Nigerian study assistant. "
     "You help students prepare for JAMB UTME exams with expert knowledge. "
@@ -42,7 +35,6 @@ SYSTEM_PROMPT: str = (
 # HELPER FUNCTIONS
 # ---------------------------------------------------------------------------
 def get_lean_history(history):
-    # Keep the last 6 messages to maintain context without hitting token limits
     lean = []
     for msg in history[-6:]:
         content = msg["content"]
@@ -52,10 +44,6 @@ def get_lean_history(history):
     return lean
 
 def ask_gpt2(prompt: str, history: Optional[list] = None) -> str:
-    """
-    Main function to query the AI. Renamed to ask_gpt2 to maintain 
-    compatibility with your main.py routes.
-    """
     if history is None:
         history = []
         
@@ -66,7 +54,7 @@ def ask_gpt2(prompt: str, history: Optional[list] = None) -> str:
     payload: dict = {
         "model": MODEL,
         "messages": messages,
-        "temperature": 0.6, # Balanced between creative and factual
+        "temperature": 0.6,
         "max_tokens": 2048,
         "stream": False,
     }
@@ -82,9 +70,9 @@ def ask_gpt2(prompt: str, history: Optional[list] = None) -> str:
             
             if response.status_code == 200:
                 result = response.json()
+                # FIX: Access the first choice in the list
                 return result["choices"][0]["message"]["content"]
             
-            # Handle Rate Limits (Groq specific)
             if response.status_code == 429:
                 time.sleep(RETRY_BASE_DELAY * attempt * 2)
                 continue
@@ -95,6 +83,5 @@ def ask_gpt2(prompt: str, history: Optional[list] = None) -> str:
             if attempt == MAX_RETRIES:
                 return f"Connection Error: {str(e)}"
             time.sleep(RETRY_BASE_DELAY * attempt)
-
     
     return "Error: Request failed."
