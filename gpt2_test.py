@@ -4,67 +4,70 @@ import requests
 from typing import Optional
 
 # ---------------------------------------------------------------------------
-# CONFIG
+# CONFIG - SWAPPING GEMINI FOR GROQ
 # ---------------------------------------------------------------------------
-GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY")
-# Gemini OpenAI-compatible endpoint requires the key in the URL
-API_URL: str = "https://generativelanguage.googleapis.com/v1beta/chat/completions" + f"?key={GEMINI_API_KEY}"
-MODEL: str = "gemini-1.5-flash"
-
-MAX_RETRIES: int = 5
-RETRY_BASE_DELAY: float = 2.0
-REQUEST_TIMEOUT: int = 90
+GROQ_API_KEY: Optional[str] = os.getenv("GROQ_API_KEY")
+API_URL: str = "https://groq.com"
+# Using Llama-3 70B for the most intelligent "Elite" responses
+MODEL: str = "llama3-70b-8192" 
+MAX_RETRIES: int = 3
+RETRY_BASE_DELAY: float = 1.0
+REQUEST_TIMEOUT: int = 30 # Groq is faster, we don't need 90s
 
 # ---------------------------------------------------------------------------
 # VALIDATION
 # ---------------------------------------------------------------------------
-if not GEMINI_API_KEY:
+if not GROQ_API_KEY:
     raise EnvironmentError(
-        "GEMINI_API_KEY environment variable is not set.\n"
-        "1. Get a key at https://google.com\n"
-        "2. Add it in Render: Environment Variables → GEMINI_API_KEY"
+        "GROQ_API_KEY environment variable is not set.\n"
+        "Ensure you have added it to your Render Environment Variables."
     )
 
 HEADERS: dict = {
     "Content-Type": "application/json",
-    "Authorization": f"Bearer {GEMINI_API_KEY}"
+    "Authorization": f"Bearer {GROQ_API_KEY}"
 }
 
 # ---------------------------------------------------------------------------
-# SYSTEM PROMPT
+# SYSTEM PROMPT (UTME26 AI Personality)
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT: str = """
-You are a coding writing machine. You are an expert in Clean Architecture.
-Always use Type Hints and follow PEP8. Provide full code without placeholders.
-""".strip()
+SYSTEM_PROMPT: str = (
+    "You are UTME26 AI, a brilliant Nigerian study assistant. "
+    "You help students prepare for JAMB UTME exams with expert knowledge. "
+    "Be concise, accurate, and encouraging. Always follow Clean Architecture "
+    "and PEP8 when writing code."
+).strip()
 
 # ---------------------------------------------------------------------------
 # HELPER FUNCTIONS
 # ---------------------------------------------------------------------------
 def get_lean_history(history):
+    # Keep the last 6 messages to maintain context without hitting token limits
     lean = []
     for msg in history[-6:]:
         content = msg["content"]
-        if len(content) > 2000:
-            content = content[:1000] + "... [Old Code Truncated] ..."
+        if len(content) > 1500:
+            content = content[:750] + "... [Truncated] ..." + content[-750:]
         lean.append({"role": msg["role"], "content": content})
     return lean
 
 def ask_gpt2(prompt: str, history: Optional[list] = None) -> str:
+    """
+    Main function to query the AI. Renamed to ask_gpt2 to maintain 
+    compatibility with your main.py routes.
+    """
     if history is None:
         history = []
-
-    clean_prompt = "".join(ch for ch in prompt if ord(ch) >= 32 or ch in "\n\r\t")
-
+        
     messages: list = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages.extend(get_lean_history(history))
-    messages.append({"role": "user", "content": clean_prompt.strip()})
+    messages.append({"role": "user", "content": prompt.strip()})
 
     payload: dict = {
         "model": MODEL,
         "messages": messages,
-        "temperature": 0.5,
-        "top_p": 0.9,
+        "temperature": 0.6, # Balanced between creative and factual
+        "max_tokens": 2048,
         "stream": False,
     }
 
@@ -76,22 +79,22 @@ def ask_gpt2(prompt: str, history: Optional[list] = None) -> str:
                 json=payload,
                 timeout=REQUEST_TIMEOUT,
             )
-
-            if response.status_code != 200:
-                error_msg = f"[Gemini Error {response.status_code}] {response.text[:300]}"
-                if response.status_code in (400, 401, 403, 422):
-                    return error_msg
-                raise requests.HTTPError(error_msg)
-
-            result = response.json()
-            choices = result.get("choices", [])
-            if choices:
-                return choices[0].get("message", {}).get("content", "")
-            return "Error: No response content from Gemini."
-
+            
+            if response.status_code == 200:
+                result = response.json()
+                return result["choices"][0]["message"]["content"]
+            
+            # Handle Rate Limits (Groq specific)
+            if response.status_code == 429:
+                time.sleep(RETRY_BASE_DELAY * attempt * 2)
+                continue
+                
+            return f"[Groq Error {response.status_code}] {response.text[:200]}"
+            
         except Exception as e:
             if attempt == MAX_RETRIES:
-                return f"Error after {MAX_RETRIES} attempts: {str(e)}"
+                return f"Connection Error: {str(e)}"
             time.sleep(RETRY_BASE_DELAY * attempt)
+
     
     return "Error: Request failed."
