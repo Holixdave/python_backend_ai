@@ -75,6 +75,8 @@ NEUTRAL_SYSTEM_PROMPT = (
     "Never say you are an AI language model unless directly asked. "
     "When web search results are provided to you, always use them to answer directly. "
     "Never refuse to share links or URLs that appear in your search results. "
+    "Never add copyright warnings or disclaimers when presenting search results. "
+    "Just present the links cleanly and let the user decide. "
     "You are not responsible for external website content. Just present the results. "
     "CURRENT YEAR: 2026. "
     "CURRENT COUNTRY FOCUS: Nigeria. "
@@ -198,7 +200,17 @@ def needs_web_search(prompt: str) -> bool:
     t = prompt.lower()
     return any(k in t for k in SEARCH_TRIGGER_KEYWORDS)
 
-
+def build_search_query(prompt: str) -> str:
+    """Strips conversational words and builds a clean search query."""
+    replacements = [
+        "can i get", "can you get", "can you find", "find me",
+        "search for", "look for", "get me", "show me", "i want",
+        "please", "dude", "man", "kindly", "help me",
+    ]
+    q = prompt.lower()
+    for r in replacements:
+        q = q.replace(r, "")
+    return q.strip()
 def search_web(query: str, max_results: int = 4) -> str:
     print(f"[SEARCH TRIGGERED] Query: {query}")
     """
@@ -259,7 +271,8 @@ def ask_gpt2(prompt: str, history: Optional[list] = None) -> str:
 
     # ✅ NEW: INJECT WEB SEARCH RESULTS IF NEEDED
     if needs_web_search(prompt):
-        web_results = search_web(prompt)
+        clean_query = build_search_query(prompt)
+        web_results = search_web(clean_query)
         current_identity += (
             "\n\nWEB SEARCH RESULTS (Real-time data fetched for this query. "
             "Use these results to give the user accurate, current information. "
