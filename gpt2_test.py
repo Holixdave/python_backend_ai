@@ -198,6 +198,7 @@ def needs_web_search(prompt: str) -> bool:
 
 
 def search_web(query: str, max_results: int = 4) -> str:
+    print(f"[SEARCH TRIGGERED] Query: {query}")
     """
     Searches DuckDuckGo and returns formatted results as a string.
     This string is injected into the system prompt so Llama can use it.
