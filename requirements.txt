@@ -8,4 +8,4 @@ sympy
 pandas
 numpy
 typing
-duckduckgo-search
+ddgs

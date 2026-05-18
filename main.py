@@ -69,7 +69,7 @@ async def ask_ai(request: QuestionRequest):
     user_question = request.query.strip()
 
     # Convert Pydantic history objects to simple dictionaries for the AI
-    chat_history = [m.dict() for m in request.history] if request.history else []
+    chat_history = [m.model_dump() for m in request.history] if request.history else []
 
     if not user_question:
         return {"label": "unknown", "answer": "Please type a question!"}
