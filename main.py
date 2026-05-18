@@ -18,15 +18,15 @@ app = FastAPI(
 
 class GenerateRequest(BaseModel):
     prompt: str
+
 class ChatMessage(BaseModel):
-    role: str # "user" or "assistant"
+    role: str  # "user" or "assistant"
     content: str
 
 class QuestionRequest(BaseModel):
     query: str
-    history: List[ChatMessage] = Field(default_factory = list) # The secret to memory!
+    history: List[ChatMessage] = Field(default_factory=list)  # The secret to memory!
 
-#--------------------------------------------------------
 # -------------------------------------------------------
 # Math detection helper
 # -------------------------------------------------------
@@ -41,7 +41,6 @@ def is_math_question(text: str) -> bool:
     t = text.lower()
     if any(kw in t for kw in MATH_KEYWORDS):
         return True
-    # Detect expressions like "what is 5 + 3" or "2 * 9"
     import re
     if re.search(r'\d+\s*[\+\-\*\/\^]\s*\d+', t):
         return True
@@ -68,7 +67,7 @@ def build_prompt(user_query: str) -> str:
 @app.post("/ai-query")
 async def ask_ai(request: QuestionRequest):
     user_question = request.query.strip()
-    
+
     # Convert Pydantic history objects to simple dictionaries for the AI
     chat_history = [m.dict() for m in request.history] if request.history else []
 
@@ -81,11 +80,10 @@ async def ask_ai(request: QuestionRequest):
         return {"label": "algebra", "answer": eq_answer}
 
     # 2. GPT-2/Llama-3 — Now with History!
-    # We no longer use build_prompt() because the Professor training 
-    # inside gpt2_test.py is much more intelligent.
     gpt_answer = ask_gpt2(user_question, history=chat_history)
 
     return {"label": "general", "answer": gpt_answer}
+
 
 # -------------------------------------------------------
 # POST /generate-question  — UNCHANGED for frontend
@@ -99,7 +97,6 @@ async def generate_question(request: GenerateRequest):
     try:
         result = ask_gpt2(prompt)
         if result and "unavailable" not in result.lower():
-            # Clean up echo
             if "Question:" in result:
                 result = result.split("Question:")[-1].strip()
             return {"question": result}
@@ -117,15 +114,13 @@ async def root():
         "message": "UTME26 AI backend is running and ready!",
         "endpoints": ["/ai-query", "/generate-question", "/health"]
     }
-
-
 # -------------------------------------------------------
 # GET /health  — UNCHANGED (used by loading screen)
 # -------------------------------------------------------
 @app.get("/health")
 async def health():
-    from gpt2_test import GEMINI_API_KEY
+    from gpt2_test import GROQ_API_KEY
     return {
         "status": "healthy",
-        "model_loaded": _pipe is not None
+        "groq_key_loaded": GROQ_API_KEY is not None
     }
