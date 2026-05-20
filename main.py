@@ -24,8 +24,9 @@ class ChatMessage(BaseModel):
     content: str
 
 class QuestionRequest(BaseModel):
-    query: str
-    history: List[ChatMessage] = Field(default_factory=list)  # The secret to memory!
+    query:     str
+    history:   List[ChatMessage] = Field(default_factory=list)
+    imageUrls: List[str]         = Field(default_factory=list)
 
 # -------------------------------------------------------
 # Math detection helper
@@ -80,7 +81,8 @@ async def ask_ai(request: QuestionRequest):
         return {"label": "algebra", "answer": eq_answer}
 
     # 2. GPT-2/Llama-3 — Now with History!
-    gpt_answer = ask_gpt2(user_question, history=chat_history)
+    image_urls = request.imageUrls or []
+    gpt_answer = ask_gpt2(user_question, history=chat_history, image_urls=image_urls if image_urls else None)
 
     return {"label": "general", "answer": gpt_answer}
 
