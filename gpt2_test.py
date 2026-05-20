@@ -17,7 +17,7 @@ from typing import Optional
 GROQ_API_KEY: Optional[str] = os.getenv("GROQ_API_KEY")
 API_URL:      str = "https://api.groq.com/openai/v1/chat/completions"
 MODEL:        str = "llama-3.3-70b-versatile"
-VISION_MODEL: str = "llama-3.2-11b-vision-preview"  # Groq vision model
+VISION_MODEL: str = "meta-llama/llama-4-scout-17b-16e-instruct"  # Groq vision model
 MAX_RETRIES:  int = 3
 RETRY_BASE_DELAY: float = 1.0
 REQUEST_TIMEOUT:  int   = 45  # bumped for vision
