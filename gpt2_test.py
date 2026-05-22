@@ -225,21 +225,27 @@ def call_gemini(system_prompt: str, messages: list, prompt: str) -> str:
     Calls Gemini 2.0 Flash with system prompt + conversation history + user prompt.
     Converts OpenAI-style message history to Gemini contents format.
     """
-
-    # Build Gemini contents array from history
     contents = []
+    
+    # Safely build Gemini contents array from history
     for msg in messages:
-        role = "user" if msg["role"] == "user" else "model"
+        # Extra guard constraint to ensure we only append valid strings
+        content_text = msg.get("content", "")
+        if not isinstance(content_text, str) or not content_text.strip():
+            continue
+            
+        role = "user" if msg.get("role") == "user" else "model"
         contents.append({
             "role": role,
-            "parts": [{"text": msg["content"]}]
+            "parts": [{"text": content_text}]
         })
 
     # Add current user message
-    contents.append({
-        "role": "user",
-        "parts": [{"text": prompt.strip()}]
-    })
+    if prompt.strip():
+        contents.append({
+            "role": "user",
+            "parts": [{"text": prompt.strip()}]
+        })
 
     payload = {
         "system_instruction": {
@@ -247,7 +253,7 @@ def call_gemini(system_prompt: str, messages: list, prompt: str) -> str:
         },
         "contents": contents,
         "generationConfig": {
-            "temperature":     0.6,
+            "temperature": 0.6,
             "maxOutputTokens": 2048,
         }
     }
@@ -270,11 +276,18 @@ def call_gemini(system_prompt: str, messages: list, prompt: str) -> str:
                     if parts:
                         return parts[0].get("text", "Error: Empty response from Gemini.")
                 return "Error: No content from Gemini."
+            
+            # CRITICAL DIAGNOSTIC: Print the actual error Google returns to your server logs
+            print(f"[Gemini API Fail] Status {response.status_code}: {response.text}")
+            
             if response.status_code == 429:
                 time.sleep(RETRY_BASE_DELAY * attempt * 2)
                 continue
+                
             return f"[Gemini Error {response.status_code}] {response.text[:200]}"
+            
         except Exception as e:
+            print(f"[Gemini Exception] {str(e)}")
             if attempt == MAX_RETRIES:
                 return f"Gemini connection error: {str(e)}"
             time.sleep(RETRY_BASE_DELAY * attempt)
