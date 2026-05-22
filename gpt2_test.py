@@ -1,16 +1,15 @@
-# gpt2_test.py — Rewritten
+# gpt2_test.py — Rewritten + Vision URL fix
 # Changes:
 #   1. Swapped Groq LLM → Gemini 2.0 Flash for all text/chat
 #   2. Groq kept ONLY for vision (image understanding)
 #   3. Image generation now uses JSON flag instead of keywords
-#   4. All system prompts, identity logic, history handling unchanged
-#   5. main.py untouched — all function signatures preserved
+#   4. Vision now validates URLs — falls back to Gemini if no valid http URLs
+#   5. All system prompts, identity logic, history handling unchanged
+#   6. main.py untouched — all function signatures preserved
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
-import re
 import time
-import json
 import requests
 from typing import Optional
 
@@ -97,7 +96,6 @@ Rules for the prompt field:
 
 For ALL other non-image requests, respond normally as usual.
 """
-
 NEUTRAL_SYSTEM_PROMPT = (
     "You are UTME26 AI, a smart, modern, premium Nigerian AI assistant. "
     "You are mature, intelligent, friendly, well-structured, and highly professional. "
@@ -186,7 +184,6 @@ def build_search_query(prompt: str) -> str:
     for r in replacements:
         q = q.replace(r, "")
     return q.strip()
-
 def search_web(query: str, max_results: int = 4) -> str:
     print(f"[SEARCH TRIGGERED] Query: {query}")
     try:
@@ -285,13 +282,30 @@ def call_gemini(system_prompt: str, messages: list, prompt: str) -> str:
     return "Error: Gemini request failed after retries."
 
 # ---------------------------------------------------------------------------
-# VISION — unchanged, still uses Groq (best for vision)
+# VISION — Groq with URL validation + Gemini fallback
 # ---------------------------------------------------------------------------
 def ask_with_vision(prompt: str, image_urls: list, history: list = []) -> str:
     print(f"[VISION TRIGGERED] Images: {len(image_urls)}, Prompt: {prompt[:60]}")
+    # ── Validate URLs — only http/https allowed by Groq vision ───────────────
+    valid_urls = [
+        url for url in image_urls[:4]
+        if isinstance(url, str) and url.startswith(("http://", "https://"))
+    ]
 
+    # ── No valid URLs — fall back to Gemini text-only ────────────────────────
+    if not valid_urls:
+        print("[VISION FALLBACK] No valid http URLs — routing to Gemini text")
+        vision_fallback_prompt = (
+            "You are a smart visual AI assistant. Current year: 2026. "
+            "The user tried to share an image but it could not be loaded. "
+            "Politely let them know the image could not be read and ask them "
+            "to describe what they need help with instead."
+        )
+        return call_gemini(vision_fallback_prompt, get_lean_history(history), prompt)
+
+    # ── Build vision content with valid URLs ─────────────────────────────────
     content = [{"type": "text", "text": prompt}]
-    for url in image_urls[:4]:
+    for url in valid_urls:
         content.append({
             "type": "image_url",
             "image_url": {"url": url}
@@ -355,9 +369,13 @@ def ask_gpt2(
     if history is None:
         history = []
 
-    # ── Route to vision model if images are present ──────────────────────────
-    if image_urls and len(image_urls) > 0:
-        return ask_with_vision(prompt, image_urls, history)
+    # ── Route to vision only if valid http/https URLs are present ────────────
+    valid_image_urls = [
+        url for url in (image_urls or [])
+        if isinstance(url, str) and url.startswith(("http://", "https://"))
+    ]
+    if valid_image_urls:
+        return ask_with_vision(prompt, valid_image_urls, history)
 
     # ── Build system identity based on context ────────────────────────────────
     full_text_context = (prompt + "".join(
@@ -366,7 +384,6 @@ def ask_gpt2(
     )).lower()
 
     current_identity = NEUTRAL_SYSTEM_PROMPT + "\n\n" + IMAGE_GEN_INSTRUCTION
-
     if any(k in full_text_context for k in ["jamb", "utme", "syllabus", "zindryx"]):
         current_identity = (
             f"{NEUTRAL_SYSTEM_PROMPT}\n\n{IMAGE_GEN_INSTRUCTION}\n\n"
