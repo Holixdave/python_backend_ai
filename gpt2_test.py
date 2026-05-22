@@ -229,7 +229,6 @@ def call_gemini(system_prompt: str, messages: list, prompt: str) -> str:
     
     # Safely build Gemini contents array from history
     for msg in messages:
-        # Extra guard constraint to ensure we only append valid strings
         content_text = msg.get("content", "")
         if not isinstance(content_text, str) or not content_text.strip():
             continue
@@ -258,16 +257,24 @@ def call_gemini(system_prompt: str, messages: list, prompt: str) -> str:
         }
     }
 
-    url = f"{GEMINI_API_URL}?key={GEMINI_API_KEY}"
+    # FIX 1: Keep the URL clean without the query parameter string
+    url = GEMINI_API_URL
+
+    # FIX 2: Pass your API key inside the x-goog-api-key request header
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY  
+    }
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             response = requests.post(
                 url,
-                headers={"Content-Type": "application/json"},
+                headers=headers, # Injecting corrected headers
                 json=payload,
                 timeout=REQUEST_TIMEOUT,
             )
+            
             if response.status_code == 200:
                 result = response.json()
                 candidates = result.get("candidates", [])
@@ -277,7 +284,7 @@ def call_gemini(system_prompt: str, messages: list, prompt: str) -> str:
                         return parts[0].get("text", "Error: Empty response from Gemini.")
                 return "Error: No content from Gemini."
             
-            # CRITICAL DIAGNOSTIC: Print the actual error Google returns to your server logs
+            # Print the exact error Google is responding with to your backend logs
             print(f"[Gemini API Fail] Status {response.status_code}: {response.text}")
             
             if response.status_code == 429:
