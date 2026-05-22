@@ -9,4 +9,3 @@ pandas
 numpy
 typing
 ddgs
-groq
