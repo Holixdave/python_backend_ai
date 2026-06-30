@@ -63,7 +63,8 @@ def build_prompt(user_query: str) -> str:
 
 
 # -------------------------------------------------------
-# POST /ai-query  — main chat endpoint (UNCHANGED for frontend)
+# POST /ai-query  — main chat endpoint (UNCHANGED path/schema for frontend;
+# only an additive "sources" field is included in the response now)
 # -------------------------------------------------------
 @app.post("/ai-query")
 async def ask_ai(request: QuestionRequest):
@@ -73,18 +74,23 @@ async def ask_ai(request: QuestionRequest):
     chat_history = [m.model_dump() for m in request.history] if request.history else []
 
     if not user_question:
-        return {"label": "unknown", "answer": "Please type a question!"}
+        return {"label": "unknown", "answer": "Please type a question!", "sources": []}
 
     # 1. Check for Math/Algebra first (Calculators don't need history)
     eq_answer = solve_equation_with_steps(user_question)
     if eq_answer and "Could not" not in eq_answer:
-        return {"label": "algebra", "answer": eq_answer}
+        return {"label": "algebra", "answer": eq_answer, "sources": []}
 
-    # 2. GPT-2/Llama-3 — Now with History!
+    # 2. AI provider chain (Groq -> fallback providers) — now with web search
+    #    sources returned alongside the answer when search was used.
     image_urls = request.imageUrls or []
-    gpt_answer = ask_gpt2(user_question, history=chat_history, image_urls=image_urls if image_urls else None)
+    result = ask_gpt2(user_question, history=chat_history, image_urls=image_urls if image_urls else None)
 
-    return {"label": "general", "answer": gpt_answer}
+    return {
+        "label": "general",
+        "answer": result["answer"],
+        "sources": result.get("sources", []),
+    }
 
 
 # -------------------------------------------------------
@@ -98,10 +104,11 @@ async def generate_question(request: GenerateRequest):
     )
     try:
         result = ask_gpt2(prompt)
-        if result and "unavailable" not in result.lower():
-            if "Question:" in result:
-                result = result.split("Question:")[-1].strip()
-            return {"question": result}
+        answer = result["answer"]
+        if answer and "unavailable" not in answer.lower():
+            if "Question:" in answer:
+                answer = answer.split("Question:")[-1].strip()
+            return {"question": answer}
         return {"error": "Could not generate question. Try a more specific topic."}
     except Exception as e:
         return {"error": f"Generation failed: {e}"}
@@ -117,12 +124,16 @@ async def root():
         "endpoints": ["/ai-query", "/generate-question", "/health"]
     }
 # -------------------------------------------------------
-# GET /health  — UNCHANGED (used by loading screen)
+# GET /health  — UNCHANGED (used by loading screen), now also reports which
+# fallback provider keys are loaded so you can see at a glance what's active
 # -------------------------------------------------------
 @app.get("/health")
 async def health():
-    from gpt2_test import GROQ_API_KEY
+    from gpt2_test import GROQ_API_KEY, OPENROUTER_API_KEY, CEREBRAS_API_KEY, GEMINI_API_KEY
     return {
         "status": "healthy",
-        "groq_key_loaded": GROQ_API_KEY is not None
+        "groq_key_loaded": GROQ_API_KEY is not None,
+        "openrouter_key_loaded": OPENROUTER_API_KEY is not None,
+        "cerebras_key_loaded": CEREBRAS_API_KEY is not None,
+        "gemini_key_loaded": GEMINI_API_KEY is not None,
     }

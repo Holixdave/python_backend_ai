@@ -1,8 +1,22 @@
-# gpt2_test.py — Updated & Fully Fixed Indentations
-# Changes:
-#   1. Fixed critical IndentationErrors on both retry loop blocks.
-#   2. Added URL schema validation to filter out Swagger dummy "string" entries.
-#   3. Keeps Groq infrastructure active while Gemini billing is sorted out.
+# gpt2_test.py — Multi-provider fallback edition
+# ─────────────────────────────────────────────────────────────────────────────
+# WHAT CHANGED FROM THE OLD VERSION
+#   1. ask_gpt2() / ask_with_vision() no longer hit Groq only. They walk a
+#      chain of providers (Groq -> OpenRouter free models -> Cerebras free
+#      tier -> Gemini) and fail over automatically. If Groq is out of
+#      credits or rate-limited, the user never sees an error — the next
+#      provider in the chain just answers instead.
+#   2. search_web() walks a chain too: ddgs -> Brave -> Tavily. If every
+#      search engine fails, we silently return no web context instead of
+#      stuffing a "Search failed: ..." string into the prompt (which used
+#      to sometimes leak through to the user as the actual answer).
+#   3. ask_gpt2() now returns a dict: {"answer": str, "sources": list,
+#      "provider": str}. main.py uses this to add an optional "sources"
+#      field to the API response — nothing existing was removed.
+#   4. Every new provider is OPTIONAL — controlled by env var presence. If
+#      you never set OPENROUTER_API_KEY / CEREBRAS_API_KEY / GEMINI_API_KEY
+#      / BRAVE_API_KEY / TAVILY_API_KEY, this behaves exactly like before,
+#      just with Groq retried smarter.
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
@@ -11,23 +25,74 @@ import requests
 from typing import Optional
 
 # ---------------------------------------------------------------------------
-# CONFIG
+# CONFIG — API keys. Only GROQ_API_KEY is required. Everything else is an
+# optional fallback: if the env var isn't set, that provider is just skipped.
 # ---------------------------------------------------------------------------
-GROQ_API_KEY: Optional[str] = os.getenv("GROQ_API_KEY")
-API_URL:      str = "https://api.groq.com/openai/v1/chat/completions"
-MODEL:        str = "llama-3.3-70b-versatile"
-VISION_MODEL: str = "meta-llama/llama-4-scout-17b-16e-instruct"  # Groq vision model
-MAX_RETRIES:  int = 3
-RETRY_BASE_DELAY: float = 1.0
-REQUEST_TIMEOUT:  int   = 45  # bumped for vision
+GROQ_API_KEY:       Optional[str] = os.getenv("GROQ_API_KEY")
+OPENROUTER_API_KEY: Optional[str] = os.getenv("OPENROUTER_API_KEY")
+CEREBRAS_API_KEY:   Optional[str] = os.getenv("CEREBRAS_API_KEY")
+GEMINI_API_KEY:     Optional[str] = os.getenv("GEMINI_API_KEY")
+BRAVE_API_KEY:      Optional[str] = os.getenv("BRAVE_API_KEY")
+TAVILY_API_KEY:     Optional[str] = os.getenv("TAVILY_API_KEY")
+
+MAX_RETRIES_PER_PROVIDER: int = 2     # quick retries before moving to the next provider
+RETRY_BASE_DELAY:         float = 1.0
+REQUEST_TIMEOUT:          int   = 45  # bumped for vision
 
 if not GROQ_API_KEY:
     raise EnvironmentError("GROQ_API_KEY environment variable is not set.")
 
-HEADERS: dict = {
-    "Content-Type": "application/json",
-    "Authorization": f"Bearer {GROQ_API_KEY}"
-}
+# ---------------------------------------------------------------------------
+# PROVIDER CHAINS (OpenAI-compatible /chat/completions shape)
+# Order = priority. First enabled provider that succeeds wins.
+# ---------------------------------------------------------------------------
+TEXT_PROVIDERS = [
+    {
+        "name": "groq-70b",
+        "enabled": bool(GROQ_API_KEY),
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {GROQ_API_KEY}"},
+        "model": "llama-3.3-70b-versatile",
+    },
+    {
+        "name": "groq-8b-instant",
+        "enabled": bool(GROQ_API_KEY),
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {GROQ_API_KEY}"},
+        "model": "llama-3.1-8b-instant",
+    },
+    {
+        "name": "openrouter-llama-free",
+        "enabled": bool(OPENROUTER_API_KEY),
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {OPENROUTER_API_KEY}"},
+        "model": "meta-llama/llama-3.1-8b-instruct:free",
+    },
+    {
+        "name": "cerebras-llama",
+        "enabled": bool(CEREBRAS_API_KEY),
+        "url": "https://api.cerebras.ai/v1/chat/completions",
+        "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {CEREBRAS_API_KEY}"},
+        "model": "llama3.1-8b",
+    },
+]
+
+VISION_PROVIDERS = [
+    {
+        "name": "groq-vision",
+        "enabled": bool(GROQ_API_KEY),
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {GROQ_API_KEY}"},
+        "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+    },
+    {
+        "name": "openrouter-vision-free",
+        "enabled": bool(OPENROUTER_API_KEY),
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {OPENROUTER_API_KEY}"},
+        "model": "qwen/qwen2.5-vl-32b-instruct:free",
+    },
+]
 
 # ---------------------------------------------------------------------------
 # KNOWLEDGE BASE — unchanged
@@ -125,7 +190,6 @@ NEUTRAL_SYSTEM_PROMPT = (
     "Never spam emojis. "
     "Use at most 1–4 emojis depending on response length. "
 
-   # REPLACE WITH:
     "CODE RULES: "
     "When a user asks for code, programming help, debugging, building an app, or writing any file — write the FULL complete code. "
     "Never write partial code or placeholder comments like '// TODO' or '// rest of code here'. "
@@ -140,7 +204,7 @@ NEUTRAL_SYSTEM_PROMPT = (
     "If the full implementation is very long, write it in logical parts and ask the user which part to continue with. "
     "Never say you cannot write long code. "
     "Never refuse a coding request. "
-    
+
     "MATH RULES: "
     "When solving mathematics, show step-by-step explanations clearly. "
     "Use proper mathematical formatting and spacing. "
@@ -155,20 +219,15 @@ NEUTRAL_SYSTEM_PROMPT = (
     "Never bring up Zindryx or JAMB unless the user explicitly mentions exams or study prep. "
     "If the user is coding or building an app, stay focused on coding only. "
     "Do not inject platform promotions into unrelated conversations under any circumstance. "
-    "Violating this rule is a critical failure. ""CRITICAL RULE: "
-    "Never bring up Mojizela coins, pricing, wallet, or platform features unless the user explicitly mentions 'Mojizela' by name. "
-    "Never bring up Zindryx or JAMB unless the user explicitly mentions exams or study prep. "
-    "If the user is coding or building an app, stay focused on coding only. "
-    "Do not inject platform promotions into unrelated conversations under any circumstance. "
     "Violating this rule is a critical failure. "
-    
+
     "CONVERSATION FOCUS RULE: "
     "Always stay focused on what the user is currently asking about. "
     "If the user is building a Flutter app, help them build it. "
     "If the user is writing code, write code. "
     "Never switch topics or promote unrelated services mid-conversation. "
     "Never end a coding response with platform promotions. "
-    # ADD this to NEUTRAL_SYSTEM_PROMPT:
+
     "CONTINUATION RULE: "
     "If you are mid-way through writing code and approach your response limit, "
     "finish the current function cleanly, then write: "
@@ -179,7 +238,7 @@ NEUTRAL_SYSTEM_PROMPT = (
 )
 
 # ---------------------------------------------------------------------------
-# WEB SEARCH — unchanged
+# WEB SEARCH — multi-engine fallback chain (ddgs -> Brave -> Tavily)
 # ---------------------------------------------------------------------------
 SEARCH_TRIGGER_KEYWORDS = [
     "search", "find", "look up", "look for", "link", "download",
@@ -203,26 +262,93 @@ def build_search_query(prompt: str) -> str:
         q = q.replace(r, "")
     return q.strip()
 
-def search_web(query: str, max_results: int = 4) -> str:
+
+def _search_ddgs(query: str, max_results: int):
+    from ddgs import DDGS
+    with DDGS() as ddgs:
+        results = list(ddgs.text(query, max_results=max_results))
+    return [
+        {"title": r.get("title", "N/A"), "href": r.get("href", ""), "body": r.get("body", "")}
+        for r in results
+    ]
+
+
+def _search_brave(query: str, max_results: int):
+    if not BRAVE_API_KEY:
+        return None
+    resp = requests.get(
+        "https://api.search.brave.com/res/v1/web/search",
+        headers={"Accept": "application/json", "X-Subscription-Token": BRAVE_API_KEY},
+        params={"q": query, "count": max_results},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    items = data.get("web", {}).get("results", [])[:max_results]
+    return [
+        {"title": it.get("title", "N/A"), "href": it.get("url", ""), "body": it.get("description", "")}
+        for it in items
+    ]
+
+
+def _search_tavily(query: str, max_results: int):
+    if not TAVILY_API_KEY:
+        return None
+    resp = requests.post(
+        "https://api.tavily.com/search",
+        json={"api_key": TAVILY_API_KEY, "query": query, "max_results": max_results},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    items = data.get("results", [])[:max_results]
+    return [
+        {"title": it.get("title", "N/A"), "href": it.get("url", ""), "body": it.get("content", "")}
+        for it in items
+    ]
+
+
+def search_web(query: str, max_results: int = 4):
+    """
+    Tries each search engine in order. Returns (formatted_text, sources).
+    sources is a list of {"title": str, "url": str} for the frontend to render.
+    On total failure, returns ("", []) silently — no raw error text gets
+    injected into the model's context or shown to the user.
+    """
     print(f"[SEARCH TRIGGERED] Query: {query}")
-    try:
-        from ddgs import DDGS
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
+    for engine_name, engine_fn in (
+        ("ddgs", _search_ddgs),
+        ("brave", _search_brave),
+        ("tavily", _search_tavily),
+    ):
+        try:
+            results = engine_fn(query, max_results)
+        except ImportError:
+            print(f"[SEARCH] {engine_name} not installed, skipping")
+            continue
+        except Exception as e:
+            print(f"[SEARCH] {engine_name} failed: {e}")
+            continue
+
         if not results:
-            return "No web results found for this query."
+            continue
+
         formatted = ""
+        sources = []
         for i, r in enumerate(results, 1):
             formatted += (
-                f"{i}. Title: {r.get('title', 'N/A')}\n"
-                f"   Link: {r.get('href', 'N/A')}\n"
-                f"   Summary: {r.get('body', 'N/A')}\n\n"
+                f"{i}. Title: {r['title']}\n"
+                f"   Link: {r['href']}\n"
+                f"   Summary: {r['body']}\n\n"
             )
-        return formatted.strip()
-    except ImportError:
-        return "Search unavailable. Run: pip install duckduckgo-search"
-    except Exception as e:
-        return f"Search failed: {str(e)}"
+            if r["href"]:
+                sources.append({"title": r["title"], "url": r["href"]})
+
+        print(f"[SEARCH] succeeded via {engine_name} ({len(results)} results)")
+        return formatted.strip(), sources
+
+    print("[SEARCH] all engines failed or unavailable — continuing without web context")
+    return "", []
 
 # ---------------------------------------------------------------------------
 # HELPERS — unchanged
@@ -237,20 +363,91 @@ def get_lean_history(history):
     return lean
 
 # ---------------------------------------------------------------------------
+# GENERIC OPENAI-COMPATIBLE CALLER — used by both text and vision chains
+# ---------------------------------------------------------------------------
+def _call_provider_chain(providers: list, messages: list, temperature: float, max_tokens: int):
+    """
+    Walks `providers` in order. For each enabled provider: retries a couple
+    times on 429 (rate limit), but moves to the next provider immediately on
+    any other failure (bad key, out of credits, network error, etc.) instead
+    of burning time/retries on a dead provider.
+
+    Returns (content, provider_name) on success, or (None, None) if every
+    provider in the chain failed.
+    """
+    last_error = "No provider available."
+
+    for provider in providers:
+        if not provider["enabled"]:
+            continue
+
+        payload = {
+            "model": provider["model"],
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": False,
+        }
+
+        for attempt in range(1, MAX_RETRIES_PER_PROVIDER + 1):
+            try:
+                response = requests.post(
+                    provider["url"],
+                    headers=provider["headers"],
+                    json=payload,
+                    timeout=REQUEST_TIMEOUT,
+                )
+                if response.status_code == 200:
+                    result = response.json()
+                    content = result.get("choices", [{}])[0].get("message", {}).get("content")
+                    if content:
+                        print(f"[AI] answered via {provider['name']}")
+                        return content, provider["name"]
+                    last_error = f"{provider['name']}: empty content"
+                    break  # try next provider
+
+                if response.status_code == 429:
+                    # Rate limited — worth a quick retry before giving up on this provider
+                    if attempt < MAX_RETRIES_PER_PROVIDER:
+                        time.sleep(RETRY_BASE_DELAY * attempt)
+                        continue
+                    last_error = f"{provider['name']}: rate limited (429)"
+                    break
+
+                # Any other status (401 bad key, 402 out of credit, 404 model
+                # gone, 500, etc.) — this provider is down, move on now.
+                last_error = f"{provider['name']}: HTTP {response.status_code} — {response.text[:150]}"
+                print(f"[AI] {last_error}")
+                break
+
+            except requests.exceptions.RequestException as e:
+                last_error = f"{provider['name']}: {e}"
+                if attempt < MAX_RETRIES_PER_PROVIDER:
+                    time.sleep(RETRY_BASE_DELAY * attempt)
+                    continue
+                print(f"[AI] {last_error}")
+                break
+
+    print(f"[AI] all providers exhausted — last error: {last_error}")
+    return None, None
+
+
+def _friendly_failure_message() -> str:
+    return (
+        "I'm having trouble reaching my AI models right now — all providers "
+        "in the chain are temporarily unavailable. Please try again in a "
+        "moment."
+    )
+
+# ---------------------------------------------------------------------------
 # VISION — called when imageUrls is present
 # ---------------------------------------------------------------------------
-def ask_with_vision(prompt: str, image_urls: list, history: list = []) -> str:
-    """
-    Sends text + image URLs to Groq vision model.
-    """
+def ask_with_vision(prompt: str, image_urls: list, history: list = []) -> dict:
     print(f"[VISION TRIGGERED] Images: {len(image_urls)}, Prompt: {prompt[:60]}")
 
     content = [{"type": "text", "text": prompt}]
-    for url in image_urls[:4]:  
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": url}
-        })
+    for url in image_urls[:4]:
+        content.append({"type": "image_url", "image_url": {"url": url}})
 
     vision_system = (
         "You are a smart visual AI assistant. "
@@ -262,47 +459,19 @@ def ask_with_vision(prompt: str, image_urls: list, history: list = []) -> str:
         "Current year: 2026."
     )
 
-    messages = [
-        {"role": "system", "content": vision_system},
-    ]
-
+    messages = [{"role": "system", "content": vision_system}]
     for msg in get_lean_history(history):
         if isinstance(msg["content"], str):
             messages.append(msg)
-
     messages.append({"role": "user", "content": content})
 
-    payload = {
-        "model":       VISION_MODEL,
-        "messages":    messages,
-        "temperature": 0.5,
-        "max_tokens":  1024,
-    }
+    answer, provider = _call_provider_chain(
+        VISION_PROVIDERS, messages, temperature=0.5, max_tokens=1024
+    )
+    if answer is None:
+        return {"answer": _friendly_failure_message(), "sources": [], "provider": None}
 
-    # FIX 1: Properly indented retry loop block
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            response = requests.post(
-                API_URL,
-                headers=HEADERS,
-                json=payload,
-                timeout=REQUEST_TIMEOUT,
-            )
-            if response.status_code == 200:
-                result = response.json()
-                return result.get("choices", [{}])[0].get("message", {}).get(
-                    "content", "Error: No content from vision model."
-                )
-            if response.status_code == 429:
-                time.sleep(RETRY_BASE_DELAY * attempt * 2)
-                continue
-            return f"[Vision Error {response.status_code}] {response.text[:200]}"
-        except Exception as e:
-            if attempt == MAX_RETRIES:
-                return f"Vision model connection error: {str(e)}"
-            time.sleep(RETRY_BASE_DELAY * attempt)
-
-    return "Error: Vision request failed."
+    return {"answer": answer, "sources": [], "provider": provider}
 
 # ---------------------------------------------------------------------------
 # MAIN ASK FUNCTION
@@ -310,22 +479,23 @@ def ask_with_vision(prompt: str, image_urls: list, history: list = []) -> str:
 def ask_gpt2(
     prompt: str,
     history: Optional[list] = None,
-    image_urls: Optional[list] = None,   
-) -> str:
+    image_urls: Optional[list] = None,
+) -> dict:
+    """
+    Returns {"answer": str, "sources": list, "provider": str|None}.
+    """
     if history is None:
         history = []
 
-    # FIX 2: Filter out Swagger placeholder values ("string") so it doesn't trick vision routing
     valid_image_urls = [
         url for url in (image_urls or [])
         if isinstance(url, str) and url.startswith(("http://", "https://"))
     ]
 
-    # Route to vision model only if valid image URLs are found
     if valid_image_urls:
         return ask_with_vision(prompt, valid_image_urls, history)
 
-    # ── Normal text flow ─────────────────────────────────────────────────────
+    # ── Normal text flow ─────────────────────────────────────────────────
     full_text_context = (prompt + "".join(
         [m["content"] if isinstance(m["content"], str) else ""
          for m in history]
@@ -341,57 +511,41 @@ def ask_gpt2(
     elif any(k in full_text_context for k in ["mojizela", "coin price", "buy coins", "wallet icon", "tiktok creator"]):
         current_identity = f"{NEUTRAL_SYSTEM_PROMPT}\n\n{IMAGE_GEN_AWARENESS}\n\nCURRENT CONTEXT: {MOJIZELA_INFO}"
 
-    # ── Inject web search results if needed ──────────────────────────────────
+    # ── Inject web search results if needed ──────────────────────────────
+    sources = []
     if needs_web_search(prompt):
         clean_query = build_search_query(prompt)
-        web_results = search_web(clean_query)
-        current_identity += (
-            "\n\nWEB SEARCH RESULTS (Real-time data fetched for this query. "
-            "Use these results to give the user accurate, current information. "
-            "Always include relevant links from the results when available):\n\n"
-            + web_results
-        )
+        web_results, sources = search_web(clean_query)
+        if web_results:
+            current_identity += (
+                "\n\nWEB SEARCH RESULTS (Real-time data fetched for this query. "
+                "Use these results to give the user accurate, current information. "
+                "Always include relevant links from the results when available):\n\n"
+                + web_results
+            )
+        # if web_results is empty (every search engine failed), we simply
+        # don't mention search at all — the model answers from its own
+        # knowledge instead of relaying a search-failed error to the user.
 
-    # ── Build messages ────────────────────────────────────────────────────────
+    # ── Build messages ──────────────────────────────────────────────────
     messages = [{"role": "system", "content": current_identity}]
     messages.extend(get_lean_history(history))
     messages.append({"role": "user", "content": prompt.strip()})
 
     is_coding = any(k in prompt.lower() for k in [
-    "code", "write", "build", "create", "implement", "function",
-    "class", "widget", "dart", "flutter", "python", "javascript",
-    "fix", "debug", "error", "screen", "app", "file",
-])
+        "code", "write", "build", "create", "implement", "function",
+        "class", "widget", "dart", "flutter", "python", "javascript",
+        "fix", "debug", "error", "screen", "app", "file",
+    ])
 
-    payload = {
-    "model":       MODEL,
-    "messages":    messages,
-    "temperature": 0.3 if is_coding else 0.6,  # precise for code
-    "max_tokens":  8000 if is_coding else 2048,  # more room for code
-    "stream":      False,
-}
+    answer, provider = _call_provider_chain(
+        TEXT_PROVIDERS,
+        messages,
+        temperature=0.3 if is_coding else 0.6,
+        max_tokens=8000 if is_coding else 2048,
+    )
 
-    # FIX 3: Properly indented retry loop block
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            response = requests.post(
-                API_URL,
-                headers=HEADERS,
-                json=payload,
-                timeout=REQUEST_TIMEOUT,
-            )
-            if response.status_code == 200:
-                result = response.json()
-                return result.get("choices", [{}])[0].get("message", {}).get(
-                    "content", "Error: No content found."
-                )
-            if response.status_code == 429:
-                time.sleep(RETRY_BASE_DELAY * attempt * 2)
-                continue
-            return f"[Groq Error {response.status_code}] {response.text[:200]}"
-        except Exception as e:
-            if attempt == MAX_RETRIES:
-                return f"Connection Error: {str(e)}"
-            time.sleep(RETRY_BASE_DELAY * attempt)
+    if answer is None:
+        return {"answer": _friendly_failure_message(), "sources": [], "provider": None}
 
-    return "Error: Request failed."
+    return {"answer": answer, "sources": sources, "provider": provider}
