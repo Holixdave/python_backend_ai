@@ -62,18 +62,19 @@ TEXT_PROVIDERS = [
         "model": "llama-3.1-8b-instant",
     },
     {
-        "name": "openrouter-llama-free",
+        "name": "meta-llama/llama-3.1-8b-instruct:free",
         "enabled": bool(OPENROUTER_API_KEY),
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {OPENROUTER_API_KEY}"},
         "model": "meta-llama/llama-3.1-8b-instruct:free",
+
     },
     {
         "name": "cerebras-llama",
         "enabled": bool(CEREBRAS_API_KEY),
         "url": "https://api.cerebras.ai/v1/chat/completions",
         "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {CEREBRAS_API_KEY}"},
-        "model": "llama3.1-8b",
+        "model": "llama3.1-8b-8192",
     },
 ]
 
