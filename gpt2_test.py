@@ -21,6 +21,7 @@
 
 import os
 import time
+import json
 import requests
 from typing import Optional
 
@@ -352,6 +353,101 @@ def search_web(query: str, max_results: int = 4):
     return "", []
 
 # ---------------------------------------------------------------------------
+# INTENT CLASSIFIER — one small, cheap call per prompt.
+#
+# This replaces keyword-matching as the primary decision-maker. It gets
+# ONLY the user's raw prompt (no backend system prompt, no rules) and
+# returns a tiny JSON object. Everything else in ask_gpt2() reads off this
+# result instead of scanning the prompt for keywords itself.
+#
+# If the classifier call fails for any reason (network, bad JSON, rate
+# limit) we silently fall back to the old keyword heuristics below — the
+# user never sees an error, they just get the slightly-dumber-but-safe
+# routing instead.
+# ---------------------------------------------------------------------------
+INTENT_MODEL = "llama-3.1-8b-instant"
+
+CODING_KEYWORDS = [
+    "code", "write", "build", "create", "implement", "function",
+    "class", "widget", "dart", "flutter", "python", "javascript",
+    "fix", "debug", "error", "screen", "app", "file",
+]
+
+_INTENT_SYSTEM_PROMPT = (
+    "You are an intent classifier for a Nigerian study/social AI backend. "
+    "Read the user's single message and reply with ONLY a raw JSON object "
+    "and nothing else — no markdown fences, no explanation. Fields:\n"
+    '"search": true if answering well needs current, live, or specific '
+    "factual info you might not have (prices, links, downloads, recent "
+    "events, dates in 2025/2026, \"who won\", named websites/apps you're "
+    "unsure about) — otherwise false.\n"
+    '"complex": true if the request needs code, math, multi-step '
+    "reasoning, or a long detailed answer — false for greetings, small "
+    "talk, or simple one-line questions.\n"
+    '"topic": one of "jamb", "mojizela", or "general" — "jamb" only if '
+    "about JAMB/UTME/WAEC/Post-UTME/exam prep, \"mojizela\" only if about "
+    "the Mojizela app/coins/wallet/creators, else \"general\"."
+)
+
+
+def _fallback_intent(prompt: str) -> dict:
+    t = prompt.lower()
+    if any(k in t for k in ["jamb", "utme", "zindryx", "waec exam", "post utme"]):
+        topic = "jamb"
+    elif any(k in t for k in ["mojizela", "coin price", "buy coins", "wallet icon", "tiktok creator"]):
+        topic = "mojizela"
+    else:
+        topic = "general"
+    return {
+        "search": needs_web_search(prompt),
+        "complex": any(k in t for k in CODING_KEYWORDS),
+        "topic": topic,
+    }
+
+
+def classify_intent(prompt: str) -> dict:
+    """
+    Single cheap call that decides: does this need a web search, does it
+    need the deep/complex track, and which knowledge-base topic (if any)
+    applies. Only the raw prompt is sent — no backend rules leak into
+    this call, so it stays fast and cheap.
+    """
+    try:
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {GROQ_API_KEY}"},
+            json={
+                "model": INTENT_MODEL,
+                "messages": [
+                    {"role": "system", "content": _INTENT_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.0,
+                "max_tokens": 100,
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            raw = resp.json()["choices"][0]["message"]["content"].strip()
+            raw = raw.strip("`")
+            if raw.lower().startswith("json"):
+                raw = raw[4:].strip()
+            data = json.loads(raw)
+            topic = data.get("topic")
+            if topic not in ("jamb", "mojizela", "general"):
+                topic = "general"
+            return {
+                "search": bool(data.get("search", False)),
+                "complex": bool(data.get("complex", True)),
+                "topic": topic,
+            }
+        print(f"[INTENT] classifier HTTP {resp.status_code}, falling back to keywords")
+    except Exception as e:
+        print(f"[INTENT] classifier failed ({e}), falling back to keywords")
+
+    return _fallback_intent(prompt)
+
+# ---------------------------------------------------------------------------
 # HELPERS — unchanged
 # ---------------------------------------------------------------------------
 def get_lean_history(history):
@@ -497,24 +593,23 @@ def ask_gpt2(
         return ask_with_vision(prompt, valid_image_urls, history)
 
     # ── Normal text flow ─────────────────────────────────────────────────
-    full_text_context = (prompt + "".join(
-        [m["content"] if isinstance(m["content"], str) else ""
-         for m in history]
-    )).lower()
+    # One classifier call decides search / complexity / topic instead of
+    # scanning the prompt for keywords ourselves.
+    intent = classify_intent(prompt)
 
     current_identity = NEUTRAL_SYSTEM_PROMPT + "\n\n" + IMAGE_GEN_AWARENESS
 
-    if any(k in full_text_context for k in ["jamb", "utme", "zindryx", "waec exam", "post utme"]):
+    if intent["topic"] == "jamb":
         current_identity = (
             f"{NEUTRAL_SYSTEM_PROMPT}\n\n{IMAGE_GEN_AWARENESS}\n\n"
             f"CURRENT CONTEXT: {ZINDRYX_INFO}"
         )
-    elif any(k in full_text_context for k in ["mojizela", "coin price", "buy coins", "wallet icon", "tiktok creator"]):
+    elif intent["topic"] == "mojizela":
         current_identity = f"{NEUTRAL_SYSTEM_PROMPT}\n\n{IMAGE_GEN_AWARENESS}\n\nCURRENT CONTEXT: {MOJIZELA_INFO}"
 
     # ── Inject web search results if needed ──────────────────────────────
     sources = []
-    if needs_web_search(prompt):
+    if intent["search"]:
         clean_query = build_search_query(prompt)
         web_results, sources = search_web(clean_query)
         if web_results:
@@ -533,20 +628,51 @@ def ask_gpt2(
     messages.extend(get_lean_history(history))
     messages.append({"role": "user", "content": prompt.strip()})
 
-    is_coding = any(k in prompt.lower() for k in [
-        "code", "write", "build", "create", "implement", "function",
-        "class", "widget", "dart", "flutter", "python", "javascript",
-        "fix", "debug", "error", "screen", "app", "file",
-    ])
-
     answer, provider = _call_provider_chain(
         TEXT_PROVIDERS,
         messages,
-        temperature=0.3 if is_coding else 0.6,
-        max_tokens=8000 if is_coding else 2048,
+        temperature=0.3 if intent["complex"] else 0.6,
+        max_tokens=8000 if intent["complex"] else 2048,
     )
 
     if answer is None:
         return {"answer": _friendly_failure_message(), "sources": [], "provider": None}
 
+    # ── Safety net: classifier said "no search needed", but the model
+    # itself came back unsure. Rather than let a guess through, run one
+    # search now and re-ask with real web context. Sources always get
+    # attached when this fires.
+    if not intent["search"] and not sources and _looks_unsure(answer):
+        clean_query = build_search_query(prompt)
+        web_results, fallback_sources = search_web(clean_query)
+        if web_results:
+            retry_identity = current_identity + (
+                "\n\nWEB SEARCH RESULTS (Real-time data fetched for this query. "
+                "Use these results to give the user accurate, current information. "
+                "Always include relevant links from the results when available):\n\n"
+                + web_results
+            )
+            retry_messages = [{"role": "system", "content": retry_identity}]
+            retry_messages.extend(get_lean_history(history))
+            retry_messages.append({"role": "user", "content": prompt.strip()})
+
+            retry_answer, retry_provider = _call_provider_chain(
+                TEXT_PROVIDERS, retry_messages, temperature=0.5, max_tokens=2048
+            )
+            if retry_answer:
+                return {"answer": retry_answer, "sources": fallback_sources, "provider": retry_provider}
+
     return {"answer": answer, "sources": sources, "provider": provider}
+
+
+_UNSURE_PHRASES = [
+    "i don't know", "i do not know", "i'm not sure", "i am not sure",
+    "i don't have information", "i do not have information",
+    "as of my last update", "as of my knowledge", "i cannot verify",
+    "i can't verify", "no information available", "i'm unable to confirm",
+]
+
+
+def _looks_unsure(answer: str) -> bool:
+    a = answer.lower()
+    return any(p in a for p in _UNSURE_PHRASES)
