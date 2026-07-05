@@ -1,11 +1,13 @@
 # main.py
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import List
 import os
+import json
 from math_solver import solve_math_with_explanation
 from equation_solver import solve_equation_with_steps
-from gpt2_test import ask_gpt2
+from gpt2_test import ask_gpt2, ask_gpt2_stream
 
 app = FastAPI(
     title="UTME26 AI Backend",
@@ -91,6 +93,45 @@ async def ask_ai(request: QuestionRequest):
         "answer": result["answer"],
         "sources": result.get("sources", []),
     }
+
+
+# -------------------------------------------------------
+# POST /ai-query-stream — SSE version of /ai-query. Same math-first check,
+# same ask_gpt2 logic underneath, but streams real progress events as they
+# actually happen instead of returning one blob at the end.
+#
+# Event shapes (each is one "data: <json>\n\n" line):
+#   {"type": "status", "text": "..."}                         -- real progress
+#   {"type": "final", "answer": "...", "sources": [...]}       -- once, last
+# -------------------------------------------------------
+@app.post("/ai-query-stream")
+async def ask_ai_stream(request: QuestionRequest):
+    user_question = request.query.strip()
+    chat_history = [m.model_dump() for m in request.history] if request.history else []
+    image_urls = request.imageUrls or []
+
+    async def event_generator():
+        if not user_question:
+            yield f"data: {json.dumps({'type': 'final', 'answer': 'Please type a question!', 'sources': []})}\n\n"
+            return
+
+        # 1. Math/algebra short-circuit — same as /ai-query, instant, no need to stream steps
+        eq_answer = solve_equation_with_steps(user_question)
+        if eq_answer and "Could not" not in eq_answer:
+            yield f"data: {json.dumps({'type': 'status', 'text': 'Solving equation...'})}\n\n"
+            yield f"data: {json.dumps({'type': 'final', 'answer': eq_answer, 'sources': []})}\n\n"
+            return
+
+        # 2. Real generator from gpt2_test — every status event here reflects
+        #    an actual step that just ran (classifier call, real search hit,
+        #    provider call), nothing synthetic.
+        for event in ask_gpt2_stream(user_question, history=chat_history, image_urls=image_urls if image_urls else None):
+            if event["type"] == "status":
+                yield f"data: {json.dumps({'type': 'status', 'text': event['text']})}\n\n"
+            elif event["type"] == "final":
+                yield f"data: {json.dumps({'type': 'final', 'answer': event['answer'], 'sources': event.get('sources', [])})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 # -------------------------------------------------------
