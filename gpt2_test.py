@@ -49,18 +49,27 @@ if not GROQ_API_KEY:
 # ---------------------------------------------------------------------------
 TEXT_PROVIDERS = [
     {
-        "name": "groq-70b",
+        # FIXED: llama-3.3-70b-versatile was deprecated by Groq (June 17,
+        # 2026) — Groq's own migration recommendation for it is exactly
+        # this model. This also restores the reasoning_effort mechanism
+        # from your original design: Qwen 3.6 27B is the only model here
+        # that actually supports toggling reasoning_effort on/off, which
+        # is a real lever for complex-vs-simple, not just temperature.
+        "name": "groq-qwen3.6-27b",
         "enabled": bool(GROQ_API_KEY),
         "url": "https://api.groq.com/openai/v1/chat/completions",
         "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {GROQ_API_KEY}"},
-        "model": "llama-3.3-70b-versatile",
+        "model": "qwen/qwen3.6-27b",
+        "supports_reasoning_effort": True,
     },
     {
-        "name": "groq-8b-instant",
+        # FIXED: llama-3.1-8b-instant was also deprecated (June 17, 2026).
+        # Groq's recommended replacement for it is openai/gpt-oss-20b.
+        "name": "groq-gpt-oss-20b",
         "enabled": bool(GROQ_API_KEY),
         "url": "https://api.groq.com/openai/v1/chat/completions",
         "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {GROQ_API_KEY}"},
-        "model": "llama-3.1-8b-instant",
+        "model": "openai/gpt-oss-20b",
     },
     {
         "name": "meta-llama/llama-3.1-8b-instruct:free",
@@ -489,31 +498,46 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
 # HELPERS — unchanged
 # ---------------------------------------------------------------------------
 def get_lean_history(history):
+    """
+    Returns (lean_history, was_truncated). was_truncated is True whenever
+    there were more than 6 messages to begin with — the model needs to
+    know this so it can honestly say "I don't have your earlier messages"
+    instead of confidently guessing based on only what it can see.
+    """
+    was_truncated = len(history) > 6
     lean = []
     for msg in history[-6:]:
         content = msg["content"]
         if isinstance(content, str) and len(content) > 1500:
             content = content[:750] + "... [Truncated] ..." + content[-750:]
         lean.append({"role": msg["role"], "content": content})
-    return lean
+    return lean, was_truncated
 
 # ---------------------------------------------------------------------------
 # GENERIC OPENAI-COMPATIBLE CALLER — used by both text and vision chains
 # ---------------------------------------------------------------------------
-def _call_provider_chain(providers: list, messages: list, temperature: float, max_tokens: int):
+def _call_provider_chain(providers: list, messages: list, temperature: float, max_tokens: int, reasoning_effort: str = None):
     """
     Walks `providers` in order. For each enabled provider: retries a couple
     times on 429 (rate limit), but moves to the next provider immediately on
     any other failure (bad key, out of credits, network error, etc.) instead
     of burning time/retries on a dead provider.
 
+    reasoning_effort ("default" or "none") is only ever sent to a provider
+    whose config sets supports_reasoning_effort — currently just Qwen 3.6
+    27B on Groq. Every other provider ignores this parameter entirely so
+    passing it never breaks a non-Qwen call.
+
     Returns (content, provider_name) on success, or (None, None) if every
     provider in the chain failed.
     """
     last_error = "No provider available."
+    print(f"[AI] provider chain starting — {len(providers)} configured, "
+          f"temperature={temperature}, max_tokens={max_tokens}, reasoning_effort={reasoning_effort}")
 
     for provider in providers:
         if not provider["enabled"]:
+            print(f"[AI] skipping {provider['name']} — no API key configured")
             continue
 
         payload = {
@@ -523,6 +547,10 @@ def _call_provider_chain(providers: list, messages: list, temperature: float, ma
             "max_tokens": max_tokens,
             "stream": False,
         }
+        if reasoning_effort is not None and provider.get("supports_reasoning_effort"):
+            payload["reasoning_effort"] = reasoning_effort
+
+        print(f"[AI] trying {provider['name']} ({provider['model']})...")
 
         for attempt in range(1, MAX_RETRIES_PER_PROVIDER + 1):
             try:
@@ -536,17 +564,20 @@ def _call_provider_chain(providers: list, messages: list, temperature: float, ma
                     result = response.json()
                     content = result.get("choices", [{}])[0].get("message", {}).get("content")
                     if content:
-                        print(f"[AI] answered via {provider['name']}")
+                        print(f"[AI] answered via {provider['name']} ({len(content)} chars)")
                         return content, provider["name"]
                     last_error = f"{provider['name']}: empty content"
+                    print(f"[AI] {provider['name']} returned 200 but empty content — trying next provider")
                     break  # try next provider
 
                 if response.status_code == 429:
                     # Rate limited — worth a quick retry before giving up on this provider
                     if attempt < MAX_RETRIES_PER_PROVIDER:
+                        print(f"[AI] {provider['name']} rate limited (429), retry {attempt}/{MAX_RETRIES_PER_PROVIDER}")
                         time.sleep(RETRY_BASE_DELAY * attempt)
                         continue
                     last_error = f"{provider['name']}: rate limited (429)"
+                    print(f"[AI] {last_error} — giving up on this provider")
                     break
 
                 # Any other status (401 bad key, 402 out of credit, 404 model
@@ -558,6 +589,7 @@ def _call_provider_chain(providers: list, messages: list, temperature: float, ma
             except requests.exceptions.RequestException as e:
                 last_error = f"{provider['name']}: {e}"
                 if attempt < MAX_RETRIES_PER_PROVIDER:
+                    print(f"[AI] {last_error} — retry {attempt}/{MAX_RETRIES_PER_PROVIDER}")
                     time.sleep(RETRY_BASE_DELAY * attempt)
                     continue
                 print(f"[AI] {last_error}")
@@ -595,7 +627,8 @@ def ask_with_vision(prompt: str, image_urls: list, history: list = []) -> dict:
     )
 
     messages = [{"role": "system", "content": vision_system}]
-    for msg in get_lean_history(history):
+    lean_history, _ = get_lean_history(history)
+    for msg in lean_history:
         if isinstance(msg["content"], str):
             messages.append(msg)
     messages.append({"role": "user", "content": content})
@@ -668,6 +701,8 @@ def _ask_gpt2_core(
     # ── Normal text flow ─────────────────────────────────────────────────
     yield {"type": "status", "text": "Reading your question...", "detail": None}
     intent = classify_intent(prompt, history=history)
+    print(f"[INTENT] search={intent['search']} complex={intent['complex']} topic={intent['topic']} "
+          f"query={intent.get('search_query')!r}")
 
     # NEW: a real detail line reporting the classifier's actual decision —
     # not filler text, this is exactly what got decided and why the sheet
@@ -705,6 +740,7 @@ def _ask_gpt2_core(
     sources = []
     if intent["search"]:
         clean_query = intent["search_query"] or build_search_query(prompt)
+        print(f"[SEARCH] query={clean_query!r}")
         yield {
             "type": "status",
             "text": "Searching the web...",
@@ -729,8 +765,21 @@ def _ask_gpt2_core(
         # knowledge instead of relaying a search-failed error to the user.
 
     # ── Build messages ──────────────────────────────────────────────────
+    lean_history, history_truncated = get_lean_history(history)
+    if history_truncated:
+        # FIXED: without this, the model only ever sees the last 6 turns
+        # but has no idea anything came before them — so when asked "what
+        # was my first message" it confidently guesses using whatever it
+        # can see instead of admitting it doesn't have the full history.
+        current_identity += (
+            "\n\nNOTE: Only the most recent part of this conversation is "
+            "shown to you below — earlier messages exist but are not "
+            "included here. If asked about the very start of the "
+            "conversation or something from far back, say plainly that you "
+            "don't have access to that earlier part rather than guessing."
+        )
     messages = [{"role": "system", "content": current_identity}]
-    messages.extend(get_lean_history(history))
+    messages.extend(lean_history)
     messages.append({"role": "user", "content": prompt.strip()})
 
     yield {
@@ -749,6 +798,7 @@ def _ask_gpt2_core(
         messages,
         temperature=0.3 if intent["complex"] else 0.6,
         max_tokens=8000 if intent["complex"] else 2048,
+        reasoning_effort="default" if intent["complex"] else "none",
     )
 
     if answer is None:
@@ -781,7 +831,7 @@ def _ask_gpt2_core(
                 + web_results
             )
             retry_messages = [{"role": "system", "content": retry_identity}]
-            retry_messages.extend(get_lean_history(history))
+            retry_messages.extend(get_lean_history(history)[0])
             retry_messages.append({"role": "user", "content": prompt.strip()})
 
             yield {
@@ -790,7 +840,7 @@ def _ask_gpt2_core(
                 "detail": "Redoing the answer now that real search results are available.",
             }
             retry_answer, retry_provider = _call_provider_chain(
-                TEXT_PROVIDERS, retry_messages, temperature=0.5, max_tokens=2048
+                TEXT_PROVIDERS, retry_messages, temperature=0.5, max_tokens=2048, reasoning_effort="none"
             )
             if retry_answer:
                 yield {"type": "final", "answer": retry_answer, "sources": fallback_sources, "provider": retry_provider}

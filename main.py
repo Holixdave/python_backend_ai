@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from typing import List
 import os
 import json
+import re
 from math_solver import solve_math_with_explanation
 from equation_solver import solve_equation_with_steps
 from gpt2_test import ask_gpt2, ask_gpt2_stream
@@ -64,6 +65,34 @@ def build_prompt(user_query: str) -> str:
     )
 
 
+# ── FIXED: the equation short-circuit used to hijack plain-text messages.
+# Two problems: (1) it called the solver on ANY input, even ordinary
+# sentences, and (2) it only checked for the substring "Could not" — other
+# failure phrasings like "No solution found for this equation." slipped
+# through and got returned as if they were a real answer. Now we only even
+# attempt the solver on text that actually looks like an equation, and we
+# check against every known failure phrasing before trusting the result.
+_EQUATION_FAILURE_MARKERS = (
+    "could not", "no solution", "unable to solve", "invalid equation", "error",
+)
+
+
+def _looks_like_equation(text: str) -> bool:
+    # Needs at least one digit AND (an '=' sign OR a math operator next to
+    # a letter/number) — cheap filter that ordinary sentences won't pass,
+    # while "2x + 5y - 3z = 11" or "3x^2 = 16" will.
+    if not re.search(r"\d", text):
+        return False
+    return "=" in text or bool(re.search(r"[a-zA-Z]\s*[\^]|[\+\-\*/]\s*\d|\d\s*[\+\-\*/]", text))
+
+
+def _equation_solved_ok(eq_answer: str) -> bool:
+    if not eq_answer:
+        return False
+    lowered = eq_answer.lower()
+    return not any(marker in lowered for marker in _EQUATION_FAILURE_MARKERS)
+
+
 # -------------------------------------------------------
 # POST /ai-query  — main chat endpoint (UNCHANGED path/schema for frontend;
 # only an additive "sources" field is included in the response now)
@@ -78,10 +107,15 @@ async def ask_ai(request: QuestionRequest):
     if not user_question:
         return {"label": "unknown", "answer": "Please type a question!", "sources": []}
 
-    # 1. Check for Math/Algebra first (Calculators don't need history)
-    eq_answer = solve_equation_with_steps(user_question)
-    if eq_answer and "Could not" not in eq_answer:
-        return {"label": "algebra", "answer": eq_answer, "sources": []}
+    print(f"[REQUEST] /ai-query: {user_question[:100]!r} (history={len(chat_history)} msgs)")
+
+    # 1. Check for Math/Algebra first (Calculators don't need history) —
+    #    only attempted when the text actually looks like an equation.
+    if _looks_like_equation(user_question):
+        eq_answer = solve_equation_with_steps(user_question)
+        print(f"[EQUATION] input looked equation-like, solver said: {eq_answer!r}")
+        if _equation_solved_ok(eq_answer):
+            return {"label": "algebra", "answer": eq_answer, "sources": []}
 
     # 2. AI provider chain (Groq -> fallback providers) — now with web search
     #    sources returned alongside the answer when search was used.
@@ -115,12 +149,16 @@ async def ask_ai_stream(request: QuestionRequest):
             yield f"data: {json.dumps({'type': 'final', 'answer': 'Please type a question!', 'sources': []})}\n\n"
             return
 
-        # 1. Math/algebra short-circuit — same as /ai-query, instant, no need to stream steps
-        eq_answer = solve_equation_with_steps(user_question)
-        if eq_answer and "Could not" not in eq_answer:
-            yield f"data: {json.dumps({'type': 'status', 'text': 'Solving equation...'})}\n\n"
-            yield f"data: {json.dumps({'type': 'final', 'answer': eq_answer, 'sources': []})}\n\n"
-            return
+        print(f"[REQUEST] /ai-query-stream: {user_question[:100]!r} (history={len(chat_history)} msgs)")
+
+        # 1. Math/algebra short-circuit — same fixed guard as /ai-query
+        if _looks_like_equation(user_question):
+            eq_answer = solve_equation_with_steps(user_question)
+            print(f"[EQUATION] input looked equation-like, solver said: {eq_answer!r}")
+            if _equation_solved_ok(eq_answer):
+                yield f"data: {json.dumps({'type': 'status', 'text': 'Solving equation...'})}\n\n"
+                yield f"data: {json.dumps({'type': 'final', 'answer': eq_answer, 'sources': []})}\n\n"
+                return
 
         # 2. Real generator from gpt2_test — every status event here reflects
         #    an actual step that just ran (classifier call, real search hit,
