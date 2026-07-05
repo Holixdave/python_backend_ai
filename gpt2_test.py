@@ -660,35 +660,64 @@ def _ask_gpt2_core(
     ]
 
     if valid_image_urls:
-        yield {"type": "status", "text": "Looking at the image..."}
+        yield {"type": "status", "text": "Looking at the image...", "detail": None}
         result = ask_with_vision(prompt, valid_image_urls, history)
         yield {"type": "final", **result}
         return
 
     # ── Normal text flow ─────────────────────────────────────────────────
-    yield {"type": "status", "text": "Reading your question..."}
+    yield {"type": "status", "text": "Reading your question...", "detail": None}
     intent = classify_intent(prompt, history=history)
+
+    # NEW: a real detail line reporting the classifier's actual decision —
+    # not filler text, this is exactly what got decided and why the sheet
+    # is worth tapping.
+    yield {
+        "type": "status",
+        "text": "Understood the question",
+        "detail": (
+            f"This {'needs a current/live answer' if intent['search'] else 'can be answered from what I already know'}, "
+            f"and calls for {'multi-step reasoning' if intent['complex'] else 'a quick direct answer'}."
+        ),
+    }
 
     current_identity = NEUTRAL_SYSTEM_PROMPT + "\n\n" + IMAGE_GEN_AWARENESS
 
     if intent["topic"] == "jamb":
-        yield {"type": "status", "text": "Checking JAMB/UTME study notes..."}
+        yield {
+            "type": "status",
+            "text": "Checking JAMB/UTME study notes...",
+            "detail": "Pulling in the JAMB/UTME/WAEC exam-prep knowledge base for this reply.",
+        }
         current_identity = (
             f"{NEUTRAL_SYSTEM_PROMPT}\n\n{IMAGE_GEN_AWARENESS}\n\n"
             f"CURRENT CONTEXT: {ZINDRYX_INFO}"
         )
     elif intent["topic"] == "mojizela":
-        yield {"type": "status", "text": "Checking Mojizela app details..."}
+        yield {
+            "type": "status",
+            "text": "Checking Mojizela app details...",
+            "detail": "Pulling in the Mojizela app/coins/wallet knowledge base for this reply.",
+        }
         current_identity = f"{NEUTRAL_SYSTEM_PROMPT}\n\n{IMAGE_GEN_AWARENESS}\n\nCURRENT CONTEXT: {MOJIZELA_INFO}"
 
     # ── Inject web search results if needed ──────────────────────────────
     sources = []
     if intent["search"]:
-        yield {"type": "status", "text": "Searching the web..."}
         clean_query = intent["search_query"] or build_search_query(prompt)
+        yield {
+            "type": "status",
+            "text": "Searching the web...",
+            "detail": f'Searching for: "{clean_query}"',
+        }
         web_results, sources = search_web(clean_query)
         if web_results:
-            yield {"type": "status", "text": f"Found {len(sources)} source(s)"}
+            titles = [s.get("title", "").strip() for s in sources if s.get("title")]
+            yield {
+                "type": "status",
+                "text": f"Found {len(sources)} source(s)",
+                "detail": " • ".join(titles[:5]) if titles else None,
+            }
             current_identity += (
                 "\n\nWEB SEARCH RESULTS (Real-time data fetched for this query. "
                 "Use these results to give the user accurate, current information. "
@@ -704,7 +733,16 @@ def _ask_gpt2_core(
     messages.extend(get_lean_history(history))
     messages.append({"role": "user", "content": prompt.strip()})
 
-    yield {"type": "status", "text": "Thinking it through..." if intent["complex"] else "Writing answer..."}
+    yield {
+        "type": "status",
+        "text": "Thinking it through..." if intent["complex"] else "Writing answer...",
+        "detail": (
+            "Using a lower temperature and a bigger token budget since this "
+            "needs a longer, more careful answer."
+            if intent["complex"]
+            else "Keeping this fast and light since it's a simple, direct question."
+        ),
+    }
 
     answer, provider = _call_provider_chain(
         TEXT_PROVIDERS,
@@ -722,11 +760,20 @@ def _ask_gpt2_core(
     # search now and re-ask with real web context. Sources always get
     # attached when this fires.
     if not intent["search"] and not sources and _looks_unsure(answer):
-        yield {"type": "status", "text": "Not fully sure — double-checking online..."}
         clean_query = build_search_query(prompt)
+        yield {
+            "type": "status",
+            "text": "Not fully sure — double-checking online...",
+            "detail": f'The first draft wasn\'t confident, so searching for: "{clean_query}"',
+        }
         web_results, fallback_sources = search_web(clean_query)
         if web_results:
-            yield {"type": "status", "text": f"Found {len(fallback_sources)} source(s)"}
+            titles = [s.get("title", "").strip() for s in fallback_sources if s.get("title")]
+            yield {
+                "type": "status",
+                "text": f"Found {len(fallback_sources)} source(s)",
+                "detail": " • ".join(titles[:5]) if titles else None,
+            }
             retry_identity = current_identity + (
                 "\n\nWEB SEARCH RESULTS (Real-time data fetched for this query. "
                 "Use these results to give the user accurate, current information. "
@@ -737,7 +784,11 @@ def _ask_gpt2_core(
             retry_messages.extend(get_lean_history(history))
             retry_messages.append({"role": "user", "content": prompt.strip()})
 
-            yield {"type": "status", "text": "Rewriting answer with sources..."}
+            yield {
+                "type": "status",
+                "text": "Rewriting answer with sources...",
+                "detail": "Redoing the answer now that real search results are available.",
+            }
             retry_answer, retry_provider = _call_provider_chain(
                 TEXT_PROVIDERS, retry_messages, temperature=0.5, max_tokens=2048
             )
