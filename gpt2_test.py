@@ -819,7 +819,7 @@ def _ask_gpt2_core(
     # ── Normal text flow ─────────────────────────────────────────────────
     yield {"type": "status", "text": "Reading your question...", "detail": None}
     intent = classify_intent(prompt, history=history)
-    print(f"[INTENT] search={intent['search']} complex={intent['complex']} topic={intent['topic']} "
+    print(f"[INTENT] search_type={intent['search_type']} complex={intent['complex']} topic={intent['topic']} "
           f"query={intent.get('search_query')!r}")
 
     # NEW: a real detail line reporting the classifier's actual decision —
@@ -829,7 +829,7 @@ def _ask_gpt2_core(
         "type": "status",
         "text": "Understood the question",
         "detail": (
-            f"This {'needs a current/live answer' if intent['search'] else 'can be answered from what I already know'}, "
+            f"This {'needs a current/live answer' if intent['search_type'] != 'none' else 'can be answered from what I already know'}, "
             f"and calls for {'multi-step reasoning' if intent['complex'] else 'a quick direct answer'}."
         ),
     }
