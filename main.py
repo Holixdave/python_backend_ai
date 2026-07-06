@@ -9,6 +9,7 @@ import re
 from math_solver import solve_math_with_explanation
 from equation_solver import solve_equation_with_steps
 from gpt2_test import ask_gpt2, ask_gpt2_stream
+from user_doc_manager import UserDocManager
 
 app = FastAPI(
     title="UTME26 AI Backend",
@@ -30,6 +31,36 @@ class QuestionRequest(BaseModel):
     query:     str
     history:   List[ChatMessage] = Field(default_factory=list)
     imageUrls: List[str]         = Field(default_factory=list)
+
+
+# -------------------------------------------------------
+# Doc Storage Models
+# -------------------------------------------------------
+class SaveDocRequest(BaseModel):
+    filename: str
+    content: str
+    hint: str = None
+    tags: List[str] = Field(default_factory=list)
+
+
+class DocMetadata(BaseModel):
+    id: str
+    filename: str
+    hint: str
+    tags: List[str] = Field(default_factory=list)
+    date: str
+    size: int
+
+
+class DocWithContent(BaseModel):
+    id: str
+    filename: str
+    content: str
+    hint: str = None
+    tags: List[str] = Field(default_factory=list)
+    date: str
+    size: int
+
 
 # -------------------------------------------------------
 # Math detection helper
@@ -216,3 +247,87 @@ async def health():
         "cerebras_key_loaded": CEREBRAS_API_KEY is not None,
         "gemini_key_loaded": GEMINI_API_KEY is not None,
     }
+
+
+# -------------------------------------------------------
+# POST /user/{userid}/doc/save — save a doc (HTML, SVG, Markdown, etc.)
+# -------------------------------------------------------
+@app.post("/user/{userid}/doc/save")
+async def save_user_doc(userid: str, request: SaveDocRequest):
+    try:
+        manager = UserDocManager(userid)
+        doc_meta = manager.save_doc(
+            filename=request.filename,
+            content=request.content,
+            hint=request.hint,
+            tags=request.tags,
+        )
+        print(f"[DOC] saved {userid}/{request.filename} ({doc_meta['size']} bytes)")
+        return {"status": "saved", "doc": doc_meta}
+    except Exception as e:
+        print(f"[DOC] save failed for {userid}/{request.filename}: {e}")
+        return {"status": "error", "message": str(e)}, 400
+
+
+# -------------------------------------------------------
+# GET /user/{userid}/doc/search?q=hint — search user's docs by hint/tag
+# -------------------------------------------------------
+@app.get("/user/{userid}/doc/search")
+async def search_user_docs(userid: str, q: str, limit: int = 10):
+    try:
+        manager = UserDocManager(userid)
+        results = manager.search_by_hint(q, limit=limit)
+        print(f"[DOC] search {userid} for '{q}' → {len(results)} results")
+        return {"status": "ok", "query": q, "results": results}
+    except Exception as e:
+        print(f"[DOC] search failed for {userid}: {e}")
+        return {"status": "error", "message": str(e)}, 400
+
+
+# -------------------------------------------------------
+# GET /user/{userid}/doc/list — list all user's docs (metadata only)
+# -------------------------------------------------------
+@app.get("/user/{userid}/doc/list")
+async def list_user_docs(userid: str):
+    try:
+        manager = UserDocManager(userid)
+        docs = manager.list_all_docs()
+        print(f"[DOC] list {userid} → {len(docs)} docs")
+        return {"status": "ok", "userid": userid, "docs": docs}
+    except Exception as e:
+        print(f"[DOC] list failed for {userid}: {e}")
+        return {"status": "error", "message": str(e)}, 400
+
+
+# -------------------------------------------------------
+# GET /user/{userid}/doc/file/{docid} — retrieve full doc (content + metadata)
+# -------------------------------------------------------
+@app.get("/user/{userid}/doc/file/{docid}")
+async def get_user_doc(userid: str, docid: str):
+    try:
+        manager = UserDocManager(userid)
+        doc = manager.get_doc(docid)
+        if not doc:
+            return {"status": "not_found", "docid": docid}, 404
+        print(f"[DOC] retrieved {userid}/{docid} ({doc['size']} bytes)")
+        return {"status": "ok", "doc": doc}
+    except Exception as e:
+        print(f"[DOC] get failed for {userid}/{docid}: {e}")
+        return {"status": "error", "message": str(e)}, 400
+
+
+# -------------------------------------------------------
+# DELETE /user/{userid}/doc/file/{docid} — delete a doc
+# -------------------------------------------------------
+@app.delete("/user/{userid}/doc/file/{docid}")
+async def delete_user_doc(userid: str, docid: str):
+    try:
+        manager = UserDocManager(userid)
+        deleted = manager.delete_doc(docid)
+        if not deleted:
+            return {"status": "not_found", "docid": docid}, 404
+        print(f"[DOC] deleted {userid}/{docid}")
+        return {"status": "deleted", "docid": docid}
+    except Exception as e:
+        print(f"[DOC] delete failed for {userid}/{docid}: {e}")
+        return {"status": "error", "message": str(e)}, 400

@@ -23,7 +23,9 @@ import os
 import time
 import json
 import requests
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+from user_doc_manager import UserDocManager
 
 # ---------------------------------------------------------------------------
 # CONFIG — API keys. Only GROQ_API_KEY is required. Everything else is an
@@ -153,6 +155,29 @@ Never say you cannot generate images. Never say you are a text-only model.
 The image generation system is handled separately but you must always
 acknowledge the request positively and confirm it is being processed.
 """
+
+# ---------------------------------------------------------------------------
+# REAL SERVER-SIDE DATE/TIME — computed fresh on every call. This is the
+# fix for date/time questions going through DDGS: those "what's the date"
+# aggregator sites are dynamically rendered per-visitor, so a scraped
+# snapshot is often stale or wrong, and the model would hallucinate on top
+# of bad snippets. The backend's own clock is ground truth and needs no
+# search at all.
+# ---------------------------------------------------------------------------
+_WAT = timezone(timedelta(hours=1))  # West Africa Time — Nigeria, no DST
+
+
+def _current_datetime_line() -> str:
+    now_wat = datetime.now(_WAT)
+    formatted = now_wat.strftime("%A, %B %d, %Y, %I:%M %p")
+    return (
+        f"REAL CURRENT DATE AND TIME: {formatted} WAT (West Africa Time, GMT+1 — Nigeria). "
+        "This is the actual current date/time from the server's own clock — it is always "
+        "correct. Never search the web or guess for what today's date or the current time is; "
+        "just use this value directly. Only search the web for things that actually require "
+        "it (news, prices, events, specific facts) — never for the date or time itself."
+    )
+
 
 NEUTRAL_SYSTEM_PROMPT = (
     "You are UTME26 AI, a smart, modern, premium Nigerian AI assistant. "
@@ -392,25 +417,26 @@ _INTENT_SYSTEM_PROMPT = (
     "You will be shown the last few turns of a conversation, then the user's "
     "newest message. Reply with ONLY a raw JSON object and nothing else — "
     "no markdown fences, no explanation. Fields:\n"
-    '"search": true if answering well needs current, live, or specific '
-    "factual info you might not have (prices, links, downloads, recent "
-    "events, dates in 2025/2026, \"who won\", a specific named person/"
-    "business/church/organisation you're unsure about) — otherwise false.\n"
-    '"search_query": ONLY if search is true. The actual clean thing to '
-    "search for, written as a real search engine query. Resolve vague "
-    "references (\"the damn church\", \"that place\", \"it\", \"her\") using "
-    "the conversation above to find the real proper noun being discussed — "
-    "e.g. if an earlier turn named \"Spirit and Life Family Bubble Church\" "
-    "and the new message says \"search for the damn church\", the query is "
-    "\"Spirit and Life Family Bubble Church\", NOT the literal wording of "
-    "the new message. Strip filler words, slang, and profanity — never "
-    "include them in the query. Empty string if search is false.\n"
-    '"complex": true if the request needs code, math, multi-step '
-    "reasoning, or a long detailed answer — false for greetings, small "
-    "talk, or simple one-line questions.\n"
-    '"topic": one of "jamb", "mojizela", or "general" — "jamb" only if '
-    "about JAMB/UTME/WAEC/Post-UTME/exam prep, \"mojizela\" only if about "
-    "the Mojizela app/coins/wallet/creators, else \"general\"."
+    '"search_type": one of "web", "user_docs", or "none". Set to "user_docs" if '
+    "the user is asking about their own saved files, previous conversations, "
+    "documents they shared, or explicitly says \"remember\", \"do you have\", "
+    "\"check my files\", \"from my docs\", \"my previous\", etc. Set to \"web\" "
+    "if the user needs current/live/factual info (prices, links, news, recent "
+    "events, dates, \"who won\", specific people/businesses/churches you're unsure "
+    "about). Set to \"none\" for everything else (greetings, code, analysis, "
+    "general conversation). IMPORTANT: pure date/time questions (\"what's today\", "
+    "\"what day is it\") are always \"none\" — the assistant already knows the "
+    "real current date from its own system.\n"
+    '"search_query": ONLY if search_type is "web" or "user_docs". For web: the '
+    "clean search query (resolve vague refs like \"the church\" to real names from "
+    "earlier turns). For user_docs: the hint/tag to search for (e.g. if user says "
+    "\"my recipe\", the query is \"recipe\").\n"
+    '"complex": true if the request needs code, math, multi-step reasoning, or a '
+    "long detailed answer — false for greetings, small talk, simple one-line "
+    "questions.\n"
+    '"topic": one of "jamb", "mojizela", or "general" — "jamb" only if about '
+    "JAMB/UTME/WAEC/Post-UTME/exam prep, \"mojizela\" only if about the Mojizela "
+    "app/coins/wallet/creators, else \"general\"."
 )
 
 
@@ -422,10 +448,24 @@ def _fallback_intent(prompt: str) -> dict:
         topic = "mojizela"
     else:
         topic = "general"
-    needs_search = needs_web_search(prompt)
+    
+    # Check for user_docs intent (remember, do you have, check my files, etc.)
+    user_docs_keywords = ["remember", "do you have", "check my", "my files", "my previous", "my doc", "from my"]
+    is_user_docs = any(keyword in t for keyword in user_docs_keywords)
+    
+    # Check for web search need
+    is_web = needs_web_search(prompt) and not is_user_docs
+    
+    search_type = "user_docs" if is_user_docs else ("web" if is_web else "none")
+    search_query = ""
+    if is_web:
+        search_query = build_search_query(prompt)
+    elif is_user_docs:
+        search_query = prompt  # use raw prompt as hint for user docs search
+    
     return {
-        "search": needs_search,
-        "search_query": build_search_query(prompt) if needs_search else "",
+        "search_type": search_type,
+        "search_query": search_query,
         "complex": any(k in t for k in CODING_KEYWORDS),
         "topic": topic,
     }
@@ -476,14 +516,18 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
             topic = data.get("topic")
             if topic not in ("jamb", "mojizela", "general"):
                 topic = "general"
-            search = bool(data.get("search", False))
+            
+            search_type = data.get("search_type", "none")
+            if search_type not in ("web", "user_docs", "none"):
+                search_type = "none"
+            
             search_query = (data.get("search_query") or "").strip()
-            if search and not search_query:
-                # classifier said yes but forgot the query — fall back to a
-                # cleaned version of the raw prompt rather than searching blind
-                search_query = build_search_query(prompt)
+            if search_type in ("web", "user_docs") and not search_query:
+                # classifier said yes but forgot the query — fall back to prompt
+                search_query = build_search_query(prompt) if search_type == "web" else prompt
+            
             return {
-                "search": search,
+                "search_type": search_type,
                 "search_query": search_query,
                 "complex": bool(data.get("complex", True)),
                 "topic": topic,
@@ -648,6 +692,7 @@ def ask_gpt2(
     prompt: str,
     history: Optional[list] = None,
     image_urls: Optional[list] = None,
+    userid: Optional[str] = None,
 ) -> dict:
     """
     Non-streaming entry point — unchanged signature/behaviour for existing
@@ -655,7 +700,7 @@ def ask_gpt2(
     drains _ask_gpt2_core() and keeps the final result.
     """
     final = None
-    for event in _ask_gpt2_core(prompt, history=history, image_urls=image_urls):
+    for event in _ask_gpt2_core(prompt, history=history, image_urls=image_urls, userid=userid):
         if event["type"] == "final":
             final = event
     return {"answer": final["answer"], "sources": final["sources"], "provider": final["provider"]}
@@ -665,19 +710,21 @@ def ask_gpt2_stream(
     prompt: str,
     history: Optional[list] = None,
     image_urls: Optional[list] = None,
+    userid: Optional[str] = None,
 ):
     """
     Streaming entry point for the /ai-query-stream SSE endpoint. Yields the
     exact same real progress events _ask_gpt2_core() produces — nothing
     synthetic. main.py wraps these as SSE frames.
     """
-    yield from _ask_gpt2_core(prompt, history=history, image_urls=image_urls)
+    yield from _ask_gpt2_core(prompt, history=history, image_urls=image_urls, userid=userid)
 
 
 def _ask_gpt2_core(
     prompt: str,
     history: Optional[list] = None,
     image_urls: Optional[list] = None,
+    userid: Optional[str] = None,
 ):
     """
     Shared generator. Yields:
@@ -716,7 +763,7 @@ def _ask_gpt2_core(
         ),
     }
 
-    current_identity = NEUTRAL_SYSTEM_PROMPT + "\n\n" + IMAGE_GEN_AWARENESS
+    current_identity = NEUTRAL_SYSTEM_PROMPT + "\n\n" + IMAGE_GEN_AWARENESS + "\n\n" + _current_datetime_line()
 
     if intent["topic"] == "jamb":
         yield {
@@ -725,7 +772,7 @@ def _ask_gpt2_core(
             "detail": "Pulling in the JAMB/UTME/WAEC exam-prep knowledge base for this reply.",
         }
         current_identity = (
-            f"{NEUTRAL_SYSTEM_PROMPT}\n\n{IMAGE_GEN_AWARENESS}\n\n"
+            f"{NEUTRAL_SYSTEM_PROMPT}\n\n{IMAGE_GEN_AWARENESS}\n\n{_current_datetime_line()}\n\n"
             f"CURRENT CONTEXT: {ZINDRYX_INFO}"
         )
     elif intent["topic"] == "mojizela":
@@ -734,11 +781,56 @@ def _ask_gpt2_core(
             "text": "Checking Mojizela app details...",
             "detail": "Pulling in the Mojizela app/coins/wallet knowledge base for this reply.",
         }
-        current_identity = f"{NEUTRAL_SYSTEM_PROMPT}\n\n{IMAGE_GEN_AWARENESS}\n\nCURRENT CONTEXT: {MOJIZELA_INFO}"
+        current_identity = f"{NEUTRAL_SYSTEM_PROMPT}\n\n{IMAGE_GEN_AWARENESS}\n\n{_current_datetime_line()}\n\nCURRENT CONTEXT: {MOJIZELA_INFO}"
 
-    # ── Inject web search results if needed ──────────────────────────────
+    # ── Inject user docs or web search results if needed ──────────────────
     sources = []
-    if intent["search"]:
+    user_docs = []
+    
+    if intent["search_type"] == "user_docs":
+        if userid:
+            yield {
+                "type": "status",
+                "text": "Checking your saved files...",
+                "detail": f'Searching for: "{intent["search_query"]}"',
+            }
+            try:
+                manager = UserDocManager(userid)
+                user_docs = manager.search_by_hint(intent["search_query"], limit=5)
+                if user_docs:
+                    yield {
+                        "type": "status",
+                        "text": f"Found {len(user_docs)} file(s) in your docs",
+                        "detail": " • ".join([d.get("hint", d.get("filename", ""))[:30] for d in user_docs[:3]]),
+                    }
+                    # Inject user docs into context
+                    docs_context = "USER'S SAVED FILES (from their document storage):\n"
+                    for doc in user_docs:
+                        hint = doc.get("hint", doc.get("filename", ""))
+                        tags = ", ".join(doc.get("tags", []))
+                        docs_context += f"- {hint} (tags: {tags})\n"
+                    current_identity += f"\n\n{docs_context}"
+                else:
+                    yield {
+                        "type": "status",
+                        "text": "No matching files found",
+                        "detail": "Falling back to knowledge base answer",
+                    }
+            except Exception as e:
+                print(f"[USER_DOCS] search failed for {userid}: {e}")
+                yield {
+                    "type": "status",
+                    "text": "Couldn't access your files, using knowledge base",
+                    "detail": str(e)[:50],
+                }
+        else:
+            yield {
+                "type": "status",
+                "text": "No user ID provided, skipping doc search",
+                "detail": "Will answer from knowledge base instead",
+            }
+    
+    elif intent["search_type"] == "web":
         clean_query = intent["search_query"] or build_search_query(prompt)
         print(f"[SEARCH] query={clean_query!r}")
         yield {
@@ -808,8 +900,8 @@ def _ask_gpt2_core(
     # ── Safety net: classifier said "no search needed", but the model
     # itself came back unsure. Rather than let a guess through, run one
     # search now and re-ask with real web context. Sources always get
-    # attached when this fires.
-    if not intent["search"] and not sources and _looks_unsure(answer):
+    # attached when this fires. (Skip if user_docs search was already done.)
+    if intent["search_type"] == "none" and not sources and _looks_unsure(answer):
         clean_query = build_search_query(prompt)
         yield {
             "type": "status",
