@@ -585,11 +585,16 @@ _THINK_BLOCK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
 _STEP_SPLIT_RE = re.compile(r"(?:^|\n)\s*\d+[\.\)]\s+")
 
 
-def _split_thinking(raw: str) -> tuple[str, str | None]:
+def _split_thinking(raw):
+    # type: (str) -> tuple
     """
     Strips a <think>...</think> block out of a raw model response.
     Returns (cleaned_answer, thinking_text_or_None). If there's no
     <think> block, returns the raw text unchanged and None.
+
+    Uses Optional/Tuple-free annotations on purpose — `tuple[str, str | None]`
+    is 3.10+ only syntax and will crash the whole module on import for
+    older Python runtimes, taking every endpoint down with it.
     """
     if not raw:
         return raw, None
@@ -598,10 +603,17 @@ def _split_thinking(raw: str) -> tuple[str, str | None]:
         return raw, None
     thinking = match.group(1).strip()
     cleaned = _THINK_BLOCK_RE.sub("", raw).strip()
+    # NEW — if the model's ENTIRE response was just the <think> block
+    # (nothing after it), don't hand back an empty string. Fall back to
+    # the raw, unstripped text so the user at least sees something
+    # instead of a blank bubble.
+    if not cleaned:
+        return raw.strip(), (thinking or None)
     return cleaned, (thinking or None)
 
 
-def _split_into_steps(thinking: str) -> list[str]:
+def _split_into_steps(thinking):
+    # type: (str) -> list
     """
     Breaks an extracted <think> block into individual step strings, full
     text, nothing cut. Expects numbered steps (from REASONING_STEP_HINT)
