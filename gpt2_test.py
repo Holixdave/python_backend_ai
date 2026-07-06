@@ -1,19 +1,19 @@
 # gpt2_test.py — Multi-provider fallback edition
 # ─────────────────────────────────────────────────────────────────────────────
 # WHAT CHANGED FROM THE OLD VERSION
-#   1 ask_gpt2() / ask_with_vision() no longer hit Groq only. They walk a
+#   1. ask_gpt2() / ask_with_vision() no longer hit Groq only. They walk a
 #      chain of providers (Groq -> OpenRouter free models -> Cerebras free
 #      tier -> Gemini) and fail over automatically. If Groq is out of
 #      credits or rate-limited, the user never sees an error — the next
 #      provider in the chain just answers instead.
-#   2 search_web() walks a chain too: ddgs -> Brave -> Tavily. If every
+#   2. search_web() walks a chain too: ddgs -> Brave -> Tavily. If every
 #      search engine fails, we silently return no web context instead of
 #      stuffing a "Search failed: ..." string into the prompt (which used
 #      to sometimes leak through to the user as the actual answer).
-#   3 ask_gpt2() now returns a dict: {"answer": str, "sources": list,
+#   3. ask_gpt2() now returns a dict: {"answer": str, "sources": list,
 #      "provider": str}. main.py uses this to add an optional "sources"
 #      field to the API response — nothing existing was removed.
-#   4 Every new provider is OPTIONAL — controlled by env var presence. If
+#   4. Every new provider is OPTIONAL — controlled by env var presence. If
 #      you never set OPENROUTER_API_KEY / CEREBRAS_API_KEY / GEMINI_API_KEY
 #      / BRAVE_API_KEY / TAVILY_API_KEY, this behaves exactly like before,
 #      just with Groq retried smarter.
@@ -965,7 +965,7 @@ def _ask_gpt2_core(
         TEXT_PROVIDERS,
         messages,
         temperature=0.3 if intent["complex"] else 0.6,
-        max_tokens=8000 if intent["complex"] else 2048,
+        max_tokens=4096 if intent["complex"] else 2048,
         reasoning_effort="default" if intent["complex"] else "none",
     )
 
