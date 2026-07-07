@@ -373,6 +373,34 @@ def _search_tavily(query: str, max_results: int):
     ]
 
 
+def _search_ddgs_images(query: str, max_results: int = 4):
+    from ddgs import DDGS
+    with DDGS() as ddgs:
+        results = list(ddgs.images(query, max_results=max_results))
+    return [
+        {
+            "image": r.get("image", ""),
+            "thumbnail": r.get("thumbnail", r.get("image", "")),
+            "title": r.get("title", ""),
+            "source": r.get("url", r.get("source", "")),
+        }
+        for r in results if r.get("image")
+    ]
+
+
+def search_images(query: str, max_results: int = 4):
+    """
+    Best-effort pictorial results to accompany a web search — never raises,
+    returns [] on any failure so a broken image search can't take down the
+    whole answer.
+    """
+    try:
+        return _search_ddgs_images(query, max_results)
+    except Exception as e:
+        print(f"[IMAGE SEARCH] failed: {e}")
+        return []
+
+
 def search_web(query: str, max_results: int = 4):
     """
     Tries each search engine in order. Returns (formatted_text, sources).
@@ -637,6 +665,34 @@ def _split_into_steps(thinking):
     return parts or [thinking.strip()]
 
 
+_LEADING_BOLD_HEADER_RE = re.compile(r"^\s*\*\*(.+?)\*\*\s*:?", re.DOTALL)
+
+def _derive_step_label(step_text: str, index: int) -> str:
+    """
+    Turns a raw chain-of-thought step into a short label for the collapsed
+    row, instead of the literal "Reasoning step N". Prefers the step's own
+    leading **Bold Header**, falls back to the first few words of plain
+    text, and only uses a numbered fallback if there's truly nothing to
+    work with.
+    """
+    if not step_text:
+        return f"Reasoning step {index}"
+
+    header_match = _LEADING_BOLD_HEADER_RE.match(step_text)
+    if header_match:
+        label = header_match.group(1).strip().rstrip(":")
+        if label:
+            return label
+
+    first_line = step_text.strip().splitlines()[0]
+    words = first_line.strip("*# ").split()
+    if words:
+        snippet = " ".join(words[:7])
+        return snippet + ("…" if len(words) > 7 else "")
+
+    return f"Reasoning step {index}"
+
+
 # ---------------------------------------------------------------------------
 # GENERIC OPENAI-COMPATIBLE CALLER — used by both text and vision chains
 # ---------------------------------------------------------------------------
@@ -783,7 +839,12 @@ def ask_gpt2(
     for event in _ask_gpt2_core(prompt, history=history, image_urls=image_urls, userid=userid):
         if event["type"] == "final":
             final = event
-    return {"answer": final["answer"], "sources": final["sources"], "provider": final["provider"]}
+    return {
+        "answer": final["answer"],
+        "sources": final["sources"],
+        "images": final.get("images", []),
+        "provider": final["provider"],
+    }
 
 
 def ask_gpt2_stream(
@@ -819,11 +880,19 @@ def _ask_gpt2_core(
         if isinstance(url, str) and url.startswith(("http://", "https://"))
     ]
 
+    image_results = []  # populated later only if a web search actually runs
+
     if valid_image_urls:
         yield {"type": "status", "text": "Looking at the image...", "detail": None}
-        result = ask_with_vision(prompt, valid_image_urls, history)
-        yield {"type": "final", **result}
-        return
+        vision_result = ask_with_vision(prompt, valid_image_urls, history)
+
+        # Fold what vision saw into the prompt, then fall through to the
+        # normal classify_intent() + search flow below — this is what lets
+        # "browse for that" / "bring back pictures of this" actually
+        # trigger a real web search instead of dead-ending on
+        # "I can't browse online". No `return` here on purpose.
+        image_description = vision_result.get("answer", "")
+        prompt = f"{prompt}\n\n[Image analysis: {image_description}]"
 
     # ── Normal text flow ─────────────────────────────────────────────────
     yield {"type": "status", "text": "Reading your question...", "detail": None}
@@ -919,6 +988,13 @@ def _ask_gpt2_core(
             "detail": f'Searching for: "{clean_query}"',
         }
         web_results, sources = search_web(clean_query)
+        image_results = search_images(clean_query)  # best-effort, never raises
+        if image_results:
+            yield {
+                "type": "status",
+                "text": f"Found {len(image_results)} image(s)",
+                "detail": None,
+            }
         if web_results:
             titles = [s.get("title", "").strip() for s in sources if s.get("title")]
             yield {
@@ -979,7 +1055,7 @@ def _ask_gpt2_core(
     )
 
     if answer is None:
-        yield {"type": "final", "answer": _friendly_failure_message(), "sources": [], "provider": None}
+        yield {"type": "final", "answer": _friendly_failure_message(), "sources": [], "images": image_results, "provider": None}
         return
 
     # NEW — pull any <think>...</think> block Qwen returned inline out of
@@ -991,7 +1067,7 @@ def _ask_gpt2_core(
         for i, step in enumerate(_split_into_steps(model_thinking), start=1):
             yield {
                 "type": "status",
-                "text": f"Reasoning step {i}",
+                "text": _derive_step_label(step, i),
                 "detail": step,
             }
 
@@ -1040,13 +1116,13 @@ def _ask_gpt2_core(
                     for i, step in enumerate(_split_into_steps(retry_thinking), start=1):
                         yield {
                             "type": "status",
-                            "text": f"Reasoning step {i}",
+                            "text": _derive_step_label(step, i),
                             "detail": step,
                         }
-                yield {"type": "final", "answer": retry_answer, "sources": fallback_sources, "provider": retry_provider}
+                yield {"type": "final", "answer": retry_answer, "sources": fallback_sources, "images": image_results, "provider": retry_provider}
                 return
 
-    yield {"type": "final", "answer": answer, "sources": sources, "provider": provider}
+    yield {"type": "final", "answer": answer, "sources": sources, "images": image_results, "provider": provider}
 
 
 _UNSURE_PHRASES = [

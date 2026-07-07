@@ -31,6 +31,7 @@ class QuestionRequest(BaseModel):
     query:     str
     history:   List[ChatMessage] = Field(default_factory=list)
     imageUrls: List[str]         = Field(default_factory=list)
+    userid:    str                = None
 
 
 # -------------------------------------------------------
@@ -151,12 +152,13 @@ async def ask_ai(request: QuestionRequest):
     # 2. AI provider chain (Groq -> fallback providers) — now with web search
     #    sources returned alongside the answer when search was used.
     image_urls = request.imageUrls or []
-    result = ask_gpt2(user_question, history=chat_history, image_urls=image_urls if image_urls else None)
+    result = ask_gpt2(user_question, history=chat_history, image_urls=image_urls if image_urls else None, userid=request.userid)
 
     return {
         "label": "general",
         "answer": result["answer"],
         "sources": result.get("sources", []),
+        "images": result.get("images", []),
     }
 
 
@@ -194,11 +196,11 @@ async def ask_ai_stream(request: QuestionRequest):
         # 2. Real generator from gpt2_test — every status event here reflects
         #    an actual step that just ran (classifier call, real search hit,
         #    provider call), nothing synthetic.
-        for event in ask_gpt2_stream(user_question, history=chat_history, image_urls=image_urls if image_urls else None):
+        for event in ask_gpt2_stream(user_question, history=chat_history, image_urls=image_urls if image_urls else None, userid=request.userid):
             if event["type"] == "status":
                 yield f"data: {json.dumps({'type': 'status', 'text': event['text'], 'detail': event.get('detail')})}\n\n"
             elif event["type"] == "final":
-                yield f"data: {json.dumps({'type': 'final', 'answer': event['answer'], 'sources': event.get('sources', [])})}\n\n"
+                yield f"data: {json.dumps({'type': 'final', 'answer': event['answer'], 'sources': event.get('sources', []), 'images': event.get('images', [])})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
