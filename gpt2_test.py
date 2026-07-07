@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+
+
 # gpt2_test.py — Multi-provider fallback edition
 # ─────────────────────────────────────────────────────────────────────────────
 # WHAT CHANGED FROM THE OLD VERSION
@@ -345,6 +348,7 @@ def build_search_query(prompt: str) -> str:
         "can i get", "can you get", "can you find", "find me",
         "search for", "look for", "get me", "show me", "i want",
         "please", "dude", "man", "kindly", "help me",
+        "abeg", "biko", "pls", "plz", "sha", "na so", "una",
     ]
     q = prompt.lower()
     for r in replacements:
@@ -503,10 +507,17 @@ _INTENT_SYSTEM_PROMPT = (
     "general conversation). IMPORTANT: pure date/time questions (\"what's today\", "
     "\"what day is it\") are always \"none\" — the assistant already knows the "
     "real current date from its own system.\n"
-    '"search_query": ONLY if search_type is "web" or "user_docs". For web: the '
-    "clean search query (resolve vague refs like \"the church\" to real names from "
-    "earlier turns). For user_docs: the hint/tag to search for (e.g. if user says "
-    "\"my recipe\", the query is \"recipe\").\n"
+    '"search_query": ONLY if search_type is "web" or "user_docs". For web: '
+    "DISTILL this down to 3-8 clean lookup keywords a search engine would "
+    "understand — resolve vague refs (\"the church\") to real names from "
+    "earlier turns, strip greetings/filler/slang (\"abeg\", \"pls\", \"man\", "
+    "\"dude\", \"biko\"), and drop your own assistant framing entirely. "
+    "NEVER just copy the user's sentence — even a fairly clean-sounding one "
+    "should still be reduced to its core search terms. Example: user says "
+    "\"dude can u find the current dollar to naira rate abeg\" -> "
+    "search_query should be \"dollar to naira exchange rate today\", NOT "
+    "the original sentence. For user_docs: the hint/tag to search for (e.g. "
+    "if user says \"my recipe\", the query is \"recipe\").\n"
     '"complex": true if the request needs code, math, multi-step reasoning, or a '
     "long detailed answer — false for greetings, small talk, simple one-line "
     "questions.\n"
@@ -617,6 +628,17 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
             if search_type in ("web", "user_docs") and not search_query:
                 # classifier said yes but forgot the query — fall back to prompt
                 search_query = build_search_query(prompt) if search_type == "web" else prompt
+
+            # Safety net: if the classifier still just echoed the raw prompt
+            # back, or handed back something way longer than a real search
+            # query should be, run it through the keyword-stripping fallback
+            # as an extra distillation pass rather than sending the user's
+            # literal sentence to DDGS.
+            if search_type == "web" and search_query:
+                is_verbatim_echo = search_query.strip().lower() == prompt.strip().lower()
+                is_too_long = len(search_query.split()) > 12
+                if is_verbatim_echo or is_too_long:
+                    search_query = build_search_query(search_query)
             
             return {
                 "search_type": search_type,
@@ -1117,9 +1139,12 @@ def _ask_gpt2_core(
                 "detail": " • ".join(titles[:5]) if titles else None,
             }
             current_identity += (
-                "\n\nWEB SEARCH RESULTS (Real-time data fetched for this query. "
-                "Use these results to give the user accurate, current information. "
-                "Always include relevant links from the results when available):\n\n"
+                f"\n\n[BACKEND NOTE — not from the user]: The system distilled the "
+                f"user's message into the search query \"{clean_query}\" and fetched "
+                f"the results below on their behalf. This is reference material, not "
+                f"something the user typed — answer their actual question naturally "
+                f"using it, don't treat this block as their message or refer to the "
+                f"distilled query itself. Always include relevant links when available:\n\n"
                 + web_results
             )
         # if web_results is empty (every search engine failed), we simply
@@ -1249,9 +1274,12 @@ def _ask_gpt2_core(
                 "detail": " • ".join(titles[:5]) if titles else None,
             }
             retry_identity = current_identity + (
-                "\n\nWEB SEARCH RESULTS (Real-time data fetched for this query. "
-                "Use these results to give the user accurate, current information. "
-                "Always include relevant links from the results when available):\n\n"
+                f"\n\n[BACKEND NOTE — not from the user]: The system distilled the "
+                f"user's message into the search query \"{clean_query}\" and fetched "
+                f"the results below on their behalf. This is reference material, not "
+                f"something the user typed — answer their actual question naturally "
+                f"using it, don't treat this block as their message or refer to the "
+                f"distilled query itself. Always include relevant links when available:\n\n"
                 + web_results
             )
             retry_messages = [{"role": "system", "content": retry_identity}]
