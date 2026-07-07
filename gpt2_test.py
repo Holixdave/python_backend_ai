@@ -54,7 +54,7 @@ import requests
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from user_doc_manager import UserDocManager
-
+import random
 # ---------------------------------------------------------------------------
 # CONFIG — API keys. Only GROQ_API_KEY is required. Everything else is an
 # optional fallback: if the env var isn't set, that provider is just skipped.
@@ -85,12 +85,15 @@ TEXT_PROVIDERS = [
         # from your original design: Qwen 3.6 27B is the only model here
         # that actually supports toggling reasoning_effort on/off, which
         # is a real lever for complex-vs-simple, not just temperature.
-        "name": "groq-qwen3.6-27b",
-        "enabled": bool(GROQ_API_KEY),
-        "url": "https://api.groq.com/openai/v1/chat/completions",
-        "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {GROQ_API_KEY}"},
-        "model": "qwen/qwen3.6-27b",
-        "supports_reasoning_effort": True,
+         "name": "groq-qwen3.6-27b",
+    "enabled": bool(GROQ_API_KEY),
+    "url": "https://api.groq.com/openai/v1/chat/completions",
+    "headers": {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {GROQ_API_KEY}"
+    },
+    "model": "qwen/qwen3.6-27b",
+    "supports_reasoning_effort": True
     },
     {
         # FIXED: llama-3.1-8b-instant was also deprecated (June 17, 2026).
@@ -842,12 +845,19 @@ def _call_provider_chain(providers: list, messages: list, temperature: float, ma
     return None, None
 
 
+
 def _friendly_failure_message() -> str:
-    return (
-        "I'm having trouble reaching my AI models right now — all providers "
-        "in the chain are temporarily unavailable. Please try again in a "
-        "moment."
-    )
+    """Returns a randomized, dynamic server overload or maintenance message."""
+    messages = [
+        "Our servers are currently pinned at 100% capacity. We are spinning up more resources—please try your request again in a moment.",
+        "We are experiencing an unprecedented surge in traffic. All upstream AI providers are temporarily maxed out. Please hang tight and retry shortly.",
+        "System maintenance is currently underway to improve performance. Services will be fully restored momentarily. Thank you for your patience.",
+        "High traffic alert. The server queue is completely full right now. Please give it a minute and try again.",
+        "We are experiencing a temporary outage across our model providers. Our engineering team is on it. Please retry your request soon."
+    ]
+    
+    return random.choice(messages)
+
 
 # ---------------------------------------------------------------------------
 # VISION — called when imageUrls is present
