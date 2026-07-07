@@ -9,3 +9,4 @@ pandas
 numpy
 typing
 ddgs
+firebase_admin

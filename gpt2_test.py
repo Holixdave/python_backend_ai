@@ -486,6 +486,14 @@ _INTENT_SYSTEM_PROMPT = (
     '"complex": true if the request needs code, math, multi-step reasoning, or a '
     "long detailed answer — false for greetings, small talk, simple one-line "
     "questions.\n"
+    '"wants_image": true if a picture would genuinely help this specific answer — '
+    "identifying/showing a physical object, a place or landmark, an animal/plant, "
+    "a product, a diagram of a concept, a wiring/hardware layout, a UI screenshot-"
+    "style reference, or anything visual. This is INDEPENDENT of search_type — "
+    "set it true even when the text answer comes purely from your own knowledge "
+    "(e.g. \"how do I fix this GPU artifact issue\" -> true, a good diagram/photo "
+    "helps regardless of whether search_type is \"none\"). False for pure text/code/"
+    "math/greetings/abstract discussion where a picture adds nothing.\n"
     '"topic": one of "jamb", "mojizela", or "general" — "jamb" only if about '
     "JAMB/UTME/WAEC/Post-UTME/exam prep, \"mojizela\" only if about the Mojizela "
     "app/coins/wallet/creators, else \"general\"."
@@ -514,11 +522,19 @@ def _fallback_intent(prompt: str) -> dict:
         search_query = build_search_query(prompt)
     elif is_user_docs:
         search_query = prompt  # use raw prompt as hint for user docs search
-    
+
+    image_keywords = [
+        "show me", "picture", "pictures", "photo", "photos", "image", "images",
+        "what does it look like", "what it looks like", "diagram", "look like",
+        "visual", "screenshot",
+    ]
+    wants_image = any(k in t for k in image_keywords)
+
     return {
         "search_type": search_type,
         "search_query": search_query,
         "complex": any(k in t for k in CODING_KEYWORDS),
+        "wants_image": wants_image,
         "topic": topic,
     }
 
@@ -582,6 +598,7 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
                 "search_type": search_type,
                 "search_query": search_query,
                 "complex": bool(data.get("complex", True)),
+                "wants_image": bool(data.get("wants_image", False)),
                 "topic": topic,
             }
         print(f"[INTENT] classifier HTTP {resp.status_code}, falling back to keywords")
@@ -988,13 +1005,6 @@ def _ask_gpt2_core(
             "detail": f'Searching for: "{clean_query}"',
         }
         web_results, sources = search_web(clean_query)
-        image_results = search_images(clean_query)  # best-effort, never raises
-        if image_results:
-            yield {
-                "type": "status",
-                "text": f"Found {len(image_results)} image(s)",
-                "detail": None,
-            }
         if web_results:
             titles = [s.get("title", "").strip() for s in sources if s.get("title")]
             yield {
@@ -1011,6 +1021,47 @@ def _ask_gpt2_core(
         # if web_results is empty (every search engine failed), we simply
         # don't mention search at all — the model answers from its own
         # knowledge instead of relaying a search-failed error to the user.
+
+    # ── Pictorial representation — independent of search_type ──────────────
+    # This used to only fire inside the "web" branch, which meant a
+    # perfectly-answered "how do I fix this GPU issue" (answered from the
+    # model's own knowledge, search_type == "none") never got a picture.
+    # wants_image is the classifier's own dedicated signal for "would a
+    # picture genuinely help here", decoupled from whether a text search
+    # is needed at all.
+    if intent.get("wants_image"):
+        image_query = intent.get("search_query") or build_search_query(prompt)
+        yield {"type": "status", "text": "Looking for a picture...", "detail": f'Query: "{image_query}"'}
+        image_results = search_images(image_query)
+        if image_results:
+            yield {
+                "type": "status",
+                "text": f"Found {len(image_results)} image(s)",
+                "detail": None,
+            }
+        else:
+            # No real photo/result available. Only worth an SVG fallback for
+            # conceptual/diagram-shaped questions — NOT for "show me a real
+            # photo of X" requests, where a fake-looking SVG would mislead
+            # rather than help. The model itself is well-placed to judge
+            # that from the prompt, so we hand it the choice explicitly
+            # rather than forcing an SVG onto every miss.
+            yield {
+                "type": "status",
+                "text": "No matching photo found",
+                "detail": "Falling back to a diagram if one would genuinely help",
+            }
+            current_identity += (
+                "\n\nNOTE: An image search for this was attempted but found nothing "
+                "suitable. If — and only if — a simple labeled diagram or step-by-step "
+                "visual would genuinely help explain this (e.g. a process, a hardware "
+                "layout, a concept), include ONE small, clean SVG in your answer using "
+                "a ```svg fenced code block. Keep it simple: clear shapes, readable "
+                "labels, no attempt at photorealism. Do NOT do this if the user actually "
+                "wanted a real photo of a specific physical object/place/product — in "
+                "that case just say plainly that no matching image was found, without "
+                "faking one."
+            )
 
     # ── Build messages ──────────────────────────────────────────────────
     lean_history, history_truncated = get_lean_history(history)
