@@ -17,6 +17,30 @@
 #      you never set OPENROUTER_API_KEY / CEREBRAS_API_KEY / GEMINI_API_KEY
 #      / BRAVE_API_KEY / TAVILY_API_KEY, this behaves exactly like before,
 #      just with Groq retried smarter.
+#
+#   FIXES APPLIED IN THIS PASS (from the Test 1-4 debug session):
+#   5. The "Thinking it through..." / "Writing answer..." status event no
+#      longer fabricates a fake explanation about temperature/token
+#      budgets. That text was hardcoded and shown unconditionally — it
+#      never reflected anything the model actually did. Real reasoning
+#      (the <think> block, when the model returns one) is still split out
+#      and shown as its own separate status events further down; this was
+#      just decorative filler sitting in front of it.
+#   6. wants_image is now forced to False whenever the user already
+#      uploaded image(s) for this turn. Previously the intent classifier
+#      had no idea an image had already been provided, so prompts that
+#      merely contained words like "image" or "screenshot" would trigger
+#      an unrelated online image search on top of the real vision
+#      analysis — confusing and wasteful.
+#   7. ask_with_vision() no longer trusts a vision provider just because
+#      the HTTP call returned 200. Some vision models (notably Groq's
+#      llama-4-scout on multi-image requests) can return a normal 200
+#      response where the model's own content is a refusal like "I'm
+#      unable to view the images" — that used to be accepted as the real
+#      answer. Now that's detected and treated as a failure: the next
+#      provider is tried, and if every provider refuses a multi-image
+#      batch, we fall back to describing each image separately and
+#      merging the results.
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
@@ -805,12 +829,41 @@ def _friendly_failure_message() -> str:
 
 # ---------------------------------------------------------------------------
 # VISION — called when imageUrls is present
+#
+# FIXED (see header notes 7): previously this sent every image in one
+# request to the first vision provider and trusted the HTTP 200 response
+# unconditionally. If the model itself replied with something like "I'm
+# unable to view the images" — which happens on multi-image requests to
+# some vision models — that refusal text got returned as if it were a
+# real, successful description. Now:
+#   1. Each provider's answer is checked against a refusal-phrase list
+#      before being accepted.
+#   2. If a provider refuses, the next provider in VISION_PROVIDERS is
+#      tried with the SAME full image batch.
+#   3. If every provider refuses a multi-image batch, we retry by sending
+#      images one at a time and merge the per-image descriptions — this
+#      isolates whether the batch itself (not the provider) was the
+#      problem.
 # ---------------------------------------------------------------------------
-def ask_with_vision(prompt: str, image_urls: list, history: list = []) -> dict:
-    print(f"[VISION TRIGGERED] Images: {len(image_urls)}, Prompt: {prompt[:60]}")
+_VISION_REFUSAL_PHRASES = [
+    "unable to view", "can't view", "cannot view",
+    "unable to see the image", "can't see the image", "cannot see the image",
+    "don't have access to the image", "do not have access to the image",
+    "no image was provided", "not able to view", "not able to see the image",
+    "i can't process images", "i cannot process images",
+]
 
+
+def _looks_like_vision_refusal(answer: Optional[str]) -> bool:
+    if not answer:
+        return True
+    a = answer.lower()
+    return any(p in a for p in _VISION_REFUSAL_PHRASES)
+
+
+def _vision_messages(prompt: str, image_urls: list, history: list) -> list:
     content = [{"type": "text", "text": prompt}]
-    for url in image_urls[:4]:
+    for url in image_urls:
         content.append({"type": "image_url", "image_url": {"url": url}})
 
     vision_system = (
@@ -829,14 +882,55 @@ def ask_with_vision(prompt: str, image_urls: list, history: list = []) -> dict:
         if isinstance(msg["content"], str):
             messages.append(msg)
     messages.append({"role": "user", "content": content})
+    return messages
 
-    answer, provider = _call_provider_chain(
-        VISION_PROVIDERS, messages, temperature=0.5, max_tokens=1024
-    )
-    if answer is None:
-        return {"answer": _friendly_failure_message(), "sources": [], "provider": None}
 
-    return {"answer": answer, "sources": [], "provider": provider}
+def ask_with_vision(prompt: str, image_urls: list, history: list = []) -> dict:
+    image_urls = image_urls[:4]
+    print(f"[VISION TRIGGERED] Images: {len(image_urls)}, Prompt: {prompt[:60]}")
+
+    messages = _vision_messages(prompt, image_urls, history)
+
+    # Pass 1: try the full batch against each enabled provider in order.
+    for provider in VISION_PROVIDERS:
+        if not provider["enabled"]:
+            continue
+        answer, used_provider = _call_provider_chain(
+            [provider], messages, temperature=0.5, max_tokens=1024
+        )
+        if answer and not _looks_like_vision_refusal(answer):
+            return {"answer": answer, "sources": [], "provider": used_provider}
+        if answer:
+            print(f"[VISION] {provider['name']} returned a refusal-like answer on the "
+                  f"full {len(image_urls)}-image batch — trying next provider")
+
+    # Pass 2: every provider refused (or failed outright) on the full
+    # batch. If there's more than one image, retry describing each image
+    # separately, then merge — this is the one case where batching itself
+    # seems to be what a provider can't handle, not the provider being
+    # generally unavailable.
+    if len(image_urls) > 1:
+        print("[VISION] full batch failed on every provider — retrying images one at a time")
+        descriptions = []
+        for i, url in enumerate(image_urls, start=1):
+            single_messages = _vision_messages(prompt, [url], history)
+            for provider in VISION_PROVIDERS:
+                if not provider["enabled"]:
+                    continue
+                answer, used_provider = _call_provider_chain(
+                    [provider], single_messages, temperature=0.5, max_tokens=1024
+                )
+                if answer and not _looks_like_vision_refusal(answer):
+                    descriptions.append(f"Image {i}: {answer}")
+                    break
+        if descriptions:
+            return {
+                "answer": "\n\n".join(descriptions),
+                "sources": [],
+                "provider": "vision-per-image-fallback",
+            }
+
+    return {"answer": _friendly_failure_message(), "sources": [], "provider": None}
 
 # ---------------------------------------------------------------------------
 # MAIN ASK FUNCTION
@@ -914,6 +1008,16 @@ def _ask_gpt2_core(
     # ── Normal text flow ─────────────────────────────────────────────────
     yield {"type": "status", "text": "Reading your question...", "detail": None}
     intent = classify_intent(prompt, history=history)
+
+    # FIXED (see header notes 6): the classifier only ever sees text, so it
+    # has no way of knowing an image was already uploaded and analysed
+    # above. Left alone, a prompt that simply contains words like "image"
+    # or "screenshot" would set wants_image=True and trigger an unrelated
+    # online image search on top of the real vision analysis. Once real
+    # image(s) are already in hand for this turn, never search for more.
+    if valid_image_urls:
+        intent["wants_image"] = False
+
     print(f"[INTENT] search_type={intent['search_type']} complex={intent['complex']} topic={intent['topic']} "
           f"query={intent.get('search_query')!r}")
 
@@ -1028,7 +1132,8 @@ def _ask_gpt2_core(
     # model's own knowledge, search_type == "none") never got a picture.
     # wants_image is the classifier's own dedicated signal for "would a
     # picture genuinely help here", decoupled from whether a text search
-    # is needed at all.
+    # is needed at all. (It's also now force-False whenever the user
+    # already uploaded image(s) this turn — see the fix above.)
     if intent.get("wants_image"):
         image_query = intent.get("search_query") or build_search_query(prompt)
         yield {"type": "status", "text": "Looking for a picture...", "detail": f'Query: "{image_query}"'}
@@ -1086,15 +1191,17 @@ def _ask_gpt2_core(
     messages.extend(lean_history)
     messages.append({"role": "user", "content": prompt.strip()})
 
+    # FIXED (see header notes 5): this used to always include a fabricated
+    # "detail" line about temperature/token budgets, regardless of what
+    # actually happened — it was cosmetic text, not a real report of
+    # anything the model did. The genuine reasoning (the model's own
+    # <think> block, when reasoning_effort is on) is extracted below and
+    # emitted as its own separate, real status events — so this one just
+    # announces the stage honestly, with nothing invented.
     yield {
         "type": "status",
         "text": "Thinking it through..." if intent["complex"] else "Writing answer...",
-        "detail": (
-            "Using a lower temperature and a bigger token budget since this "
-            "needs a longer, more careful answer."
-            if intent["complex"]
-            else "Keeping this fast and light since it's a simple, direct question."
-        ),
+        "detail": None,
     }
 
     answer, provider = _call_provider_chain(
