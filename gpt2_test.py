@@ -488,6 +488,13 @@ def search_web(query: str, max_results: int = 4):
 # routing instead.
 # ---------------------------------------------------------------------------
 INTENT_MODEL = "llama-3.1-8b-instant"
+REASONING_STEP_HINT = (
+    "\n\n[SYSTEM INSTRUCTION FOR REASONING]: Inside your <think> block, "
+    "you MUST break down your thought process into clear chronological steps. "
+    "Begin every single step with a number and a clear bold title like this: "
+    "1. **Analyzing Intent**: <thought process here>\n"
+    "2. **Parsing Variables**: <thought process here>."
+)
 
 CODING_KEYWORDS = [
     "code", "write", "build", "create", "implement", "function",
@@ -905,12 +912,28 @@ def _vision_messages(prompt: str, image_urls: list, history: list) -> list:
     messages.append({"role": "user", "content": content})
     return messages
 
-
 def ask_with_vision(prompt: str, image_urls: list, history: list = []) -> dict:
     image_urls = image_urls[:4]
     print(f"[VISION TRIGGERED] Images: {len(image_urls)}, Prompt: {prompt[:60]}")
 
-    messages = _vision_messages(prompt, image_urls, history)
+    # Clean the history first to prevent nested list formatting breaks
+    cleaned_history = get_lean_history(history)[0] if history else []
+    messages = _vision_messages(prompt, image_urls, cleaned_history)
+
+    # --- INJECT REASONING STEP HINT FOR VISION MODELS ---
+    REASONING_STEP_HINT = (
+        "\n\n[SYSTEM INSTRUCTION FOR REASONING]: If you generate a <think> block, "
+        "you MUST break down your thought process into clear chronological steps. "
+        "Begin every single step with a number and a clear bold title like this: "
+        "1. **Analyzing Visuals**: <thought process here>\n"
+        "2. **Synthesizing Context**: <thought process here>."
+    )
+    
+    # Locate the system instruction in the message payload to append our rule
+    for msg in messages:
+        if msg.get("role") == "system":
+            msg["content"] = str(msg.get("content", "")) + REASONING_STEP_HINT
+    # ----------------------------------------------------
 
     # Pass 1: try the full batch against each enabled provider in order.
     for provider in VISION_PROVIDERS:
@@ -925,16 +948,18 @@ def ask_with_vision(prompt: str, image_urls: list, history: list = []) -> dict:
             print(f"[VISION] {provider['name']} returned a refusal-like answer on the "
                   f"full {len(image_urls)}-image batch — trying next provider")
 
-    # Pass 2: every provider refused (or failed outright) on the full
-    # batch. If there's more than one image, retry describing each image
-    # separately, then merge — this is the one case where batching itself
-    # seems to be what a provider can't handle, not the provider being
-    # generally unavailable.
+    # Pass 2: every provider refused (or failed outright) on the full batch.
     if len(image_urls) > 1:
         print("[VISION] full batch failed on every provider — retrying images one at a time")
         descriptions = []
         for i, url in enumerate(image_urls, start=1):
-            single_messages = _vision_messages(prompt, [url], history)
+            single_messages = _vision_messages(prompt, [url], cleaned_history)
+            
+            # Append the same format hint to single photo checks
+            for msg in single_messages:
+                if msg.get("role") == "system":
+                    msg["content"] = str(msg.get("content", "")) + REASONING_STEP_HINT
+                    
             for provider in VISION_PROVIDERS:
                 if not provider["enabled"]:
                     continue
@@ -952,6 +977,7 @@ def ask_with_vision(prompt: str, image_urls: list, history: list = []) -> dict:
             }
 
     return {"answer": _friendly_failure_message(), "sources": [], "provider": None}
+
 
 # ---------------------------------------------------------------------------
 # MAIN ASK FUNCTION
@@ -1161,7 +1187,7 @@ def _ask_gpt2_core(
     if intent.get("wants_image"):
         image_query = intent.get("search_query") or build_search_query(prompt)
         
-        # ADD THIS DEBUG LINE HERE:
+ # ADD THIS DEBUG LINE HERE:
         print(f"[DEBUG] Raw Intent Query: {intent.get('search_query')} | Final Query Sent: {image_query}")
         
         yield {"type": "status", "text": "Looking for a picture...", "detail": f'Query: "{image_query}"'}
@@ -1286,8 +1312,20 @@ def _ask_gpt2_core(
                 f"distilled query itself. Always include relevant links when available:\n\n"
                 + web_results
             )
+            
+            # --- ADD REASONING STEP HINT INJECTION HERE ---
+            REASONING_STEP_HINT_FIX = (
+                "\n\n[SYSTEM INSTRUCTION FOR REASONING]: Inside your <think> block, "
+                "you MUST break down your thought process into clear chronological steps. "
+                "Begin every single step with a number and a clear bold title like this: "
+                "1. **Analyzing Intent**: <thought process here>\n"
+                "2. **Parsing Variables**: <thought process here>."
+            )
+            retry_identity += REASONING_STEP_HINT_FIX
+            # -----------------------------------------------
+
             retry_messages = [{"role": "system", "content": retry_identity}]
-            retry_messages.extend(get_lean_history(history)[0])
+            retry_messages.extend(lean_history)
             retry_messages.append({"role": "user", "content": prompt.strip()})
 
             yield {
@@ -1299,8 +1337,6 @@ def _ask_gpt2_core(
                 TEXT_PROVIDERS, retry_messages, temperature=0.5, max_tokens=2048, reasoning_effort="none"
             )
             if retry_answer:
-                # NEW — same safety strip, in case a provider ever returns
-                # an inline <think> block here too.
                 retry_answer, retry_thinking = _split_thinking(retry_answer)
                 if retry_thinking:
                     for i, step in enumerate(_split_into_steps(retry_thinking), start=1):
