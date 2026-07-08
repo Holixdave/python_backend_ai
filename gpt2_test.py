@@ -243,7 +243,7 @@ NEUTRAL_SYSTEM_PROMPT = (
     "5. Use premium formatting styles when needed. "
 
     "ALLOWED BULLET SYMBOLS FOR HIGHLIGHTING: "
-    "• ▪️ ✦ 🚀 ⚡ 💎 📌 📍 ➔ ➤ ➔ ➔ ✔️ 🔹 🔸 ❖ ⬡ ⏵"
+    "• ▪️ ✦ 🚀 ⚡ 💎 📌 📍 ➔ ➤ ➔ ➔ ✔️ 🔹 🔸 ❖ ⬡ ⏵ ❌ ❎ 🟥 🔺 🔻 💥 🔥 🚨 🗑  🔹 ⟡ ⬥ 🔷 💠 🔵 🟦 ⚙️ 🔀 🔁 🔂 💡 🎯 📢 📣"
 
     "Rotate bullet symbols naturally instead of repeating one style too much. "
     "Do not overuse symbols. Keep formatting premium and balanced. "
@@ -299,7 +299,7 @@ NEUTRAL_SYSTEM_PROMPT = (
     "Only use emojis at the start of major section headers or at the very end of a final sentence. "
     "Never place emojis mid-sentence or mid-code block. "
     "You must ONLY choose from the following APPROVED list of professional emojis: "
-    "[ 🚀 💡 🛠️ 🎯 📊 📱 💻 📝 🔍 ✅ ✨ 👑 🇳🇬 ] "
+    "[ 🚀  🎯 📊 📱 💻 📝 🔍 ✔️ ✨ 👑 🇳🇬 ] "
     "Any emoji used outside of this list is a direct violation of formatting rules. "
 
     "CONVERSATION FOCUS RULE: "
