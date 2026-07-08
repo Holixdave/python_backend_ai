@@ -1171,6 +1171,10 @@ def _ask_gpt2_core(
     # already uploaded image(s) this turn — see the fix above.)
     if intent.get("wants_image"):
         image_query = intent.get("search_query") or build_search_query(prompt)
+        
+        # ADD THIS DEBUG LINE HERE:
+        print(f"[DEBUG] Raw Intent Query: {intent.get('search_query')} | Final Query Sent: {image_query}")
+        
         yield {"type": "status", "text": "Looking for a picture...", "detail": f'Query: "{image_query}"'}
         image_results = search_images(image_query)
         if image_results:
@@ -1191,6 +1195,7 @@ def _ask_gpt2_core(
                 "text": "No matching photo found",
                 "detail": "Falling back to a diagram if one would genuinely help",
             }
+
             current_identity += (
                 "\n\nNOTE: An image search for this was attempted but found nothing "
                 "suitable. If — and only if — a simple labeled diagram or step-by-step "
