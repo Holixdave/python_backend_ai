@@ -504,38 +504,24 @@ _INTENT_SYSTEM_PROMPT = (
     "the user is asking about their own saved files, previous conversations, "
     "documents they shared, or explicitly says \"remember\", \"do you have\", "
     "\"check my files\", \"from my docs\", \"my previous\", etc. Set to \"web\" "
-    "if the user needs current/live/factual info (prices, links, news, recent "
-    "events, dates, \"who won\", specific people/businesses/churches you're unsure "
-    "about). Set to \"none\" for everything else (greetings, code, analysis, "
-    "general conversation). IMPORTANT: pure date/time questions (\"what's today\", "
-    "\"what day is it\") are always \"none\" — the assistant already knows the "
-    "real current date from its own system.\n"
-    '"search_query": ONLY if search_type is "web" or "user_docs". For web: '
+    "if the user needs current/live/factual info, or if they explicitly ask to see "
+    "an image, photo, picture, or diagram that requires pulling from the internet. "
+    "Set to \"none\" for everything else (greetings, code, analysis, general conversation). "
+    "IMPORTANT: pure date/time questions are always \"none\".\n"
+    '"search_query": ONLY if search_type is "web" or "user_docs". For web (including image searches): '
     "DISTILL this down to 3-8 clean lookup keywords a search engine would "
-    "understand — resolve vague refs (\"the church\") to real names from "
-    "earlier turns, strip greetings/filler/slang (\"abeg\", \"pls\", \"man\", "
-    "\"dude\", \"biko\"), and drop your own assistant framing entirely. "
-    "NEVER just copy the user's sentence — even a fairly clean-sounding one "
-    "should still be reduced to its core search terms. Example: user says "
-    "\"dude can u find the current dollar to naira rate abeg\" -> "
-    "search_query should be \"dollar to naira exchange rate today\", NOT "
-    "the original sentence. For user_docs: the hint/tag to search for (e.g. "
-    "if user says \"my recipe\", the query is \"recipe\").\n"
-    '"complex": true if the request needs code, math, multi-step reasoning, or a '
-    "long detailed answer — false for greetings, small talk, simple one-line "
-    "questions.\n"
-    '"wants_image": true if a picture would genuinely help this specific answer — '
+    "understand — resolve vague refs to real names from earlier turns, strip greetings/filler/slang "
+    "(\"abeg\", \"pls\", \"man\", \"dude\", \"biko\"), and drop your own assistant framing entirely. "
+    "If they are looking for a picture, do NOT include words like \"picture of\" or \"show me\" in the query; "
+    "just isolate the subject. Example: \"find me a picture of the Eiffel tower at night with fireworks\" "
+    "-> search_query should be \"Eiffel tower at night with fireworks\", NOT \"picture of Eiffel tower\".\n"
+    '"complex": true if the request needs code, math, multi-step reasoning, or a long detailed answer.\n"wants_image": true if a picture would genuinely help this specific answer — '
     "identifying/showing a physical object, a place or landmark, an animal/plant, "
-    "a product, a diagram of a concept, a wiring/hardware layout, a UI screenshot-"
-    "style reference, or anything visual. This is INDEPENDENT of search_type — "
-    "set it true even when the text answer comes purely from your own knowledge "
-    "(e.g. \"how do I fix this GPU artifact issue\" -> true, a good diagram/photo "
-    "helps regardless of whether search_type is \"none\"). False for pure text/code/"
-    "math/greetings/abstract discussion where a picture adds nothing.\n"
-    '"topic": one of "jamb", "mojizela", or "general" — "jamb" only if about '
-    "JAMB/UTME/WAEC/Post-UTME/exam prep, \"mojizela\" only if about the Mojizela "
-    "app/coins/wallet/creators, else \"general\"."
+    "a product, a diagram of a concept, a wiring/hardware layout, a UI screenshot-style reference, "
+    "or anytime they explicitly ask for an image/photo/diagram. False for pure text/code/math/greetings.\n"
+    '"topic": one of "jamb", "mojizela", or "general".'
 )
+
 
 
 def _fallback_intent(prompt: str) -> dict:
@@ -547,26 +533,28 @@ def _fallback_intent(prompt: str) -> dict:
     else:
         topic = "general"
     
-    # Check for user_docs intent (remember, do you have, check my files, etc.)
+    # Check for user_docs intent
     user_docs_keywords = ["remember", "do you have", "check my", "my files", "my previous", "my doc", "from my"]
     is_user_docs = any(keyword in t for keyword in user_docs_keywords)
     
-    # Check for web search need
-    is_web = needs_web_search(prompt) and not is_user_docs
-    
-    search_type = "user_docs" if is_user_docs else ("web" if is_web else "none")
-    search_query = ""
-    if is_web:
-        search_query = build_search_query(prompt)
-    elif is_user_docs:
-        search_query = prompt  # use raw prompt as hint for user docs search
-
+    # Check for image intent explicitly
     image_keywords = [
         "show me", "picture", "pictures", "photo", "photos", "image", "images",
         "what does it look like", "what it looks like", "diagram", "look like",
         "visual", "screenshot",
     ]
     wants_image = any(k in t for k in image_keywords)
+    
+    # Check for web search need (if it needs web, OR if it explicitly wants an image)
+    is_web = (needs_web_search(prompt) or wants_image) and not is_user_docs
+    
+    search_type = "user_docs" if is_user_docs else ("web" if is_web else "none")
+    search_query = ""
+    
+    if is_web:
+        search_query = build_search_query(prompt)
+    elif is_user_docs:
+        search_query = prompt
 
     return {
         "search_type": search_type,
@@ -575,6 +563,7 @@ def _fallback_intent(prompt: str) -> dict:
         "wants_image": wants_image,
         "topic": topic,
     }
+
 
 
 def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
