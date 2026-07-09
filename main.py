@@ -8,7 +8,7 @@ import json
 import re
 from math_solver import solve_math_with_explanation
 from equation_solver import solve_equation_with_steps
-from ai_backend_core import ask_gpt2_stream
+from ai_backend_flow import ask_gpt2_stream, ask_gpt2
 from user_doc_manager import UserDocManager
 
 app = FastAPI(
@@ -193,10 +193,13 @@ async def ask_ai_stream(request: QuestionRequest):
                 yield f"data: {json.dumps({'type': 'final', 'answer': eq_answer, 'sources': []})}\n\n"
                 return
 
-        # 2. Real generator from gpt2_test — every status event here reflects
+        # 2. Real generator from ai_backend_flow — every status event here reflects
         #    an actual step that just ran (classifier call, real search hit,
         #    provider call), nothing synthetic.
-        for event in ask_gpt2_stream(user_question, history=chat_history, image_urls=image_urls if image_urls else None, userid=request.userid):
+        # Convert ChatMessage objects to plain dicts for the backend
+        history_dicts = [{"role": msg.role, "content": msg.content} for msg in chat_history]
+        
+        for event in ask_gpt2_stream(user_question, history=history_dicts, image_urls=image_urls if image_urls else None, userid=request.userid):
             if event["type"] == "status":
                 yield f"data: {json.dumps({'type': 'status', 'text': event['text'], 'detail': event.get('detail')})}\n\n"
             elif event["type"] == "final":
@@ -333,3 +336,10 @@ async def delete_user_doc(userid: str, docid: str):
     except Exception as e:
         print(f"[DOC] delete failed for {userid}/{docid}: {e}")
         return {"status": "error", "message": str(e)}, 400
+
+
+
+
+
+
+

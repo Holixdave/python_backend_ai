@@ -426,3 +426,49 @@ def _ask_gpt2_core(
         "images": image_results,
         "provider": provider,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NON-STREAMING ENTRY POINT
+# ─────────────────────────────────────────────────────────────────────────────
+
+def ask_gpt2(
+    prompt: str,
+    history: Optional[List[Dict]] = None,
+    image_urls: Optional[List[str]] = None,
+    userid: Optional[str] = None,
+) -> Dict:
+    """
+    Non-streaming version. Collects all events and returns final dict.
+    Used by /ai-query endpoint and /generate-question.
+    
+    Returns:
+    {
+        "answer": str,
+        "sources": list,
+        "images": list,
+        "provider": str or None
+    }
+    """
+    if history is None:
+        history = []
+    
+    final = None
+    for event in ask_gpt2_stream(prompt, history=history, image_urls=image_urls, userid=userid):
+        if event["type"] == "final":
+            final = event
+
+    if not final:
+        return {
+            "answer": "Failed to generate response. Please try again.",
+            "sources": [],
+            "images": [],
+            "provider": None,
+        }
+
+    return {
+        "answer": final.get("answer", ""),
+        "sources": final.get("sources", []),
+        "images": final.get("images", []),
+        "provider": final.get("provider"),
+    }
