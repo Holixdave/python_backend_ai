@@ -429,6 +429,26 @@ def _ask_gpt2_core(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# STREAMING ENTRY POINT
+# ─────────────────────────────────────────────────────────────────────────────
+
+def ask_gpt2_stream(
+    prompt: str,
+    history: Optional[List[Dict]] = None,
+    image_urls: Optional[List[str]] = None,
+    userid: Optional[str] = None,
+):
+    """
+    Streaming entry point for the /ai-query-stream SSE endpoint.
+    Yields status events as they happen, then one final event.
+    """
+    if history is None:
+        history = []
+    
+    yield from _ask_gpt2_core(prompt, history=history, image_urls=image_urls, userid=userid)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # NON-STREAMING ENTRY POINT
 # ─────────────────────────────────────────────────────────────────────────────
 
