@@ -59,6 +59,8 @@ def classify_intent(prompt: str, history: List[Dict] = None) -> Dict:
     Lightweight classifier to decide: search needed? complex reasoning?
     NOW PASSES HISTORY so the model understands context.
     
+    CRITICAL: ANY date/timeline question ALWAYS triggers web search.
+    
     Returns: {
         "search_type": "web" | "images" | "user_docs" | "none",
         "wants_image": bool,
@@ -68,6 +70,22 @@ def classify_intent(prompt: str, history: List[Dict] = None) -> Dict:
     """
     if history is None:
         history = []
+
+    # FORCE WEB SEARCH for date questions - never use knowledge cutoff for dates
+    date_keywords = [
+        "2026", "2025", "when", "date", "release", "results", "announced", 
+        "exam date", "result date", "utme", "jamb", "registration", "timeline",
+        "deadline", "how long", "how many days", "what time"
+    ]
+    prompt_lower = prompt.lower()
+    if any(kw in prompt_lower for kw in date_keywords):
+        # Force web search for dates
+        return {
+            "search_type": "web",
+            "wants_image": False,
+            "complex": False,
+            "search_query": prompt[:80],  # Use raw prompt as search query for dates
+        }
 
     system_prompt = """You are a query classifier. Respond ONLY with valid JSON, nothing else.
 Analyze the user's request and return:
@@ -151,16 +169,22 @@ def _split_into_steps(thinking: str) -> List[str]:
 
 def _derive_step_label(step: str, step_num: int) -> str:
     """
-    Extract a short label from a step (first 50 chars of title).
+    Extract a meaningful label from a step.
+    If the title is just generic stuff like "Step X", return empty/skip it.
+    Otherwise return the actual title without the number.
     """
-    # Try to extract the title part
+    # Try to extract the title part (what comes after "NUMBER. **TITLE**:")
     match = re.match(r'\d+\.\s*\*?\*?(.*?)\*?\*?\s*:', step)
     if match:
         title = match.group(1).strip()
-        return title[:50]
+        # Skip generic titles like "Step 1", "Step 2", etc
+        if title.lower().startswith("step"):
+            return None
+        # Return the actual meaningful title
+        return title[:60]
     
-    # Fallback
-    return f"Step {step_num}"
+    # If no title found, return None (will be skipped)
+    return None
 
 
 def _looks_unsure(answer: str) -> bool:
@@ -210,10 +234,18 @@ def build_search_query(prompt: str) -> str:
 BASE_IDENTITY = """You are OOOR, a helpful AI assistant.
 - Be clear, concise, and accurate.
 - If you're unsure, say so plainly rather than guessing.
+
+** CRITICAL DATE RULE: **
+- ANY question about dates, timelines, "when will", "2026", results release, exam dates, etc 
+  MUST trigger a web search. NEVER use your knowledge cutoff for current-year events or dates.
+- Always search for current information about JAMB, UTME, or any Nigerian exams.
+- If dates haven't been announced, say so after searching, don't guess.
+
 - When you have real web search results, use them and cite sources.
 - Format code properly with markdown (```lang fenced blocks).
 - For SVG diagrams, use ```svg code blocks when appropriate.
-- For HTML pages, use ```html code blocks."""
+- For HTML pages, use ```html code blocks.
+- Think naturally - don't output "Step 1:", "Step 2:" labels. Just think through it."""
 
 REASONING_STEP_HINT = (
     "\n\n[REASONING INSTRUCTIONS]: You have reasoning capability enabled. "
@@ -354,11 +386,13 @@ def _ask_gpt2_core(
         steps = _split_into_steps(model_thinking)
         for i, step in enumerate(steps, start=1):
             label = _derive_step_label(step, i)
-            yield {
-                "type": "status",
-                "text": label,
-                "detail": step,
-            }
+            # Only emit if label is meaningful (not generic "Step X")
+            if label:
+                yield {
+                    "type": "status",
+                    "text": label,
+                    "detail": step,
+                }
 
     # ─────────────────────────────────────────────────────────────────────────
     # SAFETY NET: Model was unsure, re-ask with web search
@@ -402,11 +436,13 @@ def _ask_gpt2_core(
                     steps = _split_into_steps(retry_thinking)
                     for i, step in enumerate(steps, start=1):
                         label = _derive_step_label(step, i)
-                        yield {
-                            "type": "status",
-                            "text": label,
-                            "detail": step,
-                        }
+                        # Only emit if label is meaningful (not generic "Step X")
+                        if label:
+                            yield {
+                                "type": "status",
+                                "text": label,
+                                "detail": step,
+                            }
                 yield {
                     "type": "final",
                     "answer": retry_answer,
