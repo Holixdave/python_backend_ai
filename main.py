@@ -8,7 +8,7 @@ import json
 import re
 from math_solver import solve_math_with_explanation
 from equation_solver import solve_equation_with_steps
-from ai_backend_flow import ask_gpt2_stream
+from ai_backend_core import ask_gpt2_stream
 from user_doc_manager import UserDocManager
 
 app = FastAPI(
