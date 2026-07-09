@@ -1113,7 +1113,18 @@ def _ask_gpt2_core(
     print(f"[INTENT] search_type={intent['search_type']} complex={intent['complex']} topic={intent['topic']} "
           f"query={intent.get('search_query')!r}")
 
-    current_identity = NEUTRAL_SYSTEM_PROMPT + "\n\n" + IMAGE_GEN_AWARENESS + "\n\n" + _current_datetime_line()
+    # IMAGE_GEN_AWARENESS is for the separate AI image-*generation* feature
+    # and was previously baked into every single request unconditionally —
+    # that's exactly what caused "can I see images of them" (a real-photo
+    # request, already served by wants_image + search_images()) to get the
+    # canned "Yes! I can generate that image for you..." response instead
+    # of just presenting the real photos that were already found. The two
+    # systems never knew about each other. Now: skip this block entirely
+    # whenever wants_image is true for this turn, since real photos are
+    # already being handled.
+    image_gen_block = "" if intent.get("wants_image") else IMAGE_GEN_AWARENESS
+
+    current_identity = NEUTRAL_SYSTEM_PROMPT + "\n\n" + image_gen_block + "\n\n" + _current_datetime_line()
 
     if intent["topic"] == "jamb":
         yield {
@@ -1122,7 +1133,7 @@ def _ask_gpt2_core(
             "detail": "Pulling in the JAMB/UTME/WAEC exam-prep knowledge base for this reply.",
         }
         current_identity = (
-            f"{NEUTRAL_SYSTEM_PROMPT}\n\n{IMAGE_GEN_AWARENESS}\n\n{_current_datetime_line()}\n\n"
+            f"{NEUTRAL_SYSTEM_PROMPT}\n\n{image_gen_block}\n\n{_current_datetime_line()}\n\n"
             f"CURRENT CONTEXT: {ZINDRYX_INFO}"
         )
     elif intent["topic"] == "mojizela":
@@ -1131,7 +1142,7 @@ def _ask_gpt2_core(
             "text": "Checking Mojizela app details...",
             "detail": "Pulling in the Mojizela app/coins/wallet knowledge base for this reply.",
         }
-        current_identity = f"{NEUTRAL_SYSTEM_PROMPT}\n\n{IMAGE_GEN_AWARENESS}\n\n{_current_datetime_line()}\n\nCURRENT CONTEXT: {MOJIZELA_INFO}"
+        current_identity = f"{NEUTRAL_SYSTEM_PROMPT}\n\n{image_gen_block}\n\n{_current_datetime_line()}\n\nCURRENT CONTEXT: {MOJIZELA_INFO}"
 
     # ── Inject user docs or web search results if needed ──────────────────
     sources = []
