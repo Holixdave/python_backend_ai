@@ -536,17 +536,26 @@ _INTENT_SYSTEM_PROMPT = (
     "general conversation). IMPORTANT: pure date/time questions (\"what's today\", "
     "\"what day is it\") are always \"none\" — the assistant already knows the "
     "real current date from its own system.\n"
-    '"search_query": ONLY if search_type is "web" or "user_docs". For web: '
-    "DISTILL this down to 3-8 clean lookup keywords a search engine would "
-    "understand — resolve vague refs (\"the church\") to real names from "
-    "earlier turns, strip greetings/filler/slang (\"abeg\", \"pls\", \"man\", "
-    "\"dude\", \"biko\"), and drop your own assistant framing entirely. "
-    "NEVER just copy the user's sentence — even a fairly clean-sounding one "
-    "should still be reduced to its core search terms. Example: user says "
-    "\"dude can u find the current dollar to naira rate abeg\" -> "
-    "search_query should be \"dollar to naira exchange rate today\", NOT "
-    "the original sentence. For user_docs: the hint/tag to search for (e.g. "
-    "if user says \"my recipe\", the query is \"recipe\").\n"
+    '"search_query": Required whenever search_type is "web" or "user_docs" — '
+    "ALSO required whenever wants_image ends up true below, even if "
+    "search_type is \"none\" (a vague image follow-up like \"can I see more "
+    "images\" needs no fresh web text, but the image search still needs a "
+    "real resolved query — never leave search_query empty in that case). "
+    "For web/image: DISTILL this down to 3-8 clean lookup keywords a search "
+    "engine would understand — resolve vague refs (\"the church\", \"more "
+    "images\", \"these\") to real names/subjects from earlier turns, strip "
+    "greetings/filler/slang (\"abeg\", \"pls\", \"man\", \"dude\", \"biko\"), "
+    "and drop your own assistant framing entirely. NEVER just copy the "
+    "user's sentence — even a fairly clean-sounding one should still be "
+    "reduced to its core search terms. Example: user says \"dude can u find "
+    "the current dollar to naira rate abeg\" -> search_query should be "
+    "\"dollar to naira exchange rate today\", NOT the original sentence. "
+    "Another example: after a conversation about specific laptop models, "
+    "user says \"nice man can I see more images\" -> search_query should "
+    "name the actual laptops discussed (e.g. \"Lenovo IdeaPad 5 HP Pavilion "
+    "15 Dell XPS 13 laptop\"), NOT \"nice can i see more images\". For "
+    "user_docs: the hint/tag to search for (e.g. if user says \"my "
+    "recipe\", the query is \"recipe\").\n"
     '"complex": true if the request needs code, math, multi-step reasoning, or a '
     "long detailed answer — false for greetings, small talk, simple one-line "
     "questions.\n"
@@ -593,6 +602,14 @@ def _fallback_intent(prompt: str) -> dict:
         "visual", "screenshot",
     ]
     wants_image = any(k in t for k in image_keywords)
+
+    # Same gap as the main classifier path: don't leave search_query empty
+    # when an image is wanted just because search_type is "none". This
+    # fallback has no history access either way (pure keyword matching,
+    # no LLM call), so it's still context-blind — but at least consistent
+    # with the main path's behavior instead of silently doing nothing.
+    if wants_image and not search_query:
+        search_query = build_search_query(prompt)
 
     return {
         "search_type": search_type,
@@ -652,18 +669,29 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
             search_type = data.get("search_type", "none")
             if search_type not in ("web", "user_docs", "none"):
                 search_type = "none"
-            
+
+            wants_image = bool(data.get("wants_image", False))
+
             search_query = (data.get("search_query") or "").strip()
             if search_type in ("web", "user_docs") and not search_query:
                 # classifier said yes but forgot the query — fall back to prompt
                 search_query = build_search_query(prompt) if search_type == "web" else prompt
+            elif wants_image and not search_query:
+                # classifier wants an image but left search_query empty —
+                # this is exactly the "nice man can I see more images" bug:
+                # falling back to build_search_query(prompt) here is still
+                # context-blind (it only cleans the current raw message,
+                # it can't resolve "these"/"more" against earlier turns),
+                # but it's strictly better than sending the literal filler-
+                # stripped follow-up to DDGS as-is.
+                search_query = build_search_query(prompt)
 
             # Safety net: if the classifier still just echoed the raw prompt
             # back, or handed back something way longer than a real search
             # query should be, run it through the keyword-stripping fallback
             # as an extra distillation pass rather than sending the user's
             # literal sentence to DDGS.
-            if search_type == "web" and search_query:
+            if (search_type == "web" or wants_image) and search_query:
                 is_verbatim_echo = search_query.strip().lower() == prompt.strip().lower()
                 is_too_long = len(search_query.split()) > 12
                 if is_verbatim_echo or is_too_long:
@@ -673,7 +701,7 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
                 "search_type": search_type,
                 "search_query": search_query,
                 "complex": bool(data.get("complex", True)),
-                "wants_image": bool(data.get("wants_image", False)),
+                "wants_image": wants_image,
                 "topic": topic,
             }
         print(f"[INTENT] classifier HTTP {resp.status_code}, falling back to keywords")
@@ -1191,10 +1219,6 @@ def _ask_gpt2_core(
     # already uploaded image(s) this turn — see the fix above.)
     if intent.get("wants_image"):
         image_query = intent.get("search_query") or build_search_query(prompt)
-        
-        # ADD THIS DEBUG LINE HERE:
-        print(f"[DEBUG] Raw Intent Query: {intent.get('search_query')} | Final Query Sent: {image_query}")
-        
         yield {"type": "status", "text": "Looking for a picture...", "detail": f'Query: "{image_query}"'}
         image_results = search_images(image_query)
         if image_results:
@@ -1203,6 +1227,18 @@ def _ask_gpt2_core(
                 "text": f"Found {len(image_results)} image(s)",
                 "detail": None,
             }
+            current_identity += (
+                "\n\nNOTE: Real images matching this were already found and "
+                "will be shown to the user automatically, in a real gallery "
+                "right below your answer — this happens completely outside "
+                "your response text. Do NOT attempt to embed, reference, or "
+                "fake any image markdown (like ![alt](url)) yourself — you "
+                "don't have real URLs for these and doing so only produces "
+                "broken 'image failed to load' placeholders. Just write "
+                "your answer as plain text; if you want to mention the "
+                "pictures, a plain sentence like 'here are a few options' "
+                "is enough — the real images appear on their own."
+            )
         else:
             # No real photo/result available. Only worth an SVG fallback for
             # conceptual/diagram-shaped questions — NOT for "show me a real
