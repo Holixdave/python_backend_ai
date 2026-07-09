@@ -319,17 +319,31 @@ NEUTRAL_SYSTEM_PROMPT = (
 )
 
 # ---------------------------------------------------------------------------
-# NEW — only appended to the system prompt when reasoning_effort is being
-# used (intent["complex"] == True). Tells Qwen to structure its internal
-# <think> block as short, numbered, self-contained steps so the backend
-# can split it into individual "status" events for the frontend's
-# step-by-step Thought sheet, instead of one giant blob.
+# Only appended to the system prompt when reasoning_effort is actually being
+# used (intent["complex"] == True — already false for greetings/small talk,
+# so trivial messages never get this at all). Tells the model to produce
+# REAL, problem-specific reasoning inside its <think> block instead of a
+# generic numbered checklist — the old version literally told it to write
+# "1. ... 2. ..." which is exactly what produced the bot-style "Step 1,
+# Step 2" output. _split_into_steps() already falls back to splitting on
+# blank lines when the content isn't numbered, and _derive_step_label()
+# already extracts a leading **Bold Header** for the collapsed row label —
+# both were built to handle this format already, so no parser changes
+# needed, only the instruction the model is actually given.
 # ---------------------------------------------------------------------------
 REASONING_STEP_HINT = (
-    "\n\nWhen you think through this internally (inside your reasoning), "
-    "structure it as a numbered list of short, discrete steps — '1. ...', "
-    "'2. ...', etc. — one clear idea per step. Keep each step self-contained "
-    "so it can be read on its own without the others."
+    "\n\nWhen you think through this internally, actually reason through "
+    "THIS specific problem in your own words — do not fall into a generic "
+    "template. Structure your thinking as short paragraphs, each starting "
+    "with a brief **bolded label** that names what that paragraph is "
+    "actually doing for THIS question (e.g. '**Why the cable order "
+    "matters:**', '**Ruling out the power supply:**', '**Checking the edge "
+    "case with empty input:**') — never generic filler like '**Step 1:**', "
+    "'**Analyzing the question:**', or '**Understanding the request:**', "
+    "which say nothing about the actual content. Each paragraph should "
+    "read like a real thought about the real problem, not a bureaucratic "
+    "checklist item. Separate paragraphs with a blank line. Do not number "
+    "them."
 )
 
 # ---------------------------------------------------------------------------
@@ -488,13 +502,6 @@ def search_web(query: str, max_results: int = 4):
 # routing instead.
 # ---------------------------------------------------------------------------
 INTENT_MODEL = "llama-3.1-8b-instant"
-REASONING_STEP_HINT = (
-    "\n\n[SYSTEM INSTRUCTION FOR REASONING]: Inside your <think> block, "
-    "you MUST break down your thought process into clear chronological steps. "
-    "Begin every single step with a number and a clear bold title like this: "
-    "1. **Analyzing Intent**: <thought process here>\n"
-    "2. **Parsing Variables**: <thought process here>."
-)
 
 CODING_KEYWORDS = [
     "code", "write", "build", "create", "implement", "function",
@@ -511,24 +518,38 @@ _INTENT_SYSTEM_PROMPT = (
     "the user is asking about their own saved files, previous conversations, "
     "documents they shared, or explicitly says \"remember\", \"do you have\", "
     "\"check my files\", \"from my docs\", \"my previous\", etc. Set to \"web\" "
-    "if the user needs current/live/factual info, or if they explicitly ask to see "
-    "an image, photo, picture, or diagram that requires pulling from the internet. "
-    "Set to \"none\" for everything else (greetings, code, analysis, general conversation). "
-    "IMPORTANT: pure date/time questions are always \"none\".\n"
-    '"search_query": ONLY if search_type is "web" or "user_docs". For web (including image searches): '
+    "if the user needs current/live/factual info (prices, links, news, recent "
+    "events, dates, \"who won\", specific people/businesses/churches you're unsure "
+    "about). Set to \"none\" for everything else (greetings, code, analysis, "
+    "general conversation). IMPORTANT: pure date/time questions (\"what's today\", "
+    "\"what day is it\") are always \"none\" — the assistant already knows the "
+    "real current date from its own system.\n"
+    '"search_query": ONLY if search_type is "web" or "user_docs". For web: '
     "DISTILL this down to 3-8 clean lookup keywords a search engine would "
-    "understand — resolve vague refs to real names from earlier turns, strip greetings/filler/slang "
-    "(\"abeg\", \"pls\", \"man\", \"dude\", \"biko\"), and drop your own assistant framing entirely. "
-    "If they are looking for a picture, do NOT include words like \"picture of\" or \"show me\" in the query; "
-    "just isolate the subject. Example: \"find me a picture of the Eiffel tower at night with fireworks\" "
-    "-> search_query should be \"Eiffel tower at night with fireworks\", NOT \"picture of Eiffel tower\".\n"
-    '"complex": true if the request needs code, math, multi-step reasoning, or a long detailed answer.\n"wants_image": true if a picture would genuinely help this specific answer — '
+    "understand — resolve vague refs (\"the church\") to real names from "
+    "earlier turns, strip greetings/filler/slang (\"abeg\", \"pls\", \"man\", "
+    "\"dude\", \"biko\"), and drop your own assistant framing entirely. "
+    "NEVER just copy the user's sentence — even a fairly clean-sounding one "
+    "should still be reduced to its core search terms. Example: user says "
+    "\"dude can u find the current dollar to naira rate abeg\" -> "
+    "search_query should be \"dollar to naira exchange rate today\", NOT "
+    "the original sentence. For user_docs: the hint/tag to search for (e.g. "
+    "if user says \"my recipe\", the query is \"recipe\").\n"
+    '"complex": true if the request needs code, math, multi-step reasoning, or a '
+    "long detailed answer — false for greetings, small talk, simple one-line "
+    "questions.\n"
+    '"wants_image": true if a picture would genuinely help this specific answer — '
     "identifying/showing a physical object, a place or landmark, an animal/plant, "
-    "a product, a diagram of a concept, a wiring/hardware layout, a UI screenshot-style reference, "
-    "or anytime they explicitly ask for an image/photo/diagram. False for pure text/code/math/greetings.\n"
-    '"topic": one of "jamb", "mojizela", or "general".'
+    "a product, a diagram of a concept, a wiring/hardware layout, a UI screenshot-"
+    "style reference, or anything visual. This is INDEPENDENT of search_type — "
+    "set it true even when the text answer comes purely from your own knowledge "
+    "(e.g. \"how do I fix this GPU artifact issue\" -> true, a good diagram/photo "
+    "helps regardless of whether search_type is \"none\"). False for pure text/code/"
+    "math/greetings/abstract discussion where a picture adds nothing.\n"
+    '"topic": one of "jamb", "mojizela", or "general" — "jamb" only if about '
+    "JAMB/UTME/WAEC/Post-UTME/exam prep, \"mojizela\" only if about the Mojizela "
+    "app/coins/wallet/creators, else \"general\"."
 )
-
 
 
 def _fallback_intent(prompt: str) -> dict:
@@ -540,28 +561,26 @@ def _fallback_intent(prompt: str) -> dict:
     else:
         topic = "general"
     
-    # Check for user_docs intent
+    # Check for user_docs intent (remember, do you have, check my files, etc.)
     user_docs_keywords = ["remember", "do you have", "check my", "my files", "my previous", "my doc", "from my"]
     is_user_docs = any(keyword in t for keyword in user_docs_keywords)
     
-    # Check for image intent explicitly
+    # Check for web search need
+    is_web = needs_web_search(prompt) and not is_user_docs
+    
+    search_type = "user_docs" if is_user_docs else ("web" if is_web else "none")
+    search_query = ""
+    if is_web:
+        search_query = build_search_query(prompt)
+    elif is_user_docs:
+        search_query = prompt  # use raw prompt as hint for user docs search
+
     image_keywords = [
         "show me", "picture", "pictures", "photo", "photos", "image", "images",
         "what does it look like", "what it looks like", "diagram", "look like",
         "visual", "screenshot",
     ]
     wants_image = any(k in t for k in image_keywords)
-    
-    # Check for web search need (if it needs web, OR if it explicitly wants an image)
-    is_web = (needs_web_search(prompt) or wants_image) and not is_user_docs
-    
-    search_type = "user_docs" if is_user_docs else ("web" if is_web else "none")
-    search_query = ""
-    
-    if is_web:
-        search_query = build_search_query(prompt)
-    elif is_user_docs:
-        search_query = prompt
 
     return {
         "search_type": search_type,
@@ -570,7 +589,6 @@ def _fallback_intent(prompt: str) -> dict:
         "wants_image": wants_image,
         "topic": topic,
     }
-
 
 
 def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
@@ -715,15 +733,21 @@ def _split_into_steps(thinking):
     # type: (str) -> list
     """
     Breaks an extracted <think> block into individual step strings, full
-    text, nothing cut. Expects numbered steps (from REASONING_STEP_HINT)
-    but falls back gracefully: blank-line splitting if it wasn't numbered,
-    and a single step if it's just one paragraph.
+    text, nothing cut. Expects blank-line-separated paragraphs, each ideally
+    starting with a **Bold Header** (from the current REASONING_STEP_HINT),
+    but falls back gracefully to numbered-list splitting for older/other
+    models that don't follow the hint, and a single step if it's just one
+    paragraph.
     """
     if not thinking:
         return []
-    parts = [p.strip() for p in _STEP_SPLIT_RE.split(thinking) if p.strip()]
+    # Blank-line splitting first now — that's the shape the new
+    # REASONING_STEP_HINT actually asks for (bold-headed paragraphs, not
+    # numbers). Numbered-list splitting is now the fallback, for models
+    # that ignore the hint and still number their steps out of habit.
+    parts = [p.strip() for p in re.split(r"\n\s*\n", thinking) if p.strip()]
     if len(parts) <= 1:
-        parts = [p.strip() for p in re.split(r"\n\s*\n", thinking) if p.strip()]
+        parts = [p.strip() for p in _STEP_SPLIT_RE.split(thinking) if p.strip()]
     return parts or [thinking.strip()]
 
 
@@ -912,28 +936,12 @@ def _vision_messages(prompt: str, image_urls: list, history: list) -> list:
     messages.append({"role": "user", "content": content})
     return messages
 
+
 def ask_with_vision(prompt: str, image_urls: list, history: list = []) -> dict:
     image_urls = image_urls[:4]
     print(f"[VISION TRIGGERED] Images: {len(image_urls)}, Prompt: {prompt[:60]}")
 
-    # Clean the history first to prevent nested list formatting breaks
-    cleaned_history = get_lean_history(history)[0] if history else []
-    messages = _vision_messages(prompt, image_urls, cleaned_history)
-
-    # --- INJECT REASONING STEP HINT FOR VISION MODELS ---
-    REASONING_STEP_HINT = (
-        "\n\n[SYSTEM INSTRUCTION FOR REASONING]: If you generate a <think> block, "
-        "you MUST break down your thought process into clear chronological steps. "
-        "Begin every single step with a number and a clear bold title like this: "
-        "1. **Analyzing Visuals**: <thought process here>\n"
-        "2. **Synthesizing Context**: <thought process here>."
-    )
-    
-    # Locate the system instruction in the message payload to append our rule
-    for msg in messages:
-        if msg.get("role") == "system":
-            msg["content"] = str(msg.get("content", "")) + REASONING_STEP_HINT
-    # ----------------------------------------------------
+    messages = _vision_messages(prompt, image_urls, history)
 
     # Pass 1: try the full batch against each enabled provider in order.
     for provider in VISION_PROVIDERS:
@@ -948,18 +956,16 @@ def ask_with_vision(prompt: str, image_urls: list, history: list = []) -> dict:
             print(f"[VISION] {provider['name']} returned a refusal-like answer on the "
                   f"full {len(image_urls)}-image batch — trying next provider")
 
-    # Pass 2: every provider refused (or failed outright) on the full batch.
+    # Pass 2: every provider refused (or failed outright) on the full
+    # batch. If there's more than one image, retry describing each image
+    # separately, then merge — this is the one case where batching itself
+    # seems to be what a provider can't handle, not the provider being
+    # generally unavailable.
     if len(image_urls) > 1:
         print("[VISION] full batch failed on every provider — retrying images one at a time")
         descriptions = []
         for i, url in enumerate(image_urls, start=1):
-            single_messages = _vision_messages(prompt, [url], cleaned_history)
-            
-            # Append the same format hint to single photo checks
-            for msg in single_messages:
-                if msg.get("role") == "system":
-                    msg["content"] = str(msg.get("content", "")) + REASONING_STEP_HINT
-                    
+            single_messages = _vision_messages(prompt, [url], history)
             for provider in VISION_PROVIDERS:
                 if not provider["enabled"]:
                     continue
@@ -977,7 +983,6 @@ def ask_with_vision(prompt: str, image_urls: list, history: list = []) -> dict:
             }
 
     return {"answer": _friendly_failure_message(), "sources": [], "provider": None}
-
 
 # ---------------------------------------------------------------------------
 # MAIN ASK FUNCTION
@@ -1187,7 +1192,7 @@ def _ask_gpt2_core(
     if intent.get("wants_image"):
         image_query = intent.get("search_query") or build_search_query(prompt)
         
- # ADD THIS DEBUG LINE HERE:
+        # ADD THIS DEBUG LINE HERE:
         print(f"[DEBUG] Raw Intent Query: {intent.get('search_query')} | Final Query Sent: {image_query}")
         
         yield {"type": "status", "text": "Looking for a picture...", "detail": f'Query: "{image_query}"'}
@@ -1312,20 +1317,8 @@ def _ask_gpt2_core(
                 f"distilled query itself. Always include relevant links when available:\n\n"
                 + web_results
             )
-            
-            # --- ADD REASONING STEP HINT INJECTION HERE ---
-            REASONING_STEP_HINT_FIX = (
-                "\n\n[SYSTEM INSTRUCTION FOR REASONING]: Inside your <think> block, "
-                "you MUST break down your thought process into clear chronological steps. "
-                "Begin every single step with a number and a clear bold title like this: "
-                "1. **Analyzing Intent**: <thought process here>\n"
-                "2. **Parsing Variables**: <thought process here>."
-            )
-            retry_identity += REASONING_STEP_HINT_FIX
-            # -----------------------------------------------
-
             retry_messages = [{"role": "system", "content": retry_identity}]
-            retry_messages.extend(lean_history)
+            retry_messages.extend(get_lean_history(history)[0])
             retry_messages.append({"role": "user", "content": prompt.strip()})
 
             yield {
@@ -1337,6 +1330,8 @@ def _ask_gpt2_core(
                 TEXT_PROVIDERS, retry_messages, temperature=0.5, max_tokens=2048, reasoning_effort="none"
             )
             if retry_answer:
+                # NEW — same safety strip, in case a provider ever returns
+                # an inline <think> block here too.
                 retry_answer, retry_thinking = _split_thinking(retry_answer)
                 if retry_thinking:
                     for i, step in enumerate(_split_into_steps(retry_thinking), start=1):
