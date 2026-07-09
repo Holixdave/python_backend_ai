@@ -319,31 +319,43 @@ NEUTRAL_SYSTEM_PROMPT = (
 )
 
 # ---------------------------------------------------------------------------
-# Only appended to the system prompt when reasoning_effort is actually being
-# used (intent["complex"] == True — already false for greetings/small talk,
-# so trivial messages never get this at all). Tells the model to produce
-# REAL, problem-specific reasoning inside its <think> block instead of a
-# generic numbered checklist — the old version literally told it to write
-# "1. ... 2. ..." which is exactly what produced the bot-style "Step 1,
-# Step 2" output. _split_into_steps() already falls back to splitting on
-# blank lines when the content isn't numbered, and _derive_step_label()
-# already extracts a leading **Bold Header** for the collapsed row label —
-# both were built to handle this format already, so no parser changes
-# needed, only the instruction the model is actually given.
+# Only appended to the system prompt when intent["complex"] == True (already
+# false for greetings/small talk, so trivial messages never get this at
+# all). This is sent to EVERY provider in the chain via the same `messages`
+# payload — not just Qwen — but the old wording only said "when you think
+# through this internally", which silently assumes the model already has a
+# native thinking mechanism to expose. That's only true for Qwen 3.6 (via
+# the reasoning_effort API param). A fallback provider like an OpenRouter
+# free model or Cerebras has no native reasoning toggle, so that old
+# phrasing did nothing for them — nothing ever told them a <think> block
+# was expected, so if Qwen failed and the chain fell through, the fallback
+# just answered flat with no reasoning shown at all.
+#
+# Fixed by explicitly asking for a literal <think>...</think> block by
+# name — this works as a pure prompting instruction on ANY model, native
+# reasoning support or not. Qwen's own native block (when reasoning_effort
+# is on) just satisfies this instruction automatically; every other
+# provider now has to actually produce one on request. _THINK_BLOCK_RE
+# extracts it identically either way, so nothing downstream needed to
+# change — same content-quality rules as before: no generic numbered
+# filler, real problem-specific reasoning only.
 # ---------------------------------------------------------------------------
 REASONING_STEP_HINT = (
-    "\n\nWhen you think through this internally, actually reason through "
-    "THIS specific problem in your own words — do not fall into a generic "
-    "template. Structure your thinking as short paragraphs, each starting "
-    "with a brief **bolded label** that names what that paragraph is "
-    "actually doing for THIS question (e.g. '**Why the cable order "
-    "matters:**', '**Ruling out the power supply:**', '**Checking the edge "
-    "case with empty input:**') — never generic filler like '**Step 1:**', "
-    "'**Analyzing the question:**', or '**Understanding the request:**', "
-    "which say nothing about the actual content. Each paragraph should "
-    "read like a real thought about the real problem, not a bureaucratic "
-    "checklist item. Separate paragraphs with a blank line. Do not number "
-    "them."
+    "\n\nBefore your final answer, include your reasoning wrapped in "
+    "<think></think> tags. Whether or not thinking comes naturally to you, "
+    "this block is required for any question like this one. Inside it, "
+    "actually reason through THIS specific problem in your own words — do "
+    "not fall into a generic template. Structure your thinking as short "
+    "paragraphs, each starting with a brief **bolded label** that names "
+    "what that paragraph is actually doing for THIS question (e.g. '**Why "
+    "the cable order matters:**', '**Ruling out the power supply:**', "
+    "'**Checking the edge case with empty input:**') — never generic "
+    "filler like '**Step 1:**', '**Analyzing the question:**', or "
+    "'**Understanding the request:**', which say nothing about the actual "
+    "content. Each paragraph should read like a real thought about the "
+    "real problem, not a bureaucratic checklist item. Separate paragraphs "
+    "with a blank line. Do not number them. After the closing </think> "
+    "tag, write your actual answer to the user normally."
 )
 
 # ---------------------------------------------------------------------------
@@ -1072,18 +1084,6 @@ def _ask_gpt2_core(
 
     print(f"[INTENT] search_type={intent['search_type']} complex={intent['complex']} topic={intent['topic']} "
           f"query={intent.get('search_query')!r}")
-
-    # NEW: a real detail line reporting the classifier's actual decision —
-    # not filler text, this is exactly what got decided and why the sheet
-    # is worth tapping.
-    yield {
-        "type": "status",
-        "text": "Understood the question",
-        "detail": (
-            f"This {'needs a current/live answer' if intent['search_type'] != 'none' else 'can be answered from what I already know'}, "
-            f"and calls for {'multi-step reasoning' if intent['complex'] else 'a quick direct answer'}."
-        ),
-    }
 
     current_identity = NEUTRAL_SYSTEM_PROMPT + "\n\n" + IMAGE_GEN_AWARENESS + "\n\n" + _current_datetime_line()
 
