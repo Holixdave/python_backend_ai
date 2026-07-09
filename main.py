@@ -196,10 +196,8 @@ async def ask_ai_stream(request: QuestionRequest):
         # 2. Real generator from ai_backend_flow — every status event here reflects
         #    an actual step that just ran (classifier call, real search hit,
         #    provider call), nothing synthetic.
-        # Convert ChatMessage objects to plain dicts for the backend
-        history_dicts = [{"role": msg.role, "content": msg.content} for msg in chat_history]
-        
-        for event in ask_gpt2_stream(user_question, history=history_dicts, image_urls=image_urls if image_urls else None, userid=request.userid):
+        # chat_history is already converted to dicts on line 175, so use it directly
+        for event in ask_gpt2_stream(user_question, history=chat_history, image_urls=image_urls if image_urls else None, userid=request.userid):
             if event["type"] == "status":
                 yield f"data: {json.dumps({'type': 'status', 'text': event['text'], 'detail': event.get('detail')})}\n\n"
             elif event["type"] == "final":
