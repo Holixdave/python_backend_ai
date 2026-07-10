@@ -1671,6 +1671,7 @@ def _upload_to_supabase(userid: str, filename: str, content: str) -> Optional[st
         resp = requests.post(
             upload_url,
             headers={
+                "apikey": SUPABASE_SERVICE_KEY,
                 "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
                 "Content-Type": "text/plain",
                 "x-upsert": "true",  # overwrite if same filename already exists
