@@ -638,6 +638,19 @@ _INTENT_SYSTEM_PROMPT = (
     '"topic": one of "jamb", "mojizela", or "general" — "jamb" only if about '
     "JAMB/UTME/WAEC/Post-UTME/exam prep, \"mojizela\" only if about the Mojizela "
     "app/coins/wallet/creators, else \"general\"."
+    '"wants_file_build": true ONLY if the user is asking you to BUILD/CREATE/'
+    "GENERATE a real, complete, downloadable file — a document, a code file, "
+    "a script, an app screen, a full HTML page, etc. — something meant to be "
+    "saved and used, not just explained or shown inline. Examples that are "
+    "true: \"build me a login screen\", \"create a python script that does "
+    "X\", \"write a complete README for this project\". Examples that are "
+    "FALSE: \"explain how login screens work\", \"show me an example of a "
+    "function\", \"what does this code do\" — those want an explanation, not "
+    "a file. Mutually exclusive with wants_image and search_type — false "
+    "whenever either of those would also apply.\n"
+    '"filename": ONLY if wants_file_build is true — a sensible filename with '
+    "correct extension for what's being built, e.g. \"login_screen.dart\", "
+    "\"readme.md\", \"scraper.py\". Empty string otherwise.\n"
 )
 
 
@@ -678,12 +691,23 @@ def _fallback_intent(prompt: str) -> dict:
     # with the main path's behavior instead of silently doing nothing.
     if wants_image and not search_query:
         search_query = build_search_query(prompt)
-
+    file_build_keywords = [
+        "build me", "create a file", "write a complete", "generate a file",
+        "build a screen", "build an app", "write a script", "write a full",
+        "create a script", "create a screen", "build a page",
+    ]
+    wants_file_build = any(k in t for k in file_build_keywords)
+    filename = ""
+    if wants_file_build:
+        wants_image = False  # mutually exclusive, same rule as the main classifier path
+        filename = "output.txt"  # keyword-only path can't guess a real name/extension reliably
     return {
         "search_type": search_type,
         "search_query": search_query,
         "complex": any(k in t for k in CODING_KEYWORDS),
         "wants_image": wants_image,
+        "wants_file_build": wants_file_build,
+        "filename": filename,
         "topic": topic,
     }
 
@@ -739,6 +763,16 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
                 search_type = "none"
 
             wants_image = bool(data.get("wants_image", False))
+            wants_file_build = bool(data.get("wants_file_build", False))
+            filename = (data.get("filename") or "").strip()
+
+            # file_build and wants_image are mutually exclusive by design —
+            # if the classifier somehow set both, file_build wins since it's
+            # the more specific, higher-intent signal.
+            if wants_file_build:
+                wants_image = False
+                if not filename:
+                    filename = "output.txt"  # last-resort fallback so upload never fails on an empty name
 
             search_query = (data.get("search_query") or "").strip()
             if search_type in ("web", "user_docs") and not search_query:
@@ -770,9 +804,12 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
                 "search_query": search_query,
                 "complex": bool(data.get("complex", True)),
                 "wants_image": wants_image,
+                "wants_file_build": wants_file_build,
+                "filename": filename,
                 "topic": topic,
             }
         print(f"[INTENT] classifier HTTP {resp.status_code}, falling back to keywords")
+        
     except Exception as e:
         print(f"[INTENT] classifier failed ({e}), falling back to keywords")
 
@@ -972,7 +1009,67 @@ def _call_provider_chain(providers: list, messages: list, temperature: float, ma
     print(f"[AI] all providers exhausted — last error: {last_error}")
     return None, None
 
+def _call_provider_chain_full(providers: list, messages: list, temperature: float, max_tokens: int, reasoning_effort: str = None):
+    """
+    Identical to _call_provider_chain(), except it also returns the
+    provider's finish_reason ("stop" | "length" | ...). This is a separate
+    function (rather than changing _call_provider_chain's return signature)
+    so every existing caller that does answer, provider = _call_provider_chain(...)
+    keeps working untouched. Only the file-build tool below needs the
+    third value — finish_reason is the deterministic signal for "did the
+    model actually finish, or did it get cut off mid-file" — no guessing,
+    no second AI judging completeness, just what the provider itself reports.
 
+    Returns (content, provider_name, finish_reason) on success,
+    or (None, None, None) if every provider failed.
+    """
+    last_error = "No provider available."
+    for provider in providers:
+        if not provider["enabled"]:
+            continue
+
+        payload = {
+            "model": provider["model"],
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": False,
+        }
+        if reasoning_effort is not None and provider.get("supports_reasoning_effort"):
+            payload["reasoning_effort"] = reasoning_effort
+
+        for attempt in range(1, MAX_RETRIES_PER_PROVIDER + 1):
+            try:
+                response = requests.post(
+                    provider["url"], headers=provider["headers"], json=payload, timeout=REQUEST_TIMEOUT,
+                )
+                if response.status_code == 200:
+                    result = response.json()
+                    choice = result.get("choices", [{}])[0]
+                    content = choice.get("message", {}).get("content")
+                    finish_reason = choice.get("finish_reason")
+                    if content:
+                        print(f"[FILEBUILD] {provider['name']} answered ({len(content)} chars, finish_reason={finish_reason})")
+                        return content, provider["name"], finish_reason
+                    last_error = f"{provider['name']}: empty content"
+                    break
+                if response.status_code == 429:
+                    if attempt < MAX_RETRIES_PER_PROVIDER:
+                        time.sleep(RETRY_BASE_DELAY * attempt)
+                        continue
+                    last_error = f"{provider['name']}: rate limited (429)"
+                    break
+                last_error = f"{provider['name']}: HTTP {response.status_code} — {response.text[:150]}"
+                break
+            except requests.exceptions.RequestException as e:
+                last_error = f"{provider['name']}: {e}"
+                if attempt < MAX_RETRIES_PER_PROVIDER:
+                    time.sleep(RETRY_BASE_DELAY * attempt)
+                    continue
+                break
+
+    print(f"[FILEBUILD] all providers exhausted — {last_error}")
+    return None, None, None
 
 def _friendly_failure_message() -> str:
     """Returns a randomized, dynamic server overload or maintenance message."""
@@ -1113,6 +1210,7 @@ def ask_gpt2(
         "sources": final["sources"],
         "images": final.get("images", []),
         "provider": final["provider"],
+        "file": final.get("file"),
     }
 
 
@@ -1152,7 +1250,7 @@ def _ask_gpt2_core(
     image_results = []  # populated later only if a web search actually runs
 
     if valid_image_urls:
-        yield {"type": "status", "text": "Looking at the image...", "detail": None}
+        yield {"type": "status", "text": "Looking at the image...", "detail": None, "icon": "vision"}
         vision_result = ask_with_vision(prompt, valid_image_urls, history)
 
         # Fold what vision saw into the prompt, then fall through to the
@@ -1164,7 +1262,7 @@ def _ask_gpt2_core(
         prompt = f"{prompt}\n\n[Image analysis: {image_description}]"
 
     # ── Normal text flow ─────────────────────────────────────────────────
-    yield {"type": "status", "text": "Reading your question...", "detail": None}
+    yield {"type": "status", "text": "Reading your question...", "detail": None, "icon": "thinking"}
     intent = classify_intent(prompt, history=history)
 
     # FIXED (see header notes 6): the classifier only ever sees text, so it
@@ -1178,7 +1276,39 @@ def _ask_gpt2_core(
 
     print(f"[INTENT] search_type={intent['search_type']} complex={intent['complex']} topic={intent['topic']} "
           f"query={intent.get('search_query')!r}")
+    # ── File build tool — completely separate path, returns early ────────
+    # A file-build request doesn't need topic detection, web search, image
+    # search, or the normal chat system prompt — different job entirely.
+    if intent.get("wants_file_build"):
+        filename = intent.get("filename") or "output.txt"
+        file_result = None
+        for event in build_file_with_continuation(prompt, filename, userid, history):
+            if event["type"] == "file_result":
+                file_result = event
+            else:
+                yield event
 
+        if file_result and file_result["success"]:
+            answer = (
+                f"Done! Your file {file_result['filename']} is ready:\n\n"
+                f"{file_result['url']}\n\n"
+                f"It's also been saved to your docs — just ask for it by name later."
+            )
+        else:
+            answer = (
+                "I built the file but the upload failed, so I don't have a link "
+                "to give you right now — worth trying again in a moment."
+            )
+
+        yield {
+            "type": "final",
+            "answer": answer,
+            "sources": [],
+            "images": [],
+            "provider": None,
+            "file": file_result,  # frontend uses this to render a real file card
+        }
+        return
     # IMAGE_GEN_AWARENESS is for the separate AI image-*generation* feature
     # and was previously baked into every single request unconditionally —
     # that's exactly what caused "can I see images of them" (a real-photo
@@ -1197,6 +1327,7 @@ def _ask_gpt2_core(
             "type": "status",
             "text": "Checking JAMB/UTME study notes...",
             "detail": "Pulling in the JAMB/UTME/WAEC exam-prep knowledge base for this reply.",
+            "icon": "docs"
         }
         current_identity = (
             f"{NEUTRAL_SYSTEM_PROMPT}\n\n{image_gen_block}\n\n{_current_datetime_line()}\n\n"
@@ -1207,6 +1338,7 @@ def _ask_gpt2_core(
             "type": "status",
             "text": "Checking Mojizela app details...",
             "detail": "Pulling in the Mojizela app/coins/wallet knowledge base for this reply.",
+            "icon": "docs"
         }
         current_identity = f"{NEUTRAL_SYSTEM_PROMPT}\n\n{image_gen_block}\n\n{_current_datetime_line()}\n\nCURRENT CONTEXT: {MOJIZELA_INFO}"
 
@@ -1220,6 +1352,7 @@ def _ask_gpt2_core(
                 "type": "status",
                 "text": "Checking your saved files...",
                 "detail": f'Searching for: "{intent["search_query"]}"',
+                "icon": "docs"
             }
             try:
                 manager = UserDocManager(userid)
@@ -1229,6 +1362,7 @@ def _ask_gpt2_core(
                         "type": "status",
                         "text": f"Found {len(user_docs)} file(s) in your docs",
                         "detail": " • ".join([d.get("hint", d.get("filename", ""))[:30] for d in user_docs[:3]]),
+                        "icon": "docs"
                     }
                     # Inject user docs into context
                     docs_context = "USER'S SAVED FILES (from their document storage):\n"
@@ -1242,19 +1376,22 @@ def _ask_gpt2_core(
                         "type": "status",
                         "text": "No matching files found",
                         "detail": "Falling back to knowledge base answer",
+                        "icon": "warning"
                     }
             except Exception as e:
                 print(f"[USER_DOCS] search failed for {userid}: {e}")
                 yield {
                     "type": "status",
-                    "text": "Couldn't access your files, using knowledge base",
+                    "text": "Couldn't access your files",
                     "detail": str(e)[:50],
+                    "icon": "warning"
                 }
         else:
             yield {
                 "type": "status",
                 "text": "No user ID provided, skipping doc search",
-                "detail": "Will answer from knowledge base instead",
+                "detail": None,
+                "icon": "warning"
             }
     
     elif intent["search_type"] == "web":
@@ -1264,6 +1401,7 @@ def _ask_gpt2_core(
             "type": "status",
             "text": "Searching the web...",
             "detail": f'Searching for: "{clean_query}"',
+            "icon": "search"
         }
         web_results, sources = search_web(clean_query)
         if web_results:
@@ -1272,6 +1410,7 @@ def _ask_gpt2_core(
                 "type": "status",
                 "text": f"Found {len(sources)} source(s)",
                 "detail": " • ".join(titles[:5]) if titles else None,
+                "icon": "search"
             }
             current_identity += (
                 f"\n\n[BACKEND NOTE — not from the user]: The system distilled the "
@@ -1296,7 +1435,7 @@ def _ask_gpt2_core(
     # already uploaded image(s) this turn — see the fix above.)
     if intent.get("wants_image"):
         image_query = intent.get("search_query") or build_search_query(prompt)
-        yield {"type": "status", "text": "Looking for a picture...", "detail": f'Query: "{image_query}"'}
+        yield {"type": "status", "text": "Looking for a picture...", "detail": f'Query: "{image_query}", this may take a few seconds', "icon": "image"}
         raw_image_results = search_images(image_query)
 
         if raw_image_results:
@@ -1304,10 +1443,12 @@ def _ask_gpt2_core(
                 "type": "status",
                 "text": f"Found {len(raw_image_results)} candidate(s), checking they actually match...",
                 "detail": (
-                    "Search results are matched on filename/page text, not on what's "
-                    "actually in the picture — verifying each candidate with vision "
-                    "before anything reaches the reply."
+                    "Some candidates may be unrelated to the user's request, "
+                    "so each one is being visually inspected for relevance. "
+                    "This can take a few seconds."
+                    
                 ),
+                "icon": "image"
             }
             image_results = _verify_image_relevance(image_query, prompt, raw_image_results)
         else:
@@ -1318,6 +1459,7 @@ def _ask_gpt2_core(
                 "type": "status",
                 "text": f"Found {len(image_results)} matching image(s)",
                 "detail": None,
+                "icon": "success"
             }
             current_identity += (
                 "\n\nNOTE: Real images matching this were already found and "
@@ -1340,6 +1482,7 @@ def _ask_gpt2_core(
                     if raw_image_results else
                     "Falling back to a diagram if one would genuinely help"
                 ),
+                "icon": "warning"
             }
 
             current_identity += (
@@ -1392,6 +1535,7 @@ def _ask_gpt2_core(
         "type": "status",
         "text": "Thinking it through..." if intent["complex"] else "Writing answer...",
         "detail": None,
+        "icon": "thinking"
     }
 
     answer, provider = _call_provider_chain(
@@ -1417,6 +1561,7 @@ def _ask_gpt2_core(
                 "type": "status",
                 "text": _derive_step_label(step, i),
                 "detail": step,
+                "icon": "thinking"
             }
 
     # ── Safety net: classifier said "no search needed", but the model
@@ -1429,6 +1574,7 @@ def _ask_gpt2_core(
             "type": "status",
             "text": "Not fully sure — double-checking online...",
             "detail": f'The first draft wasn\'t confident, so searching for: "{clean_query}"',
+            "icon": "search"
         }
         web_results, fallback_sources = search_web(clean_query)
         if web_results:
@@ -1437,6 +1583,7 @@ def _ask_gpt2_core(
                 "type": "status",
                 "text": f"Found {len(fallback_sources)} source(s)",
                 "detail": " • ".join(titles[:5]) if titles else None,
+                "icon": "search"
             }
             retry_identity = current_identity + (
                 f"\n\n[BACKEND NOTE — not from the user]: The system distilled the "
@@ -1454,7 +1601,8 @@ def _ask_gpt2_core(
             yield {
                 "type": "status",
                 "text": "Rewriting answer with sources...",
-                "detail": "Redoing the answer now that real search results are available.",
+                "detail": "Rewriting the answer now with real search results available.",
+                "icon": "search"
             }
             retry_answer, retry_provider = _call_provider_chain(
                 TEXT_PROVIDERS, retry_messages, temperature=0.5, max_tokens=2048, reasoning_effort="none"
@@ -1469,6 +1617,7 @@ def _ask_gpt2_core(
                             "type": "status",
                             "text": _derive_step_label(step, i),
                             "detail": step,
+                            "icon": "thinking"
                         }
                 yield {"type": "final", "answer": retry_answer, "sources": fallback_sources, "images": image_results, "provider": retry_provider}
                 return
@@ -1490,3 +1639,154 @@ _UNSURE_PHRASES = [
 def _looks_unsure(answer: str) -> bool:
     a = answer.lower()
     return any(p in a for p in _UNSURE_PHRASES)
+# ---------------------------------------------------------------------------
+# FILE BUILD TOOL — "universal file builder", the Claude-style artifact
+# generator. Detects truncation via the real finish_reason (never an AI
+# guessing "does this look done"), auto-continues until the model actually
+# reports "stop", uploads the finished file to Supabase Storage, and
+# registers a reference in the user's docs so it's searchable later.
+# ---------------------------------------------------------------------------
+SUPABASE_URL         = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # service_role key — server-side only, never the anon key
+SUPABASE_BUCKET      = "ooor_bucket"
+FILE_BUILD_MAX_CONTINUATIONS = 8
+
+_FENCE_RE = re.compile(r"^`[a-zA-Z]*\n|```$", re.MULTILINE)
+
+
+def _upload_to_supabase(userid: str, filename: str, content: str) -> Optional[str]:
+    """
+    Uploads file content to Supabase Storage and returns a public URL, or
+    None on failure. Never raises — a failed upload should degrade to
+    "here's your file inline" rather than crash the whole build.
+    """
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        print("[FILEBUILD] SUPABASE_URL / SUPABASE_SERVICE_KEY not set — skipping upload")
+        return None
+
+    storage_path = f"{userid}/{filename}"
+    upload_url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{storage_path}"
+
+    try:
+        resp = requests.post(
+            upload_url,
+            headers={
+                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                "Content-Type": "text/plain",
+                "x-upsert": "true",  # overwrite if same filename already exists
+            },
+            data=content.encode("utf-8"),
+            timeout=30,
+        )
+        if resp.status_code not in (200, 201):
+            print(f"[FILEBUILD] Supabase upload failed: {resp.status_code} — {resp.text[:200]}")
+            return None
+        return f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_BUCKET}/{storage_path}"
+    except Exception as e:
+        print(f"[FILEBUILD] Supabase upload error: {e}")
+        return None
+
+
+def build_file_with_continuation(prompt: str, filename: str, userid: Optional[str], history: list):
+    """
+    Generator — builds a complete file, auto-continuing past truncation
+    using the provider's own finish_reason as ground truth, then uploads
+    it and registers it in the user's docs. Yields the same
+    {"type": "status", ...} shape as the rest of the pipeline, plus a
+    final {"type": "file_result", ...} event.
+    """
+    build_system = (
+        "You are building a complete, real file for the user based on their "
+        "request. Output ONLY the file's raw content — no explanation before "
+        "or after, no markdown fences unless the file format itself is "
+        "markdown. If your response gets cut off before the file is "
+        "complete, you will be asked to continue — when that happens, "
+        "resume EXACTLY where you left off, mid-line if necessary, with no "
+        "repeated content and no re-introduction. When the file is fully, "
+        "genuinely complete, end your output with exactly: <<<FILE_DONE>>>"
+    )
+
+    messages = [
+        {"role": "system", "content": build_system},
+        {"role": "user", "content": prompt.strip()},
+    ]
+
+    full_content = ""
+    for round_num in range(1, FILE_BUILD_MAX_CONTINUATIONS + 1):
+        yield {
+            "type": "status",
+            "text": f"Building {filename}..." if round_num == 1 else f"Continuing {filename} (part {round_num})...",
+            "detail": None,
+            "icon": "build"
+        }
+
+        answer, provider, finish_reason = _call_provider_chain_full(
+            TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=4096,
+        )
+
+        if answer is None:
+            yield {"type": "status", "text": "Build failed — no provider available", "detail": None, "icon": "warning"}
+            yield {"type": "file_result", "success": False, "url": None, "filename": filename}
+            return 
+        full_content += answer
+        messages.append({"role": "assistant", "content": answer})
+
+        done_marker_found = "<<<FILE_DONE>>>" in full_content
+        if done_marker_found:
+            full_content = full_content.replace("<<<FILE_DONE>>>", "").rstrip()
+
+        if finish_reason == "stop" or done_marker_found:
+            break
+
+        # finish_reason == "length" (or anything not "stop") — genuinely
+        # truncated mid-file. Ask it to continue from exactly where it
+        # stopped, with the full accumulated content as context.
+        yield {
+            "type": "status",
+            "text": "Response was cut off mid-file — continuing automatically",
+            "detail": f"finish_reason was '{finish_reason}', not 'stop' — the file isn't done yet.",
+            "icon": "warning"
+        }
+        messages.append({
+            "role": "user",
+            "content": "Continue exactly where you stopped. Do not repeat anything already written.",
+        })
+    else:
+        yield {
+            "type": "status",
+            "text": f"Stopped after {FILE_BUILD_MAX_CONTINUATIONS} continuation rounds — file may be incomplete",
+            "detail": None,
+            "icon": "warning"
+        }
+
+    # Strip a single wrapping `fence``` if the model added one anyway
+    full_content = _FENCE_RE.sub("", full_content).strip()
+
+    yield {"type": "status", "text": "Uploading file...", "detail": None, "icon": "upload"}
+    file_url = _upload_to_supabase(userid or "anonymous", filename, full_content)
+
+    if file_url and userid:
+        try:
+            manager = UserDocManager(userid)
+            manager.save_doc(
+                filename=f"ref_{filename}.md",
+                content=f"File stored at: {file_url}",
+                hint=filename,
+                tags=["ai-built-file", filename.split(".")[-1]],
+                metadata={"supabase_url": file_url, "original_filename": filename},
+            )
+        except Exception as e:
+            print(f"[FILEBUILD] failed to register doc reference: {e}")
+
+    yield {
+        "type": "status",
+        "text": "Done" if file_url else "File built but upload failed",
+        "detail": None,
+        "icon": "success" if file_url else "warning"
+    }
+    yield {
+        "type": "file_result",
+        "success": bool(file_url),
+        "url": file_url,
+        "filename": filename,
+    }
