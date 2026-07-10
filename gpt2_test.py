@@ -471,7 +471,61 @@ def search_images(query: str, max_results: int = 12):
         print(f"[IMAGE SEARCH] failed: {e}")
         return []
 
+def _verify_image_relevance(query: str, prompt: str, image_results: list, max_to_check: int = 6) -> list:
+    """
+    search_images() results come straight from DDGS's image search, which
+    matches on filename/alt-text/surrounding-page-text — not on what's
+    actually IN the picture. That's how a stranger's family photo passed
+    as a "Raspberry Pi 4 board" and a plaid skirt passed as "the Eiffel
+    Tower" in testing: the text metadata looked plausible, the pixels
+    didn't match at all.
 
+    Runs each candidate through the real vision pipeline with a strict
+    yes/no question. Only images that pass are returned. A provider
+    failure on a candidate drops that candidate rather than letting it
+    through unchecked — silence is treated as "no", never as "yes".
+    """
+    verified = []
+    checks_run = 0
+
+    verify_system = (
+        "You are a strict image-relevance checker. You will be shown ONE "
+        "image and a description of what it's supposed to be. Reply with "
+        "EXACTLY one word: YES if the image genuinely, clearly shows what's "
+        "described, or NO if it shows something else entirely (a different "
+        "subject, an unrelated photo, a person, a product listing, etc.). "
+        "When in doubt, say NO — a missing image is better than a wrong one."
+    )
+
+    for candidate in image_results:
+        if checks_run >= max_to_check or len(verified) >= 4:
+            break
+        image_url = candidate.get("image")
+        if not image_url:
+            continue
+        checks_run += 1
+
+        messages = [
+            {"role": "system", "content": verify_system},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f'Does this image genuinely show: "{query}"? Reply YES or NO only.'},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            },
+        ]
+
+        for provider in VISION_PROVIDERS:
+            if not provider["enabled"]:
+                continue
+            answer, _ = _call_provider_chain([provider], messages, temperature=0.0, max_tokens=10)
+            if answer:
+                if answer.strip().lower().startswith("yes"):
+                    verified.append(candidate)
+                break  # got a real yes/no from this provider — no need to try the next one
+
+    return verified
 def search_web(query: str, max_results: int = 4):
     """
     Tries each search engine in order. Returns (formatted_text, sources).
@@ -1243,11 +1297,26 @@ def _ask_gpt2_core(
     if intent.get("wants_image"):
         image_query = intent.get("search_query") or build_search_query(prompt)
         yield {"type": "status", "text": "Looking for a picture...", "detail": f'Query: "{image_query}"'}
-        image_results = search_images(image_query)
+        raw_image_results = search_images(image_query)
+
+        if raw_image_results:
+            yield {
+                "type": "status",
+                "text": f"Found {len(raw_image_results)} candidate(s), checking they actually match...",
+                "detail": (
+                    "Search results are matched on filename/page text, not on what's "
+                    "actually in the picture — verifying each candidate with vision "
+                    "before anything reaches the reply."
+                ),
+            }
+            image_results = _verify_image_relevance(image_query, prompt, raw_image_results)
+        else:
+            image_results = []
+
         if image_results:
             yield {
                 "type": "status",
-                "text": f"Found {len(image_results)} image(s)",
+                "text": f"Found {len(image_results)} matching image(s)",
                 "detail": None,
             }
             current_identity += (
@@ -1255,7 +1324,11 @@ def _ask_gpt2_core(
                 "will be shown to the user automatically, in a real gallery "
                 "right below your answer — this happens completely outside "
                 "your response text. Do NOT attempt to embed, reference, or "
-                "fake any image markdown (like ![alt](url)) yourself — you "
+                "fake any image markdown (like 
+
+![alt](url)
+
+) yourself — you "
                 "don't have real URLs for these and doing so only produces "
                 "broken 'image failed to load' placeholders. Just write "
                 "your answer as plain text; if you want to mention the "
@@ -1263,28 +1336,30 @@ def _ask_gpt2_core(
                 "is enough — the real images appear on their own."
             )
         else:
-            # No real photo/result available. Only worth an SVG fallback for
-            # conceptual/diagram-shaped questions — NOT for "show me a real
-            # photo of X" requests, where a fake-looking SVG would mislead
-            # rather than help. The model itself is well-placed to judge
-            # that from the prompt, so we hand it the choice explicitly
-            # rather than forcing an SVG onto every miss.
             yield {
                 "type": "status",
                 "text": "No matching photo found",
-                "detail": "Falling back to a diagram if one would genuinely help",
+                "detail": (
+                    "Found candidates but none actually matched on inspection"
+                    if raw_image_results else
+                    "Falling back to a diagram if one would genuinely help"
+                ),
             }
 
             current_identity += (
-                "\n\nNOTE: An image search for this was attempted but found nothing "
-                "suitable. If — and only if — a simple labeled diagram or step-by-step "
-                "visual would genuinely help explain this (e.g. a process, a hardware "
-                "layout, a concept), include ONE small, clean SVG in your answer using "
-                "a ```svg fenced code block. Keep it simple: clear shapes, readable "
-                "labels, no attempt at photorealism. Do NOT do this if the user actually "
-                "wanted a real photo of a specific physical object/place/product — in "
-                "that case just say plainly that no matching image was found, without "
-                "faking one."
+                "\n\nNOTE: An image search for this was attempted but nothing "
+                "matched — either no results came back, or every candidate found "
+                "failed a visual relevance check and was discarded rather than "
+                "risk showing an unrelated picture. Tell the user plainly that no "
+                "matching image was found; don't imply you're still looking. If — "
+                "and only if — a simple labeled diagram or step-by-step visual "
+                "would genuinely help explain this (e.g. a process, a hardware "
+                "layout, a concept), you may include ONE small, clean SVG in your "
+                "answer using a `svg fenced code block. Keep it simple: clear "
+                "shapes, readable labels, no attempt at photorealism. Do NOT do "
+                "this if the user actually wanted a real photo of a specific "
+                "physical object/place/product — in that case just say plainly "
+                "that no matching image was found, without faking one."
             )
 
     # ── Build messages ──────────────────────────────────────────────────
