@@ -1324,11 +1324,7 @@ def _ask_gpt2_core(
                 "will be shown to the user automatically, in a real gallery "
                 "right below your answer — this happens completely outside "
                 "your response text. Do NOT attempt to embed, reference, or "
-                "fake any image markdown (like 
-
-![alt](url)
-
-) yourself — you "
+                "fake any image markdown (like ![alt](url)) yourself — you "
                 "don't have real URLs for these and doing so only produces "
                 "broken 'image failed to load' placeholders. Just write "
                 "your answer as plain text; if you want to mention the "
