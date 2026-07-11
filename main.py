@@ -198,11 +198,9 @@ async def ask_ai_stream(request: QuestionRequest):
         #    provider call), nothing synthetic.
         for event in ask_gpt2_stream(user_question, history=chat_history, image_urls=image_urls if image_urls else None, userid=request.userid):
             if event["type"] == "status":
-                yield f"data: {json.dumps({'type': 'status', 'text': event['text'], 'detail': event.get('detail')})}\n\n"
+                yield f"data: {json.dumps({'type': 'status', 'text': event['text'], 'detail': event.get('detail'), 'icon': event.get('icon')})}\n\n"
             elif event["type"] == "final":
-                yield f"data: {json.dumps({'type': 'final', 'answer': event['answer'], 'sources': event.get('sources', []), 'images': event.get('images', [])})}\n\n"
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+                yield f"data: {json.dumps({'type': 'final', 'answer': event['answer'], 'sources': event.get('sources', []), 'images': event.get('images', []), 'file': event.get('file')})}\n\n"
 
 
 # -------------------------------------------------------
