@@ -211,7 +211,6 @@ def _current_datetime_line() -> str:
 
 
 NEUTRAL_SYSTEM_PROMPT = (
-    "You are UTME26 AI, a smart, modern, premium AI assistant. "
     "You are mature, highly intelligent, well-structured, globally minded, and professional. "
 
     "DEFAULT LANGUAGE & STRICT TONE MATCHING RULES: "
@@ -258,7 +257,14 @@ NEUTRAL_SYSTEM_PROMPT = (
     "4. You may rotate to a different bullet symbol only when switching to a completely new parent section or shifting to a distinct topic in your reply. "
     "5. Choose contextual symbols that actually match your task (e.g., use 🚀 or ⚡ for performance/action, 📌 or 📍 for core rules, ▪️ or ⬥ for clean lists). Never insert random symbols into arbitrary text points where they serve no structural purpose."
 
-
+    "TONE RULES: "
+    "Never give a bare refusal like 'I'm sorry, I can't help with that' and stop there. "
+    "If you genuinely cannot help with something, say so ONCE, briefly explain the real "
+    "reason in plain terms, and offer an alternative if one exists. "
+    "NEVER repeat the same refusal wording twice in a row, even if the user pushes back "
+    "or asks 'why not' — if they ask why, actually answer with the real reason instead of "
+    "repeating the refusal. Being unhelpful without explanation reads as hostile and is a "
+    "worse experience than just explaining the actual constraint."
 
     "MOBILE-FIRST COMPACT TABLE RULES: "
     "1. When comparing items, prices, plans, or simple metrics, you may use clean markdown tables—but keep them strictly optimized for narrow mobile phone screens. "
@@ -470,6 +476,30 @@ def search_images(query: str, max_results: int = 12):
     except Exception as e:
         print(f"[IMAGE SEARCH] failed: {e}")
         return []
+
+
+def _fetch_og_image(url: str) -> Optional[str]:
+    """
+    Pulls a page's own declared preview image (og:image meta tag) — the
+    page author's explicit answer to "what image represents this", which
+    is a far stronger relevance signal than a blind keyword-matched image
+    search. Never raises; a failure here just means falling back to
+    search_images() instead.
+    """
+    if not url:
+        return None
+    try:
+        resp = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+        match = re.search(
+            r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+            resp.text, re.IGNORECASE,
+        )
+        if match:
+            return match.group(1)
+    except Exception as e:
+        print(f"[OG_IMAGE] failed for {url}: {e}")
+    return None
+
 
 def _verify_image_relevance(query: str, prompt: str, image_results: list, max_to_check: int = 6) -> list:
     """
@@ -1290,9 +1320,9 @@ def _ask_gpt2_core(
 
         if file_result and file_result["success"]:
             answer = (
-                f"Done! Your file {file_result['filename']} is ready:\n\n"
-                f"{file_result['url']}\n\n"
-                f"It's also been saved to your docs — just ask for it by name later."
+                f"Done! Your file {file_result['filename']} is ready — you'll see it below "
+                f"as a downloadable file card. It's also been saved to your docs, so you "
+                f"can just ask for it by name later."
             )
         else:
             answer = (
@@ -1436,17 +1466,35 @@ def _ask_gpt2_core(
     if intent.get("wants_image"):
         image_query = intent.get("search_query") or build_search_query(prompt)
         yield {"type": "status", "text": "Looking for a picture...", "detail": f'Query: "{image_query}", this may take a few seconds', "icon": "image"}
-        raw_image_results = search_images(image_query)
+
+        # Prefer og:image from pages the TEXT search already trusted enough
+        # to cite as a source this turn — a page's own declared preview
+        # image is a far stronger relevance signal than a blind keyword
+        # image search, since it's the page author's own answer to "what
+        # picture represents this". Only falls back to a generic image
+        # search if no web search ran this turn, or none of its pages had one.
+        og_candidates = []
+        if sources:
+            for src in sources[:2]:
+                og_url = _fetch_og_image(src.get("url", ""))
+                if og_url:
+                    og_candidates.append({
+                        "image": og_url, "thumbnail": og_url,
+                        "title": src.get("title", ""), "source": src.get("url", ""),
+                    })
+
+        raw_image_results = og_candidates or search_images(image_query)
 
         if raw_image_results:
             yield {
                 "type": "status",
                 "text": f"Found {len(raw_image_results)} candidate(s), checking they actually match...",
                 "detail": (
+                    "Using the preview image from pages the text search already trusted"
+                    if og_candidates else
                     "Some candidates may be unrelated to the user's request, "
                     "so each one is being visually inspected for relevance. "
                     "This can take a few seconds."
-                    
                 ),
                 "icon": "image"
             }
@@ -1494,7 +1542,7 @@ def _ask_gpt2_core(
                 "and only if — a simple labeled diagram or step-by-step visual "
                 "would genuinely help explain this (e.g. a process, a hardware "
                 "layout, a concept), you may include ONE small, clean SVG in your "
-                "answer using a `svg fenced code block. Keep it simple: clear "
+                "answer using a ```svg fenced code block. Keep it simple: clear "
                 "shapes, readable labels, no attempt at photorealism. Do NOT do "
                 "this if the user actually wanted a real photo of a specific "
                 "physical object/place/product — in that case just say plainly "
@@ -1651,7 +1699,7 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # service_role key —
 SUPABASE_BUCKET      = "ooor_bucket"
 FILE_BUILD_MAX_CONTINUATIONS = 8
 
-_FENCE_RE = re.compile(r"^`[a-zA-Z]*\n|```$", re.MULTILINE)
+_FENCE_RE = re.compile(r"^```[a-zA-Z]*\n|```$", re.MULTILINE)
 
 
 def _upload_to_supabase(userid: str, filename: str, content: str) -> Optional[str]:
