@@ -691,6 +691,15 @@ def _call_provider_chain(providers: list, messages: list, temperature: float, ma
         }
         if reasoning_effort is not None and provider.get("supports_reasoning_effort"):
             payload["reasoning_effort"] = reasoning_effort
+            # FIXED — without this, Groq's reasoning-capable models default
+            # to putting reasoning in a separate `message.reasoning` field
+            # instead of inlining it as <think>...</think> tags in
+            # `message.content`. _split_thinking() only ever looks inside
+            # `content`, so the reasoning was very likely being generated
+            # the whole time and just landing somewhere this code never
+            # read — no error, nothing to catch, it just silently never
+            # showed up as thinking steps on the frontend.
+            payload["reasoning_format"] = "raw"
 
         print(f"[AI] trying {provider['name']} ({provider['model']})...")
 
@@ -768,6 +777,7 @@ def _call_provider_chain_full(providers: list, messages: list, temperature: floa
         }
         if reasoning_effort is not None and provider.get("supports_reasoning_effort"):
             payload["reasoning_effort"] = reasoning_effort
+            payload["reasoning_format"] = "raw"  # same fix as _call_provider_chain — see comment there
 
         for attempt in range(1, MAX_RETRIES_PER_PROVIDER + 1):
             try:
