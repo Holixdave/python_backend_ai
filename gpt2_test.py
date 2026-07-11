@@ -669,18 +669,16 @@ _INTENT_SYSTEM_PROMPT = (
     "JAMB/UTME/WAEC/Post-UTME/exam prep, \"mojizela\" only if about the Mojizela "
     "app/coins/wallet/creators, else \"general\"."
     '"wants_file_build": true ONLY if the user is asking you to BUILD/CREATE/'
-    "GENERATE a real, complete, downloadable file — a document, a code file, "
-    "a script, an app screen, a full HTML page, etc. — something meant to be "
-    "saved and used, not just explained or shown inline. Examples that are "
-    "true: \"build me a login screen\", \"create a python script that does "
-    "X\", \"write a complete README for this project\". Examples that are "
-    "FALSE: \"explain how login screens work\", \"show me an example of a "
-    "function\", \"what does this code do\" — those want an explanation, not "
-    "a file. Mutually exclusive with wants_image and search_type — false "
-    "whenever either of those would also apply.\n"
-    '"filename": ONLY if wants_file_build is true — a sensible filename with '
-    "correct extension for what's being built, e.g. \"login_screen.dart\", "
-    "\"readme.md\", \"scraper.py\". Empty string otherwise.\n"
+"GENERATE a real, complete, downloadable file AND has given enough "
+"specificity about what it should contain — a subject, a purpose, a "
+"feature, some real content to build around. If the request is just "
+"\"write html code\" or \"can you write some python\" with no actual "
+"subject, topic, or spec attached, set this to FALSE — that's a vague "
+"request that deserves a clarifying question, not a blindly-generated "
+"empty file. Examples that are true: \"build me a login screen\", "
+"\"create a python script that scrapes prices from X\". Examples that "
+"are FALSE: \"can you write html code\", \"write me some python\", "
+"\"show me an example of a function\" — these lack a real subject.\n"
 )
 
 
