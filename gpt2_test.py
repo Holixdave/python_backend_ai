@@ -908,6 +908,31 @@ def _ask_gpt2_core(
         }
 
         messages.append({"role": "assistant", "content": call_answer})
+
+        # AGENTIC SEARCH RETRY — only added when the tool that just ran was
+        # search_web. Deliberately no hardcoded "if fewer than N sources"
+        # check here — we don't compute a quality score ourselves and force
+        # a retry off it, because that's just a different hardcoded rule.
+        # Instead the AI is handed the real results and asked to judge them
+        # itself: thin, off-topic, or stale results should prompt IT to
+        # rewrite the query and request search_web again through the exact
+        # same <<TOOL_REQUEST>> mechanism — this loop already supports that
+        # (up to MAX_TOOL_ROUNDS), it just wasn't being told to use it for
+        # self-correction before now.
+        retry_guidance = ""
+        if call_data["tool"] == "search_web":
+            retry_guidance = (
+                "\n\nJudge these results yourself before using them: are they "
+                "specific, current, and actually relevant to what the user "
+                "asked — not just loosely related? If they're thin, off-topic, "
+                "or clearly missing what's needed, don't settle for a weak "
+                "answer. Instead, rewrite the search query — tighter, more "
+                "specific, or worded differently — and request search_web "
+                "again the exact same way. Only move on to your final answer "
+                "once the results genuinely support it, or you've run out of "
+                "reasonable ways to rephrase the query."
+            )
+
         messages.append({
             "role": "user",
             "content": (
@@ -915,6 +940,7 @@ def _ask_gpt2_core(
                 f"Continue and give the user your actual answer now, using "
                 f"this if it helps. If you need another tool, you may "
                 f"request one the same way; otherwise just answer normally."
+                + retry_guidance
             ),
         })
 
