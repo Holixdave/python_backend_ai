@@ -1736,6 +1736,99 @@ def _upload_to_supabase(userid: str, filename: str, content: str) -> Optional[st
         return None
 
 
+_CHAT_LEAD_RE = re.compile(
+    r"^\s*(sure[,!.]|okay[,!.]|alright[,!.]|certainly[,!.]|of course[,!.]|"
+    r"here'?s?\b|here is\b|here are\b|i'?ll\b.*\b(continue|resume|finish)\b|"
+    r"continuing from\b|\[continuing)",
+    re.IGNORECASE,
+)
+_CHAT_TRAIL_RE = re.compile(
+    r"^\s*(let me know\b|i hope this helps\b|hope this helps\b|"
+    r"feel free to\b|that'?s (it|all)\b|done[!.]?\s*$)",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_file_chunk(text: str) -> str:
+    """
+    Strips obvious conversational framing from the very start/end of a
+    single generation round — "Here's the code:", "Let me know if you need
+    anything else", "Continuing from here:", etc. Deliberately
+    conservative: only touches the first/last lines of a chunk, never the
+    middle, since mid-chunk regex stripping risks deleting real comments
+    or content. This runs on EVERY round, including continuations — that's
+    what stops a stray "Continuing from where I left off:" line from a
+    later round getting permanently baked into full_content, which is
+    exactly what was corrupting continuations before: each round's answer
+    was appended raw, so any chatter in round 1 stayed in the file's
+    context for every round after it, compounding.
+
+    Mid-file drift across the WHOLE assembled file is a different problem,
+    handled separately by _verify_file_is_clean() below, which uses a
+    model to classify specific lines instead of guessing with regex.
+    """
+    lines = text.splitlines()
+    while lines and (lines[0].strip() == "" or _CHAT_LEAD_RE.match(lines[0])):
+        lines.pop(0)
+    while lines and (lines[-1].strip() == "" or _CHAT_TRAIL_RE.match(lines[-1])):
+        lines.pop()
+    return "\n".join(lines)
+
+
+def _verify_file_is_clean(filename: str, content: str) -> tuple:
+    """
+    Runs once, on the FULLY ASSEMBLED file, right before upload — this is
+    the model tracing its own finished work, not a hardcoded "done" status.
+    Deliberately does NOT ask the model to regenerate the file (that risks
+    it silently paraphrasing or altering real content while "cleaning" it
+    — a worse bug than the one being fixed). Instead it only asks for the
+    LINE NUMBERS of any leftover chatter; removal itself happens
+    deterministically in Python, so real content can never be rewritten,
+    only exact flagged lines dropped.
+
+    Returns (was_dirty: bool, cleaned_content: str, removed_line_numbers: list).
+    On any failure (no provider, bad JSON), fails safe: returns not-dirty
+    and the original content untouched rather than risking corruption.
+    """
+    lines = content.splitlines()
+    numbered = "\n".join(f"{i + 1}: {line}" for i, line in enumerate(lines))
+
+    verify_system = (
+        f"You will be shown a file named '{filename}', with line numbers "
+        "prefixed (format 'N: content'). Find any lines that are leftover "
+        "conversational AI chatter that doesn't belong in the actual file — "
+        "things like 'Here's the code:', 'I'll continue from here', 'Let me "
+        "know if you need anything else', greetings, or meta-commentary "
+        "about the build process. Do NOT flag real comments that are "
+        "genuinely part of the code/document itself (like '# this function "
+        "validates input').\n\n"
+        "Reply with ONLY a raw JSON array of line numbers to remove, e.g. "
+        "[1, 47, 48]. If nothing needs removing, reply with exactly: []"
+    )
+    messages = [
+        {"role": "system", "content": verify_system},
+        {"role": "user", "content": numbered},
+    ]
+
+    answer, _ = _call_provider_chain(TEXT_PROVIDERS, messages, temperature=0.0, max_tokens=500)
+    if not answer:
+        return False, content, []
+
+    try:
+        raw = answer.strip().strip("`")
+        if raw.lower().startswith("json"):
+            raw = raw[4:].strip()
+        bad_lines = set(json.loads(raw))
+    except Exception:
+        return False, content, []
+
+    if not bad_lines:
+        return False, content, []
+
+    cleaned_lines = [line for i, line in enumerate(lines, start=1) if i not in bad_lines]
+    return True, "\n".join(cleaned_lines), sorted(bad_lines)
+
+
 def build_file_with_continuation(prompt: str, filename: str, userid: Optional[str], history: list):
     """
     Generator — builds a complete file, auto-continuing past truncation
@@ -1777,8 +1870,9 @@ def build_file_with_continuation(prompt: str, filename: str, userid: Optional[st
             yield {"type": "status", "text": "Build failed — no provider available", "detail": None, "icon": "warning"}
             yield {"type": "file_result", "success": False, "url": None, "filename": filename}
             return 
-        full_content += answer
-        messages.append({"role": "assistant", "content": answer})
+        clean_chunk = _sanitize_file_chunk(answer)
+        full_content += clean_chunk
+        messages.append({"role": "assistant", "content": clean_chunk})
 
         done_marker_found = "<<<FILE_DONE>>>" in full_content
         if done_marker_found:
@@ -1808,8 +1902,34 @@ def build_file_with_continuation(prompt: str, filename: str, userid: Optional[st
             "icon": "warning"
         }
 
-    # Strip a single wrapping `fence``` if the model added one anyway
+    # Strip a single wrapping ```fence``` if the model added one anyway
     full_content = _FENCE_RE.sub("", full_content).strip()
+
+    # ── Final trace pass — the AI checks its OWN finished file, with real,
+    # visible steps, before anything gets uploaded. This is what actually
+    # replaces the old hardcoded "Done" status: instead of just declaring
+    # success, it looks at what it built and reports what it found.
+    yield {
+        "type": "status",
+        "text": f"Reviewing {filename} for accuracy...",
+        "detail": "Tracing through the finished file to check nothing conversational leaked in.",
+        "icon": "search",
+    }
+    was_dirty, full_content, removed_lines = _verify_file_is_clean(filename, full_content)
+    if was_dirty:
+        yield {
+            "type": "status",
+            "text": f"Found {len(removed_lines)} stray line(s) — cleaned up",
+            "detail": f"Removed line(s) {removed_lines} that weren't real file content.",
+            "icon": "warning",
+        }
+    else:
+        yield {
+            "type": "status",
+            "text": f"{filename} checks out — no stray content found",
+            "detail": None,
+            "icon": "success",
+        }
 
     yield {"type": "status", "text": "Uploading file...", "detail": None, "icon": "upload"}
     file_url = _upload_to_supabase(userid or "anonymous", filename, full_content)
