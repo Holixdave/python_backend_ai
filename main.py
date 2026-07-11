@@ -201,7 +201,7 @@ async def ask_ai_stream(request: QuestionRequest):
                 yield f"data: {json.dumps({'type': 'status', 'text': event['text'], 'detail': event.get('detail'), 'icon': event.get('icon')})}\n\n"
             elif event["type"] == "final":
                 yield f"data: {json.dumps({'type': 'final', 'answer': event['answer'], 'sources': event.get('sources', []), 'images': event.get('images', []), 'file': event.get('file')})}\n\n"
-
+            return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 # -------------------------------------------------------
 # POST /generate-question  — UNCHANGED for frontend
