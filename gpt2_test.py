@@ -450,22 +450,34 @@ def _search_tavily(query: str, max_results: int):
     ]
 
 
-def _search_ddgs_images(query: str, max_results: int = 12):
+def _search_ddgs_images(query: str, max_results: int = 200):
+    """
+    Fetch up to 200 image candidates from DDGS.
+    These are only candidates—they must still be verified by the vision model.
+    """
     from ddgs import DDGS
+
+    seen = set()
+    images = []
+
     with DDGS() as ddgs:
-        results = list(ddgs.images(query, max_results=max_results))
-    return [
-        {
-            "image": r.get("image", ""),
-            "thumbnail": r.get("thumbnail", r.get("image", "")),
-            "title": r.get("title", ""),
-            "source": r.get("url", r.get("source", "")),
-        }
-        for r in results if r.get("image")
-    ]
+        for r in ddgs.images(query, max_results=max_results):
+            url = r.get("image")
+            if not url or url in seen:
+                continue
 
+            seen.add(url)
 
-def search_images(query: str, max_results: int = 12):
+            images.append({
+                "image": url,
+                "thumbnail": r.get("thumbnail") or url,
+                "title": r.get("title", ""),
+                "source": r.get("url") or r.get("source", ""),
+            })
+
+    return images
+
+def search_images(query: str, max_results: int = 200):
     """
     Best-effort pictorial results to accompany a web search — never raises,
     returns [] on any failure so a broken image search can't take down the
@@ -501,47 +513,47 @@ def _fetch_og_image(url: str) -> Optional[str]:
     return None
 
 
-def _verify_image_relevance(query: str, prompt: str, image_results: list, max_to_check: int = 6) -> list:
+def _verify_image_relevance(
+    query: str,
+    prompt: str,
+    image_results: list,
+    max_verified: int = 12,
+):
     """
-    search_images() results come straight from DDGS's image search, which
-    matches on filename/alt-text/surrounding-page-text — not on what's
-    actually IN the picture. That's how a stranger's family photo passed
-    as a "Raspberry Pi 4 board" and a plaid skirt passed as "the Eiffel
-    Tower" in testing: the text metadata looked plausible, the pixels
-    didn't match at all.
+    Verify DDGS image candidates using the vision model.
+    Scans through all candidates until enough verified images are found.
+    """
 
-    Runs each candidate through the real vision pipeline with a strict
-    yes/no question. Only images that pass are returned. A provider
-    failure on a candidate drops that candidate rather than letting it
-    through unchecked — silence is treated as "no", never as "yes".
-    """
     verified = []
-    checks_run = 0
 
     verify_system = (
-        "You are a strict image-relevance checker. You will be shown ONE "
-        "image and a description of what it's supposed to be. Reply with "
-        "EXACTLY one word: YES if the image genuinely, clearly shows what's "
-        "described, or NO if it shows something else entirely (a different "
-        "subject, an unrelated photo, a person, a product listing, etc.). "
-        "When in doubt, say NO — a missing image is better than a wrong one."
+        "You are a strict image relevance checker. "
+        "Reply with EXACTLY one word: YES or NO. "
+        "YES only if the image clearly matches the requested subject."
     )
 
     for candidate in image_results:
-        if checks_run >= max_to_check or len(verified) >= 4:
+
+        if len(verified) >= max_verified:
             break
+
         image_url = candidate.get("image")
         if not image_url:
             continue
-        checks_run += 1
 
         messages = [
             {"role": "system", "content": verify_system},
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": f'Does this image genuinely show: "{query}"? Reply YES or NO only.'},
-                    {"type": "image_url", "image_url": {"url": image_url}},
+                    {
+                        "type": "text",
+                        "text": f'Does this image genuinely show "{query}"? Reply YES or NO only.'
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image_url},
+                    },
                 ],
             },
         ]
@@ -549,11 +561,18 @@ def _verify_image_relevance(query: str, prompt: str, image_results: list, max_to
         for provider in VISION_PROVIDERS:
             if not provider["enabled"]:
                 continue
-            answer, _ = _call_provider_chain([provider], messages, temperature=0.0, max_tokens=10)
+
+            answer, _ = _call_provider_chain(
+                [provider],
+                messages,
+                temperature=0.0,
+                max_tokens=10,
+            )
+
             if answer:
-                if answer.strip().lower().startswith("yes"):
+                if answer.strip().upper().startswith("YES"):
                     verified.append(candidate)
-                break  # got a real yes/no from this provider — no need to try the next one
+                break
 
     return verified
 def search_web(query: str, max_results: int = 4):
