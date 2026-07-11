@@ -367,13 +367,23 @@ NEUTRAL_SYSTEM_PROMPT = (
 # change — same content-quality rules as before: no generic numbered
 # filler, real problem-specific reasoning only.
 # ---------------------------------------------------------------------------
+REASONING_STEP_ICONS = [
+    "thinking", "search", "calculating", "comparing", "verifying",
+    "planning", "reading", "idea", "code", "warning",
+]
+
 REASONING_STEP_HINT = (
     "\n\nBefore your final answer, include your reasoning wrapped in "
     "<think></think> tags. This block is required. Keep your thinking concise: "
     "for basic or direct questions, use a rapid, short reasoning pass — do not over-think. "
-    "Structure your thinking as short paragraphs, each starting with a brief **bolded label** "
-    "that names what that paragraph is doing for THIS question (e.g. '**Checking definition:**', "
-    "'**Verifying live criteria:**') — never use generic filler like '**Step 1:**' or '**Analyzing the question:**'. "
+    "Structure your thinking as short paragraphs, each starting with an icon tag "
+    "followed by a brief **bolded label** that names what that paragraph is doing "
+    "for THIS question, in this exact format: "
+    "[icon] **Label:** text — e.g. '[verifying] **Checking definition:**', "
+    "'[calculating] **Working out the total:**', '[comparing] **Weighing the two options:**'. "
+    f"The icon MUST be exactly one of: {', '.join(REASONING_STEP_ICONS)} — pick whichever "
+    "genuinely matches what that paragraph is doing; do not invent new icon names. "
+    "Never use generic filler like '**Step 1:**' or '**Analyzing the question:**'. "
     "Separate paragraphs with a blank line. Do not number them. After the closing </think> "
     "tag, write your actual answer normally."
 )
@@ -400,6 +410,7 @@ from gpt2_functions import (
     _split_thinking,
     _split_into_steps,
     _derive_step_label,
+    _extract_step_icon,
     _call_provider_chain,
     _friendly_failure_message,
     ask_with_vision,
@@ -814,11 +825,12 @@ def _ask_gpt2_core(
     answer, model_thinking = _split_thinking(answer)
     if model_thinking:
         for i, step in enumerate(_split_into_steps(model_thinking), start=1):
+            step_icon, step_clean = _extract_step_icon(step)
             yield {
                 "type": "status",
-                "text": _derive_step_label(step, i),
-                "detail": step,
-                "icon": "thinking"
+                "text": _derive_step_label(step_clean, i),
+                "detail": step_clean,
+                "icon": step_icon
             }
 
     # ── TOOL LOOP — the AI decided it wants to call one of TOOL_REGISTRY's
@@ -922,11 +934,12 @@ def _ask_gpt2_core(
         answer, model_thinking = _split_thinking(answer)
         if model_thinking:
             for i, step in enumerate(_split_into_steps(model_thinking), start=1):
+                step_icon, step_clean = _extract_step_icon(step)
                 yield {
                     "type": "status",
-                    "text": _derive_step_label(step, i),
-                    "detail": step,
-                    "icon": "thinking",
+                    "text": _derive_step_label(step_clean, i),
+                    "detail": step_clean,
+                    "icon": step_icon,
                 }
         search_text = (model_thinking or "") + "\n" + (answer or "")
 
@@ -979,11 +992,12 @@ def _ask_gpt2_core(
                 retry_answer, retry_thinking = _split_thinking(retry_answer)
                 if retry_thinking:
                     for i, step in enumerate(_split_into_steps(retry_thinking), start=1):
+                        step_icon, step_clean = _extract_step_icon(step)
                         yield {
                             "type": "status",
-                            "text": _derive_step_label(step, i),
-                            "detail": step,
-                            "icon": "thinking"
+                            "text": _derive_step_label(step_clean, i),
+                            "detail": step_clean,
+                            "icon": step_icon
                         }
                 yield {"type": "final", "answer": retry_answer, "sources": fallback_sources, "images": image_results, "provider": retry_provider}
                 return

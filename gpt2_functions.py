@@ -30,6 +30,7 @@ from gpt2_test import (
     MAX_RETRIES_PER_PROVIDER,
     RETRY_BASE_DELAY,
     REQUEST_TIMEOUT,
+    REASONING_STEP_ICONS,
 )
 
 # ---------------------------------------------------------------------------
@@ -598,6 +599,35 @@ def _split_into_steps(thinking):
 
 
 _LEADING_BOLD_HEADER_RE = re.compile(r"^\s*\*\*(.+?)\*\*\s*:?", re.DOTALL)
+_LEADING_ICON_TAG_RE = re.compile(r"^\s*\[([a-zA-Z_]+)\]\s*")
+
+
+def _extract_step_icon(step_text: str, default: str = "thinking") -> tuple:
+    """
+    Pulls a leading [icon_name] tag off a reasoning step, per the format
+    REASONING_STEP_HINT asks the model for — e.g. "[verifying] **Checking
+    definition:** ...". Returns (icon, cleaned_step_text) where cleaned_step_text
+    has the tag stripped so it doesn't show up twice (once as the real icon,
+    once as leftover text in the detail).
+
+    Falls back to `default` whenever there's no tag, the tag isn't one of
+    REASONING_STEP_ICONS (guards against a hallucinated icon name reaching
+    the frontend), or the model ignored the format entirely — this can
+    never break a step's display, it just won't get a specific icon.
+    """
+    if not step_text:
+        return default, step_text
+
+    match = _LEADING_ICON_TAG_RE.match(step_text)
+    if not match:
+        return default, step_text
+
+    icon = match.group(1).strip().lower()
+    cleaned = step_text[match.end():].lstrip()
+    if icon not in REASONING_STEP_ICONS:
+        icon = default
+    return icon, cleaned
+
 
 def _derive_step_label(step_text: str, index: int) -> str:
     """
