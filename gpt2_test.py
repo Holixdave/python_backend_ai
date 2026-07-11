@@ -408,6 +408,24 @@ from gpt2_functions import (
 )
 
 # ---------------------------------------------------------------------------
+# TOOL LOOP — gpt2_tools.py. Lets the AI request one of the functions above
+# for itself mid-answer by echoing a <<TOOL_REQUEST>> block, instead of us
+# hardcoding which function fires when. See gpt2_tools.py header for the
+# full flow. No circular import risk here — gpt2_tools.py only imports
+# gpt2_functions.py, never this file.
+# ---------------------------------------------------------------------------
+from gpt2_tools import (
+    build_tool_manifest,
+    detect_tool_request,
+    get_tool_source,
+    parse_tool_call,
+    execute_tool,
+    MAX_TOOL_ROUNDS,
+)
+
+TOOL_USE_HINT = "\n\n" + build_tool_manifest()
+
+# ---------------------------------------------------------------------------
 # MAIN ASK FUNCTION
 # ---------------------------------------------------------------------------
 def ask_gpt2(
@@ -757,6 +775,7 @@ def _ask_gpt2_core(
     # reasoning_effort is actually going to be turned on below.
     if intent["complex"]:
         current_identity += REASONING_STEP_HINT
+        current_identity += TOOL_USE_HINT
 
     messages = [{"role": "system", "content": current_identity}]
     messages.extend(lean_history)
@@ -801,6 +820,115 @@ def _ask_gpt2_core(
                 "detail": step,
                 "icon": "thinking"
             }
+
+    # ── TOOL LOOP — the AI decided it wants to call one of TOOL_REGISTRY's
+    # real functions for itself. Detected from whatever it just echoed
+    # (checked against both the visible answer and the extracted thinking,
+    # since a model may drop the request inside its <think> block). Each
+    # round is a real, visible round trip — nothing here is faked or
+    # pre-scripted; the "detail" on every status event is the AI's own
+    # echoed text or the tool's real result, verbatim.
+    session_context = {
+        "prompt": prompt,
+        "history": history,
+        "userid": userid,
+        "image_urls": valid_image_urls,
+    }
+    tool_round = 0
+    search_text = (model_thinking or "") + "\n" + (answer or "")
+    while tool_round < MAX_TOOL_ROUNDS:
+        requested_tool = detect_tool_request(search_text)
+        if not requested_tool:
+            break
+        tool_round += 1
+
+        yield {
+            "type": "status",
+            "text": f"Reaching for {requested_tool}...",
+            "detail": search_text.strip(),
+            "icon": "tool",
+        }
+
+        tool_source = get_tool_source(requested_tool)
+        messages.append({"role": "assistant", "content": answer})
+        messages.append({
+            "role": "user",
+            "content": (
+                f"Here is the real source code for `{requested_tool}`:\n\n"
+                f"```python\n{tool_source}\n```\n\n"
+                f"Now call it for real by replying with ONLY this block, "
+                f"filled in with the actual arguments it needs:\n"
+                f'<<TOOL_CALL>>{{"tool": "{requested_tool}", "args": {{...}}}}<<END_TOOL_CALL>>'
+            ),
+        })
+
+        yield {
+            "type": "status",
+            "text": f"Reviewing {requested_tool}'s code...",
+            "detail": None,
+            "icon": "tool",
+        }
+        call_answer, _ = _call_provider_chain(
+            TEXT_PROVIDERS, messages, temperature=0.0, max_tokens=1024,
+        )
+        call_data = parse_tool_call(call_answer)
+        if not call_data:
+            yield {
+                "type": "status",
+                "text": f"Couldn't get a valid call for {requested_tool} — moving on",
+                "detail": call_answer,
+                "icon": "warning",
+            }
+            break
+
+        yield {
+            "type": "status",
+            "text": f"Calling {call_data['tool']}...",
+            "detail": json.dumps(call_data["args"]),
+            "icon": "tool",
+        }
+        success, tool_result = execute_tool(call_data["tool"], call_data["args"], session_context)
+        yield {
+            "type": "status",
+            "text": f"{requested_tool} {'succeeded' if success else 'failed'}",
+            "detail": tool_result[:500],
+            "icon": "success" if success else "warning",
+        }
+
+        messages.append({"role": "assistant", "content": call_answer})
+        messages.append({
+            "role": "user",
+            "content": (
+                f"Tool result from {call_data['tool']}:\n{tool_result}\n\n"
+                f"Continue and give the user your actual answer now, using "
+                f"this if it helps. If you need another tool, you may "
+                f"request one the same way; otherwise just answer normally."
+            ),
+        })
+
+        yield {
+            "type": "status",
+            "text": "Continuing with the answer...",
+            "detail": None,
+            "icon": "thinking",
+        }
+        answer, provider = _call_provider_chain(
+            TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=2048,
+        )
+        if answer is None:
+            yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None}
+            return
+
+        answer, model_thinking = _split_thinking(answer)
+        if model_thinking:
+            for i, step in enumerate(_split_into_steps(model_thinking), start=1):
+                yield {
+                    "type": "status",
+                    "text": _derive_step_label(step, i),
+                    "detail": step,
+                    "icon": "thinking",
+                }
+        search_text = (model_thinking or "") + "\n" + (answer or "")
 
     # ── Safety net: classifier said "no search needed", but the model
     # itself came back unsure. Rather than let a guess through, run one
