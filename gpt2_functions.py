@@ -27,6 +27,9 @@ from gpt2_test import (
     TAVILY_API_KEY,
     TEXT_PROVIDERS,
     VISION_PROVIDERS,
+    MAX_RETRIES_PER_PROVIDER,
+    RETRY_BASE_DELAY,
+    REQUEST_TIMEOUT,
 )
 
 # ---------------------------------------------------------------------------
