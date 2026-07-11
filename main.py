@@ -184,7 +184,7 @@ async def ask_ai_stream(request: QuestionRequest):
 
         print(f"[REQUEST] /ai-query-stream: {user_question[:100]!r} (history={len(chat_history)} msgs)")
 
-        # 1. Math/algebra short-circuit — same fixed guard as /ai-query
+        # 1. Math/algebra short-circuit 
         if _looks_like_equation(user_question):
             eq_answer = solve_equation_with_steps(user_question)
             print(f"[EQUATION] input looked equation-like, solver said: {eq_answer!r}")
@@ -193,15 +193,16 @@ async def ask_ai_stream(request: QuestionRequest):
                 yield f"data: {json.dumps({'type': 'final', 'answer': eq_answer, 'sources': []})}\n\n"
                 return
 
-        # 2. Real generator from gpt2_test — every status event here reflects
-        #    an actual step that just ran (classifier call, real search hit,
-        #    provider call), nothing synthetic.
+        # 2. Real generator from gpt2_test
         for event in ask_gpt2_stream(user_question, history=chat_history, image_urls=image_urls if image_urls else None, userid=request.userid):
             if event["type"] == "status":
                 yield f"data: {json.dumps({'type': 'status', 'text': event['text'], 'detail': event.get('detail'), 'icon': event.get('icon')})}\n\n"
             elif event["type"] == "final":
                 yield f"data: {json.dumps({'type': 'final', 'answer': event['answer'], 'sources': event.get('sources', []), 'images': event.get('images', []), 'file': event.get('file')})}\n\n"
-            return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+    # FIXED: Moved 4 spaces to the left out of the inner event_generator block!
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 
 # -------------------------------------------------------
 # POST /generate-question  — UNCHANGED for frontend
