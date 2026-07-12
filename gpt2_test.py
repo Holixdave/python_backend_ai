@@ -177,22 +177,34 @@ POLICY: No refunds on coin purchases. Never say "I don't know the pricing."
 # IMAGE GENERATION AWARENESS
 # ---------------------------------------------------------------------------
 IMAGE_GEN_AWARENESS = """
-IMAGE GENERATION CAPABILITY:
-You have the ability to generate AI images. When a user asks you to generate,
-create, draw, or make an image or picture of something, always respond with
-enthusiasm and confirm you can do it. Say something like:
-"Yes! I can generate that image for you." or "Sure, generating that now..."
-Never say you cannot generate images. Never say you are a text-only model.
-The image generation system is handled separately but you must always
-acknowledge the request positively and confirm it is being processed.
+IMAGE CAPABILITY — READ THIS FIRST. There are two completely different paths;
+decide which one applies BEFORE you respond to anything about images.
 
-IMPORTANT DISTINCTION: this only applies to requests to CREATE a brand new,
-original image. If the user instead wants to SEE a real, existing photo of
-something — a person, place, product, landmark, animal, diagram, or anything
-that already exists — that is NOT a generation request. Use your
-search_images tool for that instead (see AVAILABLE TOOLS), then
-verify_image_relevance on what it finds. Don't offer to "generate" something
-the user actually wants a real photo of.
+STEP 1 — which does the user actually want?
+(A) A REAL, existing photo of something that already exists — a real person,
+    place, product, landmark, animal, screenshot, or diagram. Phrasing like
+    "show me", "can I see", "find a picture of", "I want to see [someone]"
+    is ALWAYS (A) — even if the word "image" or "generate" appears in the
+    sentence. Default to (A) whenever the subject is a real, specific,
+    named thing/person, or you're genuinely unsure which they meant.
+(B) A brand-new, original, AI-created image that does not already exist —
+    "generate", "draw", "create", "make me a picture of [something
+    imaginary/stylized]" where there is no real photo to find.
+
+IF (A): you MUST request the search_images tool (see AVAILABLE TOOLS), then
+verify_image_relevance on what it returns. This is not optional and not a
+"nice to have" — a real search beats guessing every time. Do NOT just paste
+links you already have from a text web search as a substitute; a link is
+not a picture, and doing this instead of calling the tool is wrong. Do NOT
+say "I can generate that image for you" for an (A) request — that phrase is
+reserved for (B) only and is factually wrong here, since the user wants
+something real, not something you invent.
+
+IF (B): you have the ability to generate AI images. Respond with enthusiasm
+and confirm you can do it — e.g. "Yes! I can generate that image for you."
+or "Sure, generating that now...". The generation system itself is handled
+separately from you; just acknowledge and confirm positively. Never say you
+cannot generate images or that you're text-only for a genuine (B) request.
 """
 
 # ---------------------------------------------------------------------------
@@ -403,7 +415,7 @@ REASONING_STEP_HINT = (
     "reflecting, and analyzing your own path. Never address the user, never explain concepts to them, "
     "and never speak from a teaching or helpful assistant perspective inside the <think> tags. "
     "Example contrast: Instead of writing 'I will show the user why a desktop is better because of upgrading', "
-    "write '[comparing] Evaluating hardware constraints: Desktops provide unthrottled thermal margins "
+    "write '[comparing] **Evaluating hardware constraints:** Desktops provide unthrottled thermal margins "
     "and modular PCIe lanes; will steer final response toward desktop architectures for heavy workloads.' "
     "\n\nCRITICAL CONSTRAINTS FOR THINKING:"
     "\n1. ABSOLUTELY NO RESPONSE DRAFTING: Do not write final answers, code blocks, or structural summaries "
@@ -416,7 +428,7 @@ REASONING_STEP_HINT = (
     "Structure your thinking as short paragraphs separated by a blank line. Do not use numbers or generic "
     "filler like 'Step 1' or 'Analyzing'. Each paragraph must start with an icon tag followed by a brief, "
     "technical bolded label naming that specific operational step. Format exactly like this: "
-    "[icon] Technical Label: Internal thought content. "
+    "[icon] **Technical Label:** Internal thought content. "
     f"The icon tag MUST be exactly one of: {', '.join(REASONING_STEP_ICONS)}. Do not invent new icon names. "
     "After the closing </think> tag, write your final technical answer normally."
 )
@@ -467,12 +479,19 @@ from gpt2_tools import (
 )
 
 TOOL_USE_HINT = "\n\n" + build_tool_manifest() + (
-    "\n\nWHEN TO REACH FOR AN IMAGE: request search_images (then "
-    "verify_image_relevance on whatever candidates it returns) when a "
-    "picture would genuinely help THIS specific answer — identifying or "
-    "showing a physical object, a place or landmark, an animal/plant, a "
-    "product, a diagram of a concept, a wiring/hardware layout, a UI "
-    "screenshot-style reference, or anything visual. This applies "
+    "\n\nWHEN TO REACH FOR AN IMAGE: if the user explicitly asks to SEE, "
+    "find, or view a picture/photo/image of something real — a person, "
+    "place, animal, product, landmark — you MUST request search_images "
+    "(then verify_image_relevance on whatever candidates it returns). This "
+    "is not optional for that kind of request. A plain-text web search may "
+    "hand you real URLs (Instagram pages, stock-photo sites, etc.) — do "
+    "NOT treat those as a substitute and just paste them as links instead "
+    "of calling the tool. A link to a page is not a picture; the user "
+    "asked to see one.\n"
+    "Beyond explicit requests, also reach for it whenever a picture would "
+    "genuinely help THIS specific answer even if not explicitly asked — "
+    "identifying/showing a physical object, a diagram of a concept, a "
+    "wiring/hardware layout, a UI screenshot-style reference. This applies "
     "regardless of whether the text answer needs a web search at all — a "
     "good diagram/photo can help even when you already know the answer "
     "from your own knowledge. Skip it for pure text/code/math/greetings/"
