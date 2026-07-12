@@ -110,6 +110,23 @@ def build_tool_manifest() -> str:
     return "\n".join(lines)
 
 
+def strip_tool_markers(text: Optional[str]) -> str:
+    """
+    Safety net — removes any raw <<TOOL_REQUEST>>/<<TOOL_CALL>> block from
+    text before it's ever shown to the user. This is deliberately called
+    unconditionally on every final answer in gpt2_test.py, not just when
+    the tool loop thinks it handled something — a model that skips the
+    intended protocol, produces malformed JSON, or gets cut off by
+    MAX_TOOL_ROUNDS should never be able to leak raw marker syntax into a
+    real chat bubble, no matter which of those causes it.
+    """
+    if not text:
+        return text
+    text = _TOOL_REQUEST_RE.sub("", text)
+    text = _TOOL_CALL_RE.sub("", text)
+    return text.strip()
+
+
 def detect_tool_request(text: Optional[str]) -> Optional[str]:
     """
     Scans model output for a <<TOOL_REQUEST>> block. Returns the requested

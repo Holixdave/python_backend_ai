@@ -403,7 +403,7 @@ REASONING_STEP_HINT = (
     "reflecting, and analyzing your own path. Never address the user, never explain concepts to them, "
     "and never speak from a teaching or helpful assistant perspective inside the <think> tags. "
     "Example contrast: Instead of writing 'I will show the user why a desktop is better because of upgrading', "
-    "write '[comparing] **Evaluating hardware constraints:** Desktops provide unthrottled thermal margins "
+    "write '[comparing] Evaluating hardware constraints: Desktops provide unthrottled thermal margins "
     "and modular PCIe lanes; will steer final response toward desktop architectures for heavy workloads.' "
     "\n\nCRITICAL CONSTRAINTS FOR THINKING:"
     "\n1. ABSOLUTELY NO RESPONSE DRAFTING: Do not write final answers, code blocks, or structural summaries "
@@ -416,7 +416,7 @@ REASONING_STEP_HINT = (
     "Structure your thinking as short paragraphs separated by a blank line. Do not use numbers or generic "
     "filler like 'Step 1' or 'Analyzing'. Each paragraph must start with an icon tag followed by a brief, "
     "technical bolded label naming that specific operational step. Format exactly like this: "
-    "[icon] **Technical Label:** Internal thought content. "
+    "[icon] Technical Label: Internal thought content. "
     f"The icon tag MUST be exactly one of: {', '.join(REASONING_STEP_ICONS)}. Do not invent new icon names. "
     "After the closing </think> tag, write your final technical answer normally."
 )
@@ -462,6 +462,7 @@ from gpt2_tools import (
     get_tool_source,
     parse_tool_call,
     execute_tool,
+    strip_tool_markers,
     MAX_TOOL_ROUNDS,
 )
 
@@ -791,7 +792,17 @@ def _ask_gpt2_core(
     tool_round = 0
     search_text = (model_thinking or "") + "\n" + (answer or "")
     while tool_round < MAX_TOOL_ROUNDS:
-        requested_tool = detect_tool_request(search_text)
+        # Some models don't reliably follow the intended 2-step protocol
+        # (REQUEST tool name -> we show real source -> model sends CALL with
+        # real args) and jump straight to a full <<TOOL_CALL>> on the first
+        # try. Previously only the REQUEST marker was ever detected, so a
+        # model doing this got silently ignored and its raw <<TOOL_CALL>>
+        # text leaked straight into the visible answer. Now: check for a
+        # ready-to-run call FIRST (it's more specific/complete) and skip
+        # straight to execution if found; only fall back to the
+        # source-code round trip when just a bare tool name was requested.
+        direct_call = parse_tool_call(search_text)
+        requested_tool = direct_call["tool"] if direct_call else detect_tool_request(search_text)
         if not requested_tool:
             break
         tool_round += 1
@@ -803,37 +814,43 @@ def _ask_gpt2_core(
             "icon": "tool",
         }
 
-        tool_source = get_tool_source(requested_tool)
-        messages.append({"role": "assistant", "content": answer})
-        messages.append({
-            "role": "user",
-            "content": (
-                f"Here is the real source code for `{requested_tool}`:\n\n"
-                f"```python\n{tool_source}\n```\n\n"
-                f"Now call it for real by replying with ONLY this block, "
-                f"filled in with the actual arguments it needs:\n"
-                f'<<TOOL_CALL>>{{"tool": "{requested_tool}", "args": {{...}}}}<<END_TOOL_CALL>>'
-            ),
-        })
+        if direct_call:
+            # Model already supplied real args in one shot — no need to
+            # show it the source and round-trip for a second reply.
+            call_data = direct_call
+            call_answer = answer
+        else:
+            tool_source = get_tool_source(requested_tool)
+            messages.append({"role": "assistant", "content": answer})
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"Here is the real source code for `{requested_tool}`:\n\n"
+                    f"```python\n{tool_source}\n```\n\n"
+                    f"Now call it for real by replying with ONLY this block, "
+                    f"filled in with the actual arguments it needs:\n"
+                    f'<<TOOL_CALL>>{{"tool": "{requested_tool}", "args": {{...}}}}<<END_TOOL_CALL>>'
+                ),
+            })
 
-        yield {
-            "type": "status",
-            "text": f"Reviewing {requested_tool}'s code...",
-            "detail": None,
-            "icon": "tool",
-        }
-        call_answer, _ = _call_provider_chain(
-            TEXT_PROVIDERS, messages, temperature=0.0, max_tokens=1024,
-        )
-        call_data = parse_tool_call(call_answer)
-        if not call_data:
             yield {
                 "type": "status",
-                "text": f"Couldn't get a valid call for {requested_tool} — moving on",
-                "detail": call_answer,
-                "icon": "warning",
+                "text": f"Reviewing {requested_tool}'s code...",
+                "detail": None,
+                "icon": "tool",
             }
-            break
+            call_answer, _ = _call_provider_chain(
+                TEXT_PROVIDERS, messages, temperature=0.0, max_tokens=1024,
+            )
+            call_data = parse_tool_call(call_answer)
+            if not call_data:
+                yield {
+                    "type": "status",
+                    "text": f"Couldn't get a valid call for {requested_tool} — moving on",
+                    "detail": call_answer,
+                    "icon": "warning",
+                }
+                break
 
         yield {
             "type": "status",
@@ -1008,8 +1025,8 @@ def _ask_gpt2_core(
                             "detail": step_clean,
                             "icon": step_icon
                         }
-                yield {"type": "final", "answer": retry_answer, "sources": fallback_sources, "images": image_results, "provider": retry_provider, "file": file_result}
+                yield {"type": "final", "answer": strip_tool_markers(retry_answer), "sources": fallback_sources, "images": image_results, "provider": retry_provider, "file": file_result}
                 return
 
-    yield {"type": "final", "answer": answer, "sources": sources, "images": image_results, "provider": provider, "file": file_result}
+    yield {"type": "final", "answer": strip_tool_markers(answer), "sources": sources, "images": image_results, "provider": provider, "file": file_result}
 
