@@ -132,6 +132,35 @@ def _search_ddgs_images(query: str, max_results: int = 200):
 
     return images
 
+_IMAGE_QUERY_STOPWORDS = {
+    "a", "an", "the", "of", "in", "on", "for", "and", "or", "to", "with",
+    "is", "are", "photo", "photos", "image", "images", "picture", "pictures",
+}
+
+
+def _image_candidate_score(query: str, candidate: dict) -> int:
+    """
+    Cheap, free relevance pre-check using only text metadata (title + the
+    source URL) — no network or vision call needed. Runs BEFORE the
+    expensive vision-based _verify_image_relevance, so candidates whose own
+    title/URL actually mention the subject get checked first, and results
+    with no textual connection at all (e.g. a Maldives-beach travel photo
+    for a "laptop" query) sink to the back of the queue instead of eating
+    one of verify_image_relevance's limited checks before anything good
+    gets a chance. This doesn't throw anything away — a real match can
+    still have an unhelpful title — it just reorders so the most promising
+    candidates are checked first.
+    """
+    query_words = {
+        w for w in re.findall(r"[a-z0-9]+", query.lower())
+        if w not in _IMAGE_QUERY_STOPWORDS and len(w) > 2
+    }
+    if not query_words:
+        return 0
+    haystack = f"{candidate.get('title', '')} {candidate.get('source', '')}".lower()
+    return sum(1 for w in query_words if w in haystack)
+
+
 def search_images(query: str, max_results: int = 200):
     """
     Best-effort pictorial results to accompany a web search — never raises,
@@ -139,10 +168,15 @@ def search_images(query: str, max_results: int = 200):
     whole answer.
     """
     try:
-        return _search_ddgs_images(query, max_results)
+        candidates = _search_ddgs_images(query, max_results)
     except Exception as e:
         print(f"[IMAGE SEARCH] failed: {e}")
         return []
+
+    # Rerank by cheap metadata match before anything else touches these —
+    # see _image_candidate_score above.
+    candidates.sort(key=lambda c: _image_candidate_score(query, c), reverse=True)
+    return candidates
 
 
 def _fetch_og_image(url: str) -> Optional[str]:

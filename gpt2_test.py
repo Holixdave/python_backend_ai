@@ -840,6 +840,24 @@ def _ask_gpt2_core(
             call_answer = answer
         else:
             tool_source = get_tool_source(requested_tool)
+            # Tell the model which params it does NOT need to fill in itself
+            # — this is the actual fix for verify_image_relevance calls
+            # failing: the model was seeing image_results: list in the real
+            # source and dutifully trying to retype the entire previous
+            # search_images result set as literal JSON, which routinely got
+            # cut off mid-array by the token cap and produced invalid JSON.
+            auto_supplied_note = ""
+            if requested_tool in ("verify_image_relevance", "build_file", "analyze_image"):
+                auto_supplied_note = (
+                    "\n\nNOTE: some of this function's parameters are session "
+                    "data you do NOT need to supply — they're filled in "
+                    "automatically: `prompt`, `history`, `userid`, "
+                    "`image_urls`, and `image_results` (this last one comes "
+                    "straight from whatever search_images you already ran "
+                    "this turn). Do NOT try to retype those yourself — that's "
+                    "what caused failures before. Just fill in the other real "
+                    "arguments (e.g. query, filename, max_verified)."
+                )
             messages.append({"role": "assistant", "content": answer})
             messages.append({
                 "role": "user",
@@ -849,6 +867,7 @@ def _ask_gpt2_core(
                     f"Now call it for real by replying with ONLY this block, "
                     f"filled in with the actual arguments it needs:\n"
                     f'<<TOOL_CALL>>{{"tool": "{requested_tool}", "args": {{...}}}}<<END_TOOL_CALL>>'
+                    + auto_supplied_note
                 ),
             })
 
@@ -859,17 +878,58 @@ def _ask_gpt2_core(
                 "icon": "tool",
             }
             call_answer, _ = _call_provider_chain(
-                TEXT_PROVIDERS, messages, temperature=0.0, max_tokens=1024,
+                TEXT_PROVIDERS, messages, temperature=0.0, max_tokens=2048,
             )
             call_data = parse_tool_call(call_answer)
             if not call_data:
+                # RECOVERY, not a dead end — this used to just `break`,
+                # which left whatever stale pre-tool-loop `answer` was
+                # sitting around (usually just the bare tool marker) as the
+                # final response once markers got stripped from it — that's
+                # exactly what produced "no response" before. Now: tell the
+                # model its call didn't parse, let it either answer without
+                # the tool or try again, and get a REAL follow-up answer
+                # before this loop iteration ends.
                 yield {
                     "type": "status",
                     "text": f"Couldn't get a valid call for {requested_tool} — moving on",
                     "detail": call_answer,
                     "icon": "warning",
                 }
-                break
+                messages.append({"role": "assistant", "content": call_answer})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"That call for {requested_tool} wasn't valid — it may "
+                        f"have been cut off or malformed. Skip that tool call "
+                        f"and just answer the user now with what you already "
+                        f"know, or request a different tool if genuinely needed."
+                    ),
+                })
+                yield {
+                    "type": "status",
+                    "text": "Continuing with the answer...",
+                    "detail": None,
+                    "icon": "thinking",
+                }
+                answer, provider = _call_provider_chain(
+                    TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=2048,
+                )
+                if answer is None:
+                    yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None, "file": file_result}
+                    return
+                answer, model_thinking = _split_thinking(answer)
+                if model_thinking:
+                    for i, step in enumerate(_split_into_steps(model_thinking), start=1):
+                        step_icon, step_clean = _extract_step_icon(step)
+                        yield {
+                            "type": "status",
+                            "text": _derive_step_label(step_clean, i),
+                            "detail": step_clean,
+                            "icon": step_icon,
+                        }
+                search_text = (model_thinking or "") + "\n" + (answer or "")
+                continue
 
         yield {
             "type": "status",
@@ -911,6 +971,16 @@ def _ask_gpt2_core(
                 file_result = file_event  # carried through to the final yield below
         else:
             success, tool_result = execute_tool(call_data["tool"], call_data["args"], session_context)
+            if success and call_data["tool"] == "search_images":
+                # Chain straight into session_context so a follow-up
+                # verify_image_relevance call auto-receives these results
+                # instead of the model having to retype them (see fix above).
+                try:
+                    parsed = json.loads(tool_result)
+                    if isinstance(parsed, list):
+                        session_context["image_results"] = parsed
+                except Exception:
+                    pass
             if success and call_data["tool"] == "verify_image_relevance":
                 try:
                     parsed = json.loads(tool_result)

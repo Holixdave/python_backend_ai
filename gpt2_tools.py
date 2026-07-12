@@ -68,7 +68,12 @@ TOOL_DESCRIPTIONS = {
 # Params that should NEVER come from the AI's own JSON — they belong to the
 # current request/session and get auto-injected by gpt2_test.py instead, so
 # the AI can't (and doesn't need to) invent a userid, fabricate history, etc.
-SESSION_INJECTED_PARAMS = {"prompt", "history", "userid", "image_urls"}
+# image_results is here too: it chains automatically from whatever
+# search_images just returned this turn, rather than requiring the model to
+# retype a huge JSON array of results by hand — that was the actual cause
+# of verify_image_relevance calls failing (the model tried to paste the
+# full result set back in, and it got cut off mid-JSON by the token cap).
+SESSION_INJECTED_PARAMS = {"prompt", "history", "userid", "image_urls", "image_results"}
 
 MAX_TOOL_ROUNDS = 3
 
