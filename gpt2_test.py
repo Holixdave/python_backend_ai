@@ -374,28 +374,45 @@ NEUTRAL_SYSTEM_PROMPT = (
 # filler, real problem-specific reasoning only.
 # ---------------------------------------------------------------------------
 REASONING_STEP_ICONS = [
-    "thinking", "search", "calculating", "comparing", "verifying",
-    "planning", "reading", "idea", "code", "warning",
+    # 🧠 Core AI Intelligence & Logic States
+    "thinking", "idea", "comparing",
+    
+    # 🔍 Analysis & Execution Tasks
+    "search", "calculating", "verifying", "planning", "reading",
+    
+    # 💻 Engineering, System & Runtime Controls
+    "code", "terminal", "running", "timer", "loading", "warning", "canceled",
+    
+    # 🌐 Data Infrastructure & Storage Systems
+    "network", "database", "history", "docs", "image", "vision", "upload", "build", "success"
 ]
 
+
 REASONING_STEP_HINT = (
-    "\n\nMANDATORY FORMATTING REQUIREMENT FOR THIS MESSAGE — this is not "
-    "optional and does not compete with your other style rules; follow it "
-    "exactly: before your final answer, include your reasoning wrapped in "
-    "<think></think> tags. This block is required, every time, with no "
-    "exceptions for this message. Keep your thinking concise: "
-    "for basic or direct questions, use a rapid, short reasoning pass — do not over-think. "
-    "Structure your thinking as short paragraphs, each starting with an icon tag "
-    "followed by a brief **bolded label** that names what that paragraph is doing "
-    "for THIS question, in this exact format: "
-    "[icon] **Label:** text — e.g. '[verifying] **Checking definition:**', "
-    "'[calculating] **Working out the total:**', '[comparing] **Weighing the two options:**'. "
-    f"The icon MUST be exactly one of: {', '.join(REASONING_STEP_ICONS)} — pick whichever "
-    "genuinely matches what that paragraph is doing; do not invent new icon names. "
-    "Never use generic filler like '**Step 1:**' or '**Analyzing the question:**'. "
-    "Separate paragraphs with a blank line. Do not number them. After the closing </think> "
-    "tag, write your actual answer normally."
+    "\n\nMANDATORY FORMATTING REQUIREMENT FOR THIS MESSAGE — this is not optional. "
+    "Before providing your final answer, include your internal reasoning wrapped in <think></think> tags. "
+    "This reasoning block must be written as an internal monologue—you are talking strictly to yourself, "
+    "reflecting, and analyzing your own path. Never address the user, never explain concepts to them, "
+    "and never speak from a teaching or helpful assistant perspective inside the <think> tags. "
+    "Example contrast: Instead of writing 'I will show the user why a desktop is better because of upgrading', "
+    "write '[comparing] **Evaluating hardware constraints:** Desktops provide unthrottled thermal margins "
+    "and modular PCIe lanes; will steer final response toward desktop architectures for heavy workloads.' "
+    "\n\nCRITICAL CONSTRAINTS FOR THINKING:"
+    "\n1. ABSOLUTELY NO RESPONSE DRAFTING: Do not write final answers, code blocks, or structural summaries "
+    "inside the thinking tags. Only evaluate logic and outline your structural plan. Code writing must "
+    "happen entirely after the closing </think> tag to prevent massive token waste."
+    "\n2. CONTEXT AWARENESS: Actively reflect on the current message alongside the previous message "
+    "history to determine the exact trajectory of the user's intent."
+    "\n3. CONCISENESS: Keep reasoning fast and high-density. For direct requests, execute a rapid reasoning pass."
+    "\n\nSTRUCTURE FORMATTING:"
+    "Structure your thinking as short paragraphs separated by a blank line. Do not use numbers or generic "
+    "filler like 'Step 1' or 'Analyzing'. Each paragraph must start with an icon tag followed by a brief, "
+    "technical bolded label naming that specific operational step. Format exactly like this: "
+    "[icon] **Technical Label:** Internal thought content. "
+    f"The icon tag MUST be exactly one of: {', '.join(REASONING_STEP_ICONS)}. Do not invent new icon names. "
+    "After the closing </think> tag, write your final technical answer normally."
 )
+
 
 
 # ---------------------------------------------------------------------------
