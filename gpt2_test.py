@@ -185,6 +185,14 @@ enthusiasm and confirm you can do it. Say something like:
 Never say you cannot generate images. Never say you are a text-only model.
 The image generation system is handled separately but you must always
 acknowledge the request positively and confirm it is being processed.
+
+IMPORTANT DISTINCTION: this only applies to requests to CREATE a brand new,
+original image. If the user instead wants to SEE a real, existing photo of
+something — a person, place, product, landmark, animal, diagram, or anything
+that already exists — that is NOT a generation request. Use your
+search_images tool for that instead (see AVAILABLE TOOLS), then
+verify_image_relevance on what it finds. Don't offer to "generate" something
+the user actually wants a real photo of.
 """
 
 # ---------------------------------------------------------------------------
@@ -427,10 +435,7 @@ REASONING_STEP_HINT = (
 # ---------------------------------------------------------------------------
 from gpt2_functions import (
     search_web,
-    search_images,
     build_search_query,
-    _fetch_og_image,
-    _verify_image_relevance,
     classify_intent,
     get_lean_history,
     _split_thinking,
@@ -460,7 +465,40 @@ from gpt2_tools import (
     MAX_TOOL_ROUNDS,
 )
 
-TOOL_USE_HINT = "\n\n" + build_tool_manifest()
+TOOL_USE_HINT = "\n\n" + build_tool_manifest() + (
+    "\n\nWHEN TO REACH FOR AN IMAGE: request search_images (then "
+    "verify_image_relevance on whatever candidates it returns) when a "
+    "picture would genuinely help THIS specific answer — identifying or "
+    "showing a physical object, a place or landmark, an animal/plant, a "
+    "product, a diagram of a concept, a wiring/hardware layout, a UI "
+    "screenshot-style reference, or anything visual. This applies "
+    "regardless of whether the text answer needs a web search at all — a "
+    "good diagram/photo can help even when you already know the answer "
+    "from your own knowledge. Skip it for pure text/code/math/greetings/"
+    "abstract discussion where a picture adds nothing.\n"
+    "Once verify_image_relevance confirms real matches, they're shown to "
+    "the user automatically in a real gallery below your answer — this "
+    "happens completely outside your response text. Do NOT attempt to "
+    "embed, reference, or fake any image markdown (like ![alt](url)) "
+    "yourself; you don't have real URLs and doing so only produces broken "
+    "placeholders. Just write your answer as plain text — a plain sentence "
+    "like 'here are a few options' is enough. If no real match is found "
+    "after checking, say plainly that no matching image was found — don't "
+    "imply you're still looking. If (and only if) a simple labeled diagram "
+    "or step-by-step visual would genuinely help (a process, a hardware "
+    "layout, a concept) and no real photo exists for it, you may include "
+    "ONE small, clean SVG using a ```svg fenced code block instead — simple "
+    "shapes, readable labels, no attempt at photorealism. Don't do this if "
+    "the user wanted a real photo of a specific physical thing; in that "
+    "case just say plainly that none was found.\n\n"
+    "WHEN TO BUILD A FILE: request build_file ONLY when the user is asking "
+    "you to build/create/generate a real, complete, downloadable file AND "
+    "has given enough specificity about what it should contain — a "
+    "subject, a purpose, real content to build around. If the request is "
+    "vague (\"write some python\", \"can you write html code\") with no "
+    "real subject attached, don't call build_file — ask a clarifying "
+    "question in your answer instead of generating an empty/generic file."
+)
 
 # ---------------------------------------------------------------------------
 # MAIN ASK FUNCTION
@@ -522,7 +560,8 @@ def _ask_gpt2_core(
         if isinstance(url, str) and url.startswith(("http://", "https://"))
     ]
 
-    image_results = []  # populated later only if a web search actually runs
+    image_results = []  # populated later only if the model calls verify_image_relevance itself
+    file_result = None  # populated later only if the model calls build_file itself
 
     if valid_image_urls:
         yield {"type": "status", "text": "Looking at the image...", "detail": None, "icon": "vision"}
@@ -542,60 +581,25 @@ def _ask_gpt2_core(
 
     # FIXED (see header notes 6): the classifier only ever sees text, so it
     # has no way of knowing an image was already uploaded and analysed
-    # above. Left alone, a prompt that simply contains words like "image"
-    # or "screenshot" would set wants_image=True and trigger an unrelated
-    # online image search on top of the real vision analysis. Once real
-    # image(s) are already in hand for this turn, never search for more.
-    if valid_image_urls:
-        intent["wants_image"] = False
+    # above. The old fix forced a classifier field (wants_image) to False;
+    # that field no longer exists (the model decides image search itself
+    # now — see TOOL_USE_HINT), so the equivalent fix is telling the model
+    # directly: don't bother reaching for search_images this turn, real
+    # image(s) are already in hand.
+    already_has_image_note = (
+        "\n\nNOTE: The user already uploaded real image(s) with this message "
+        "and they were already analysed above — do not call search_images "
+        "this turn, you already have what you need."
+        if valid_image_urls else ""
+    )
 
     print(f"[INTENT] search_type={intent['search_type']} complex={intent['complex']} topic={intent['topic']} "
           f"query={intent.get('search_query')!r}")
-    # ── File build tool — completely separate path, returns early ────────
-    # A file-build request doesn't need topic detection, web search, image
-    # search, or the normal chat system prompt — different job entirely.
-    if intent.get("wants_file_build"):
-        filename = intent.get("filename") or "output.txt"
-        file_result = None
-        for event in build_file_with_continuation(prompt, filename, userid, history):
-            if event["type"] == "file_result":
-                file_result = event
-            else:
-                yield event
 
-        if file_result and file_result["success"]:
-            answer = (
-                f"Done! Your file {file_result['filename']} is ready — you'll see it below "
-                f"as a downloadable file card. It's also been saved to your docs, so you "
-                f"can just ask for it by name later."
-            )
-        else:
-            answer = (
-                "I built the file but the upload failed, so I don't have a link "
-                "to give you right now — worth trying again in a moment."
-            )
-
-        yield {
-            "type": "final",
-            "answer": answer,
-            "sources": [],
-            "images": [],
-            "provider": None,
-            "file": file_result,  # frontend uses this to render a real file card
-        }
-        return
-    # IMAGE_GEN_AWARENESS is for the separate AI image-*generation* feature
-    # and was previously baked into every single request unconditionally —
-    # that's exactly what caused "can I see images of them" (a real-photo
-    # request, already served by wants_image + search_images()) to get the
-    # canned "Yes! I can generate that image for you..." response instead
-    # of just presenting the real photos that were already found. The two
-    # systems never knew about each other. Now: skip this block entirely
-    # whenever wants_image is true for this turn, since real photos are
-    # already being handled.
-    image_gen_block = "" if intent.get("wants_image") else IMAGE_GEN_AWARENESS
-
-    current_identity = NEUTRAL_SYSTEM_PROMPT + "\n\n" + image_gen_block + "\n\n" + _current_datetime_line()
+    current_identity = (
+        NEUTRAL_SYSTEM_PROMPT + "\n\n" + IMAGE_GEN_AWARENESS + already_has_image_note
+        + "\n\n" + _current_datetime_line()
+    )
 
     if intent["topic"] == "jamb":
         yield {
@@ -605,7 +609,7 @@ def _ask_gpt2_core(
             "icon": "docs"
         }
         current_identity = (
-            f"{NEUTRAL_SYSTEM_PROMPT}\n\n{image_gen_block}\n\n{_current_datetime_line()}\n\n"
+            f"{NEUTRAL_SYSTEM_PROMPT}\n\n{IMAGE_GEN_AWARENESS}{already_has_image_note}\n\n{_current_datetime_line()}\n\n"
             f"CURRENT CONTEXT: {ZINDRYX_INFO}"
         )
     elif intent["topic"] == "mojizela":
@@ -615,7 +619,7 @@ def _ask_gpt2_core(
             "detail": "Pulling in the Mojizela app/coins/wallet knowledge base for this reply.",
             "icon": "docs"
         }
-        current_identity = f"{NEUTRAL_SYSTEM_PROMPT}\n\n{image_gen_block}\n\n{_current_datetime_line()}\n\nCURRENT CONTEXT: {MOJIZELA_INFO}"
+        current_identity = f"{NEUTRAL_SYSTEM_PROMPT}\n\n{IMAGE_GEN_AWARENESS}{already_has_image_note}\n\n{_current_datetime_line()}\n\nCURRENT CONTEXT: {MOJIZELA_INFO}"
 
     # ── Inject user docs or web search results if needed ──────────────────
     sources = []
@@ -700,100 +704,6 @@ def _ask_gpt2_core(
         # don't mention search at all — the model answers from its own
         # knowledge instead of relaying a search-failed error to the user.
 
-    # ── Pictorial representation — independent of search_type ──────────────
-    # This used to only fire inside the "web" branch, which meant a
-    # perfectly-answered "how do I fix this GPU issue" (answered from the
-    # model's own knowledge, search_type == "none") never got a picture.
-    # wants_image is the classifier's own dedicated signal for "would a
-    # picture genuinely help here", decoupled from whether a text search
-    # is needed at all. (It's also now force-False whenever the user
-    # already uploaded image(s) this turn — see the fix above.)
-    if intent.get("wants_image"):
-        image_query = intent.get("search_query") or build_search_query(prompt)
-        yield {"type": "status", "text": "Looking for a picture...", "detail": f'Query: "{image_query}", this may take a few seconds', "icon": "image"}
-
-        # Prefer og:image from pages the TEXT search already trusted enough
-        # to cite as a source this turn — a page's own declared preview
-        # image is a far stronger relevance signal than a blind keyword
-        # image search, since it's the page author's own answer to "what
-        # picture represents this". Only falls back to a generic image
-        # search if no web search ran this turn, or none of its pages had one.
-        og_candidates = []
-        if sources:
-            for src in sources[:2]:
-                og_url = _fetch_og_image(src.get("url", ""))
-                if og_url:
-                    og_candidates.append({
-                        "image": og_url, "thumbnail": og_url,
-                        "title": src.get("title", ""), "source": src.get("url", ""),
-                    })
-
-        raw_image_results = og_candidates or search_images(image_query)
-
-        if raw_image_results:
-            yield {
-                "type": "status",
-                "text": f"Found {len(raw_image_results)} candidate(s), checking they actually match...",
-                "detail": (
-                    "Using the preview image from pages the text search already trusted"
-                    if og_candidates else
-                    "Some candidates may be unrelated to the user's request, "
-                    "so each one is being visually inspected for relevance. "
-                    "This can take a few seconds."
-                ),
-                "icon": "image"
-            }
-            image_results = _verify_image_relevance(image_query, prompt, raw_image_results)
-        else:
-            image_results = []
-
-        if image_results:
-            yield {
-                "type": "status",
-                "text": f"Found {len(image_results)} matching image(s)",
-                "detail": None,
-                "icon": "success"
-            }
-            current_identity += (
-                "\n\nNOTE: Real images matching this were already found and "
-                "will be shown to the user automatically, in a real gallery "
-                "right below your answer — this happens completely outside "
-                "your response text. Do NOT attempt to embed, reference, or "
-                "fake any image markdown (like ![alt](url)) yourself — you "
-                "don't have real URLs for these and doing so only produces "
-                "broken 'image failed to load' placeholders. Just write "
-                "your answer as plain text; if you want to mention the "
-                "pictures, a plain sentence like 'here are a few options' "
-                "is enough — the real images appear on their own."
-            )
-        else:
-            yield {
-                "type": "status",
-                "text": "No matching photo found",
-                "detail": (
-                    "Found candidates but none actually matched on inspection"
-                    if raw_image_results else
-                    "Falling back to a diagram if one would genuinely help"
-                ),
-                "icon": "warning"
-            }
-
-            current_identity += (
-                "\n\nNOTE: An image search for this was attempted but nothing "
-                "matched — either no results came back, or every candidate found "
-                "failed a visual relevance check and was discarded rather than "
-                "risk showing an unrelated picture. Tell the user plainly that no "
-                "matching image was found; don't imply you're still looking. If — "
-                "and only if — a simple labeled diagram or step-by-step visual "
-                "would genuinely help explain this (e.g. a process, a hardware "
-                "layout, a concept), you may include ONE small, clean SVG in your "
-                "answer using a ```svg fenced code block. Keep it simple: clear "
-                "shapes, readable labels, no attempt at photorealism. Do NOT do "
-                "this if the user actually wanted a real photo of a specific "
-                "physical object/place/product — in that case just say plainly "
-                "that no matching image was found, without faking one."
-            )
-
     # ── Build messages ──────────────────────────────────────────────────
     lean_history, history_truncated = get_lean_history(history)
     if history_truncated:
@@ -810,9 +720,15 @@ def _ask_gpt2_core(
         )
     # NEW — only nudge the model to number its internal reasoning when
     # reasoning_effort is actually going to be turned on below.
+    # NOTE: TOOL_USE_HINT is unconditional — deliberately NOT gated behind
+    # intent["complex"]. It replaces what the classifier's wants_image /
+    # wants_file_build fields used to do, and that classifier ran on every
+    # single message regardless of complexity. REASONING_STEP_HINT stays
+    # complexity-gated since the visible reasoning trace is genuinely only
+    # worth the extra tokens for non-trivial requests.
     if intent["complex"]:
         current_identity += REASONING_STEP_HINT
-        current_identity += TOOL_USE_HINT
+    current_identity += TOOL_USE_HINT
 
     messages = [{"role": "system", "content": current_identity}]
     messages.extend(lean_history)
@@ -841,7 +757,7 @@ def _ask_gpt2_core(
     )
 
     if answer is None:
-        yield {"type": "final", "answer": _friendly_failure_message(), "sources": [], "images": image_results, "provider": None}
+        yield {"type": "final", "answer": _friendly_failure_message(), "sources": [], "images": image_results, "provider": None, "file": file_result}
         return
 
     # NEW — pull any <think>...</think> block Qwen returned inline out of
@@ -925,7 +841,48 @@ def _ask_gpt2_core(
             "detail": json.dumps(call_data["args"]),
             "icon": "tool",
         }
-        success, tool_result = execute_tool(call_data["tool"], call_data["args"], session_context)
+
+        # SPECIAL-CASED DISPATCH — two tools need more than execute_tool's
+        # generic "drain silently, stringify the result" handling:
+        #
+        #   build_file: it's a generator that yields real, user-visible
+        #   progress ("Building output.txt...", "Reviewing for accuracy...")
+        #   — draining it silently (like execute_tool does for any other
+        #   generator tool) would hide that from the sheet. Called directly
+        #   here instead so those events stream live, and its real
+        #   file_result dict is kept (not just stringified) so the frontend
+        #   still gets a proper downloadable file card.
+        #
+        #   verify_image_relevance: its return value needs to end up as the
+        #   real `image_results` list (structured data for the gallery),
+        #   not just text fed back to the model.
+        if call_data["tool"] == "build_file":
+            file_args = {
+                "prompt": session_context["prompt"],
+                "filename": call_data["args"].get("filename") or "output.txt",
+                "userid": session_context["userid"],
+                "history": session_context["history"],
+            }
+            file_event = None
+            for event in build_file_with_continuation(**file_args):
+                if event.get("type") == "file_result":
+                    file_event = event
+                else:
+                    yield event
+            success = bool(file_event and file_event.get("success"))
+            tool_result = json.dumps(file_event, default=str) if file_event else "Tool produced no output."
+            if success:
+                file_result = file_event  # carried through to the final yield below
+        else:
+            success, tool_result = execute_tool(call_data["tool"], call_data["args"], session_context)
+            if success and call_data["tool"] == "verify_image_relevance":
+                try:
+                    parsed = json.loads(tool_result)
+                    if isinstance(parsed, list):
+                        image_results = parsed
+                except Exception:
+                    pass
+
         yield {
             "type": "status",
             "text": f"{requested_tool} {'succeeded' if success else 'failed'}",
@@ -980,7 +937,7 @@ def _ask_gpt2_core(
             TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=2048,
         )
         if answer is None:
-            yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None}
+            yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None, "file": file_result}
             return
 
         answer, model_thinking = _split_thinking(answer)
@@ -1051,8 +1008,8 @@ def _ask_gpt2_core(
                             "detail": step_clean,
                             "icon": step_icon
                         }
-                yield {"type": "final", "answer": retry_answer, "sources": fallback_sources, "images": image_results, "provider": retry_provider}
+                yield {"type": "final", "answer": retry_answer, "sources": fallback_sources, "images": image_results, "provider": retry_provider, "file": file_result}
                 return
 
-    yield {"type": "final", "answer": answer, "sources": sources, "images": image_results, "provider": provider}
+    yield {"type": "final", "answer": answer, "sources": sources, "images": image_results, "provider": provider, "file": file_result}
 

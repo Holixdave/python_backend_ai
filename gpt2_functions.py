@@ -308,51 +308,23 @@ _INTENT_SYSTEM_PROMPT = (
     "general conversation). IMPORTANT: pure date/time questions (\"what's today\", "
     "\"what day is it\") are always \"none\" — the assistant already knows the "
     "real current date from its own system.\n"
-    '"search_query": Required whenever search_type is "web" or "user_docs" — '
-    "ALSO required whenever wants_image ends up true below, even if "
-    "search_type is \"none\" (a vague image follow-up like \"can I see more "
-    "images\" needs no fresh web text, but the image search still needs a "
-    "real resolved query — never leave search_query empty in that case). "
-    "For web/image: DISTILL this down to 3-8 clean lookup keywords a search "
-    "engine would understand — resolve vague refs (\"the church\", \"more "
-    "images\", \"these\") to real names/subjects from earlier turns, strip "
-    "greetings/filler/slang (\"abeg\", \"pls\", \"man\", \"dude\", \"biko\"), "
-    "and drop your own assistant framing entirely. NEVER just copy the "
-    "user's sentence — even a fairly clean-sounding one should still be "
-    "reduced to its core search terms. Example: user says \"dude can u find "
-    "the current dollar to naira rate abeg\" -> search_query should be "
-    "\"dollar to naira exchange rate today\", NOT the original sentence. "
-    "Another example: after a conversation about specific laptop models, "
-    "user says \"nice man can I see more images\" -> search_query should "
-    "name the actual laptops discussed (e.g. \"Lenovo IdeaPad 5 HP Pavilion "
-    "15 Dell XPS 13 laptop\"), NOT \"nice can i see more images\". For "
-    "user_docs: the hint/tag to search for (e.g. if user says \"my "
-    "recipe\", the query is \"recipe\").\n"
+    '"search_query": Required whenever search_type is "web" or "user_docs". '
+    "DISTILL this down to 3-8 clean lookup keywords a search engine would "
+    "understand — resolve vague refs (\"the church\", \"these\") to real "
+    "names/subjects from earlier turns, strip greetings/filler/slang (\"abeg\", "
+    "\"pls\", \"man\", \"dude\", \"biko\"), and drop your own assistant framing "
+    "entirely. NEVER just copy the user's sentence — even a fairly clean-"
+    "sounding one should still be reduced to its core search terms. Example: "
+    "user says \"dude can u find the current dollar to naira rate abeg\" -> "
+    "search_query should be \"dollar to naira exchange rate today\", NOT the "
+    "original sentence. For user_docs: the hint/tag to search for (e.g. if "
+    "user says \"my recipe\", the query is \"recipe\").\n"
     '"complex": true if the request needs code, math, multi-step reasoning, or a '
     "long detailed answer — false for greetings, small talk, simple one-line "
     "questions.\n"
-    '"wants_image": true if a picture would genuinely help this specific answer — '
-    "identifying/showing a physical object, a place or landmark, an animal/plant, "
-    "a product, a diagram of a concept, a wiring/hardware layout, a UI screenshot-"
-    "style reference, or anything visual. This is INDEPENDENT of search_type — "
-    "set it true even when the text answer comes purely from your own knowledge "
-    "(e.g. \"how do I fix this GPU artifact issue\" -> true, a good diagram/photo "
-    "helps regardless of whether search_type is \"none\"). False for pure text/code/"
-    "math/greetings/abstract discussion where a picture adds nothing.\n"
     '"topic": one of "jamb", "mojizela", or "general" — "jamb" only if about '
     "JAMB/UTME/WAEC/Post-UTME/exam prep, \"mojizela\" only if about the Mojizela "
     "app/coins/wallet/creators, else \"general\"."
-    '"wants_file_build": true ONLY if the user is asking you to BUILD/CREATE/'
-"GENERATE a real, complete, downloadable file AND has given enough "
-"specificity about what it should contain — a subject, a purpose, a "
-"feature, some real content to build around. If the request is just "
-"\"write html code\" or \"can you write some python\" with no actual "
-"subject, topic, or spec attached, set this to FALSE — that's a vague "
-"request that deserves a clarifying question, not a blindly-generated "
-"empty file. Examples that are true: \"build me a login screen\", "
-"\"create a python script that scrapes prices from X\". Examples that "
-"are FALSE: \"can you write html code\", \"write me some python\", "
-"\"show me an example of a function\" — these lack a real subject.\n"
 )
 
 
@@ -379,37 +351,10 @@ def _fallback_intent(prompt: str) -> dict:
     elif is_user_docs:
         search_query = prompt  # use raw prompt as hint for user docs search
 
-    image_keywords = [
-        "show me", "picture", "pictures", "photo", "photos", "image", "images",
-        "what does it look like", "what it looks like", "diagram", "look like",
-        "visual", "screenshot",
-    ]
-    wants_image = any(k in t for k in image_keywords)
-
-    # Same gap as the main classifier path: don't leave search_query empty
-    # when an image is wanted just because search_type is "none". This
-    # fallback has no history access either way (pure keyword matching,
-    # no LLM call), so it's still context-blind — but at least consistent
-    # with the main path's behavior instead of silently doing nothing.
-    if wants_image and not search_query:
-        search_query = build_search_query(prompt)
-    file_build_keywords = [
-        "build me", "create a file", "write a complete", "generate a file",
-        "build a screen", "build an app", "write a script", "write a full",
-        "create a script", "create a screen", "build a page",
-    ]
-    wants_file_build = any(k in t for k in file_build_keywords)
-    filename = ""
-    if wants_file_build:
-        wants_image = False  # mutually exclusive, same rule as the main classifier path
-        filename = "output.txt"  # keyword-only path can't guess a real name/extension reliably
     return {
         "search_type": search_type,
         "search_query": search_query,
         "complex": any(k in t for k in CODING_KEYWORDS),
-        "wants_image": wants_image,
-        "wants_file_build": wants_file_build,
-        "filename": filename,
         "topic": topic,
     }
 
@@ -464,38 +409,17 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
             if search_type not in ("web", "user_docs", "none"):
                 search_type = "none"
 
-            wants_image = bool(data.get("wants_image", False))
-            wants_file_build = bool(data.get("wants_file_build", False))
-            filename = (data.get("filename") or "").strip()
-
-            # file_build and wants_image are mutually exclusive by design —
-            # if the classifier somehow set both, file_build wins since it's
-            # the more specific, higher-intent signal.
-            if wants_file_build:
-                wants_image = False
-                if not filename:
-                    filename = "output.txt"  # last-resort fallback so upload never fails on an empty name
-
             search_query = (data.get("search_query") or "").strip()
             if search_type in ("web", "user_docs") and not search_query:
                 # classifier said yes but forgot the query — fall back to prompt
                 search_query = build_search_query(prompt) if search_type == "web" else prompt
-            elif wants_image and not search_query:
-                # classifier wants an image but left search_query empty —
-                # this is exactly the "nice man can I see more images" bug:
-                # falling back to build_search_query(prompt) here is still
-                # context-blind (it only cleans the current raw message,
-                # it can't resolve "these"/"more" against earlier turns),
-                # but it's strictly better than sending the literal filler-
-                # stripped follow-up to DDGS as-is.
-                search_query = build_search_query(prompt)
 
             # Safety net: if the classifier still just echoed the raw prompt
             # back, or handed back something way longer than a real search
             # query should be, run it through the keyword-stripping fallback
             # as an extra distillation pass rather than sending the user's
             # literal sentence to DDGS.
-            if (search_type == "web" or wants_image) and search_query:
+            if search_type == "web" and search_query:
                 is_verbatim_echo = search_query.strip().lower() == prompt.strip().lower()
                 is_too_long = len(search_query.split()) > 12
                 if is_verbatim_echo or is_too_long:
@@ -505,9 +429,6 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
                 "search_type": search_type,
                 "search_query": search_query,
                 "complex": bool(data.get("complex", True)),
-                "wants_image": wants_image,
-                "wants_file_build": wants_file_build,
-                "filename": filename,
                 "topic": topic,
             }
         print(f"[INTENT] classifier HTTP {resp.status_code}, falling back to keywords")
