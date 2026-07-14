@@ -475,7 +475,25 @@ from gpt2_tools import (
     parse_tool_call,
     execute_tool,
     strip_tool_markers,
+    extract_suggestions,
     MAX_TOOL_ROUNDS,
+)
+
+SUGGESTION_HINT = (
+    "\n\nSUGGESTED NEXT MESSAGES (optional): when it would genuinely help "
+    "the user — e.g. you just asked a clarifying question, listed example "
+    "requests, or gave them a few natural follow-ups — you may end your "
+    "answer with ONE block listing up to 4 ready-to-tap options, in this "
+    "exact format:\n"
+    '<<SUGGESTIONS>>["exact message one", "exact message two"]<<END_SUGGESTIONS>>\n'
+    "Each string must be the FULL, LITERAL text that gets sent if the user "
+    "taps it — written as something the USER would say, not a description "
+    "of an option (e.g. \"Search for 2024 JAMB Use of English Logical "
+    "Reasoning questions\", not \"Ask about JAMB questions\"). These are "
+    "rendered as tappable chips automatically; don't also describe them "
+    "as italic examples in your own answer text — that's redundant. Omit "
+    "this block entirely when there's nothing natural to suggest — don't "
+    "force it onto every answer."
 )
 
 TOOL_USE_HINT = "\n\n" + build_tool_manifest() + (
@@ -738,17 +756,22 @@ def _ask_gpt2_core(
             "conversation or something from far back, say plainly that you "
             "don't have access to that earlier part rather than guessing."
         )
-    # NEW — only nudge the model to number its internal reasoning when
-    # reasoning_effort is actually going to be turned on below.
-    # NOTE: TOOL_USE_HINT is unconditional — deliberately NOT gated behind
-    # intent["complex"]. It replaces what the classifier's wants_image /
-    # wants_file_build fields used to do, and that classifier ran on every
-    # single message regardless of complexity. REASONING_STEP_HINT stays
-    # complexity-gated since the visible reasoning trace is genuinely only
-    # worth the extra tokens for non-trivial requests.
+    # ORDER MATTERS HERE — TOOL_USE_HINT goes first, REASONING_STEP_HINT
+    # goes last. Previously it was the other way around: TOOL_USE_HINT
+    # (long, dense, always-on) was the very last thing the model saw
+    # before generating, right after the reasoning requirement. That's
+    # exactly the setup where recency bias can let a long, unconditional
+    # instruction quietly crowd out a shorter, complexity-gated one — the
+    # model would spend real time internally reasoning (Qwen's
+    # reasoning_effort genuinely costs latency) but never actually write
+    # the <think> block out, as if the tool-use rules were the last thing
+    # it "remembered" needing to follow. Putting REASONING_STEP_HINT last
+    # instead means it's the most recent instruction in context right
+    # before the model starts writing its response.
+    current_identity += TOOL_USE_HINT
+    current_identity += SUGGESTION_HINT
     if intent["complex"]:
         current_identity += REASONING_STEP_HINT
-    current_identity += TOOL_USE_HINT
 
     messages = [{"role": "system", "content": current_identity}]
     messages.extend(lean_history)
@@ -777,7 +800,7 @@ def _ask_gpt2_core(
     )
 
     if answer is None:
-        yield {"type": "final", "answer": _friendly_failure_message(), "sources": [], "images": image_results, "provider": None, "file": file_result}
+        yield {"type": "final", "answer": _friendly_failure_message(), "sources": [], "images": image_results, "provider": None, "file": file_result, "suggestions": []}
         return
 
     # NEW — pull any <think>...</think> block Qwen returned inline out of
@@ -785,6 +808,46 @@ def _ask_gpt2_core(
     # (full, uncut text in each step's detail) instead of letting it leak
     # into the answer bubble as one giant blob.
     answer, model_thinking = _split_thinking(answer)
+
+    # COMPLIANCE RETRY — a real, code-level safety net, not another prompt
+    # rewrite. Only the primary provider (Qwen 3.6) has native reasoning
+    # support (supports_reasoning_effort=True); the 3 fallback providers
+    # rely purely on the soft <think> instruction in the prompt with
+    # nothing backing it up model-side. If the chain fell through to one
+    # of those and it just skipped <think> entirely — dumping its
+    # reasoning straight into the visible answer instead — retry ONCE with
+    # an explicit callout of what it just did wrong. This mirrors the same
+    # recovery pattern already used for invalid tool calls elsewhere in
+    # this function, rather than silently accepting a blank Thought
+    # Process every time a fallback model answers a complex request.
+    if intent["complex"] and not model_thinking:
+        messages.append({"role": "assistant", "content": answer})
+        messages.append({
+            "role": "user",
+            "content": (
+                "You just answered without ever using a <think></think> "
+                "block — the reasoning requirement from earlier in this "
+                "conversation still applies. Rewrite your answer now: put "
+                "your actual step-by-step reasoning inside <think></think> "
+                "tags first (using the [icon] **Label:** format), THEN "
+                "write your real final answer after the closing tag. "
+                "Don't skip this."
+            ),
+        })
+        compliance_answer, compliance_provider = _call_provider_chain(
+            TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=4096, reasoning_effort="default",
+        )
+        if compliance_answer is not None:
+            compliance_answer, compliance_thinking = _split_thinking(compliance_answer)
+            if compliance_thinking:
+                # Compliance recovered — use the retried, properly-tagged
+                # version instead of the original non-compliant one.
+                answer, model_thinking, provider = compliance_answer, compliance_thinking, compliance_provider
+        # If the retry ALSO comes back without a <think> block, we just
+        # move on with whatever answer is on hand — this particular model
+        # genuinely won't comply, and an unbounded retry loop isn't the
+        # right trade for one extra round trip.
+
     if model_thinking:
         for i, step in enumerate(_split_into_steps(model_thinking), start=1):
             step_icon, step_clean = _extract_step_icon(step)
@@ -916,7 +979,7 @@ def _ask_gpt2_core(
                     TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=2048,
                 )
                 if answer is None:
-                    yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None, "file": file_result}
+                    yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None, "file": file_result, "suggestions": []}
                     return
                 answer, model_thinking = _split_thinking(answer)
                 if model_thinking:
@@ -1043,7 +1106,7 @@ def _ask_gpt2_core(
             TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=2048,
         )
         if answer is None:
-            yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None, "file": file_result}
+            yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None, "file": file_result, "suggestions": []}
             return
 
         answer, model_thinking = _split_thinking(answer)
@@ -1114,8 +1177,10 @@ def _ask_gpt2_core(
                             "detail": step_clean,
                             "icon": step_icon
                         }
-                yield {"type": "final", "answer": strip_tool_markers(retry_answer), "sources": fallback_sources, "images": image_results, "provider": retry_provider, "file": file_result}
+                retry_answer_clean, retry_suggestions = extract_suggestions(strip_tool_markers(retry_answer))
+                yield {"type": "final", "answer": retry_answer_clean, "sources": fallback_sources, "images": image_results, "provider": retry_provider, "file": file_result, "suggestions": retry_suggestions}
                 return
 
-    yield {"type": "final", "answer": strip_tool_markers(answer), "sources": sources, "images": image_results, "provider": provider, "file": file_result}
+    final_answer_clean, final_suggestions = extract_suggestions(strip_tool_markers(answer))
+    yield {"type": "final", "answer": final_answer_clean, "sources": sources, "images": image_results, "provider": provider, "file": file_result, "suggestions": final_suggestions}
 

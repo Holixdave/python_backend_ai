@@ -115,6 +115,38 @@ def build_tool_manifest() -> str:
     return "\n".join(lines)
 
 
+_SUGGESTIONS_RE = re.compile(r"<<SUGGESTIONS>>\s*(\[.*?\])\s*<<END_SUGGESTIONS>>", re.DOTALL)
+
+
+def extract_suggestions(text: Optional[str]) -> tuple:
+    """
+    Pulls a <<SUGGESTIONS>>[...]<<END_SUGGESTIONS>> block out of a final
+    answer, same pattern as the tool markers. Returns (cleaned_text,
+    suggestions_list) — cleaned_text has the marker stripped so it never
+    leaks into the visible bubble, suggestions_list is [] if there was no
+    block, it didn't parse as valid JSON, or wasn't a list of strings.
+
+    Each string in the list is meant to be the EXACT, literal text that
+    gets sent as the user's next message if they tap it — not a
+    description of an option. The frontend renders these as tappable
+    chips below the answer.
+    """
+    if not text:
+        return text, []
+    match = _SUGGESTIONS_RE.search(text)
+    if not match:
+        return text, []
+    cleaned = _SUGGESTIONS_RE.sub("", text).strip()
+    try:
+        data = json.loads(match.group(1))
+    except Exception:
+        return cleaned, []
+    if not isinstance(data, list):
+        return cleaned, []
+    suggestions = [s.strip() for s in data if isinstance(s, str) and s.strip()]
+    return cleaned, suggestions[:4]  # cap at 4 — a wall of chips isn't useful
+
+
 def strip_tool_markers(text: Optional[str]) -> str:
     """
     Safety net — removes any raw <<TOOL_REQUEST>>/<<TOOL_CALL>> block from
