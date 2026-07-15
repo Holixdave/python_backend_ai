@@ -75,7 +75,7 @@ TOOL_DESCRIPTIONS = {
 # full result set back in, and it got cut off mid-JSON by the token cap).
 SESSION_INJECTED_PARAMS = {"prompt", "history", "userid", "image_urls", "image_results"}
 
-MAX_TOOL_ROUNDS = 3
+MAX_TOOL_ROUNDS = 5
 
 # ---------------------------------------------------------------------------
 # MARKERS — distinctive on purpose. A bare "name()" or a loose JSON object
