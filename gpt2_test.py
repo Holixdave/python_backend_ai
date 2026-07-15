@@ -794,8 +794,8 @@ def _ask_gpt2_core(
     answer, provider = _call_provider_chain(
         TEXT_PROVIDERS,
         messages,
-        temperature=0.3 if intent["complex"] else 0.6,
-        max_tokens=4096 if intent["complex"] else 2048,
+        temperature=0.2 if intent["complex"] else 0.6,
+        max_tokens=10000 if intent["complex"] else 2048,
         reasoning_effort="default" if intent["complex"] else "none",
     )
 
