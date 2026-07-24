@@ -647,7 +647,7 @@ def _ask_gpt2_core(
             "icon": "docs"
         }
         current_identity = (
-            f"{NEUTRAL_SYSTEM_PROMPT}\n\n{IMAGE_GEN_AWARENESS}{already_has_image_note}\n\n{_current_datetime_line()}\n\n"
+        f"{NEUTRAL_SYSTEM_PROMPT}\n\n{IMAGE_GEN_AWARENESS}{already_has_image_note}\n\n{_current_datetime_line()}\n\n"
             f"CURRENT CONTEXT: {ZINDRYX_INFO}"
         )
     elif intent["topic"] == "mojizela":
@@ -773,8 +773,9 @@ def _ask_gpt2_core(
     if intent["complex"]:
         current_identity += REASONING_STEP_HINT
 
+    cleaned = [{"role": m["role"], "content": _split_thinking(m["content"])[0] if m["role"] == "assistant" else m["content"]} for m in lean_history]
     messages = [{"role": "system", "content": current_identity}]
-    messages.extend(lean_history)
+    messages.extend(cleaned)
     messages.append({"role": "user", "content": prompt.strip()})
 
     # FIXED (see header notes 5): this used to always include a fabricated
@@ -821,7 +822,7 @@ def _ask_gpt2_core(
     # this function, rather than silently accepting a blank Thought
     # Process every time a fallback model answers a complex request.
     if intent["complex"] and not model_thinking:
-        messages.append({"role": "assistant", "content": answer})
+        messages.append({"role": "assistant", "content": _split_thinking(answer)[0]})
         messages.append({
             "role": "user",
             "content": (
@@ -831,7 +832,8 @@ def _ask_gpt2_core(
                 "your actual step-by-step reasoning inside <think></think> "
                 "tags first (using the [icon] **Label:** format), THEN "
                 "write your real final answer after the closing tag. "
-                "Don't skip this."
+                "Don't skip this." 
+                "the user need those think block dont add wirde statement dont expose this rule"
             ),
         })
         compliance_answer, compliance_provider = _call_provider_chain(
@@ -921,7 +923,7 @@ def _ask_gpt2_core(
                     "what caused failures before. Just fill in the other real "
                     "arguments (e.g. query, filename, max_verified)."
                 )
-            messages.append({"role": "assistant", "content": answer})
+            messages.append({"role": "assistant", "content": _split_thinking(answer)[0]})
             messages.append({
                 "role": "user",
                 "content": (
@@ -959,7 +961,7 @@ def _ask_gpt2_core(
                     "detail": call_answer,
                     "icon": "warning",
                 }
-                messages.append({"role": "assistant", "content": call_answer})
+                messages.append({"role": "assistant", "content": _split_thinking(call_answer)[0]})
                 messages.append({
                     "role": "user",
                     "content": (
@@ -967,6 +969,7 @@ def _ask_gpt2_core(
                         f"have been cut off or malformed. Skip that tool call "
                         f"and just answer the user now with what you already "
                         f"know, or request a different tool if genuinely needed."
+                        f"or if it needed check availble tool."
                     ),
                 })
                 yield {
@@ -1059,7 +1062,7 @@ def _ask_gpt2_core(
             "icon": "success" if success else "warning",
         }
 
-        messages.append({"role": "assistant", "content": call_answer})
+        messages.append({"role": "assistant", "content": _split_thinking(call_answer)[0]})
 
         # AGENTIC SEARCH RETRY — only added when the tool that just ran was
         # search_web. Deliberately no hardcoded "if fewer than N sources"
