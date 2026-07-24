@@ -264,7 +264,7 @@ def _verify_image_relevance(
                 break
 
     return verified
-def search_web(query: str, max_results: int = 4):
+def search_web(query: str, max_results: int = 20):
     """
     Tries each search engine in order. Returns (formatted_text, sources).
     sources is a list of {"title": str, "url": str} for the frontend to render.
