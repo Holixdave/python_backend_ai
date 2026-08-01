@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 
-# gpt2_test.py — Multi-provider fallback edition
+# gpt2_test.py 
 # ─────────────────────────────────────────────────────────────────────────────
 # WHAT CHANGED FROM THE OLD VERSION
 #   1. ask_gpt2() / ask_with_vision() no longer hit Groq only. They walk a
