@@ -153,16 +153,17 @@ VISION_PROVIDERS = [
         "enabled": bool(GROQ_API_KEY),
         "url": "https://api.groq.com/openai/v1/chat/completions",
         "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {GROQ_API_KEY}"},
-        "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+        "model": "qwen/qwen3.6-27b",  # Changed from meta-llama/llama-4-scout
     },
     {
         "name": "openrouter-vision-free",
         "enabled": bool(OPENROUTER_API_KEY),
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {OPENROUTER_API_KEY}"},
-        "model": "qwen/qwen2.5-vl-32b-instruct:free",
+        "model": "google/gemini-flash-1.5-8b:free",  # Changed from qwen2.5-vl:free which is dead
     },
 ]
+
 
 # ---------------------------------------------------------------------------
 # KNOWLEDGE BASE + IMAGE-DECISION PROMPT — content moved to prompts.py, see
