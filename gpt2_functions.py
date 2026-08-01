@@ -451,13 +451,22 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
 def get_lean_history(history):
     """
     Returns (lean_history, was_truncated). was_truncated is True whenever
-    there were more than 6 messages to begin with — the model needs to
-    know this so it can honestly say "I don't have your earlier messages"
-    instead of confidently guessing based on only what it can see.
+    there were more than LEAN_HISTORY_LIMIT messages to begin with — the
+    model needs to know this so it can honestly say "I don't have your
+    earlier messages" instead of confidently guessing based on only what
+    it can see.
+
+    FIXED: this used to hard-cap at the last 6 messages (3 turns) no
+    matter what memory_service.py fetched from the DB (MEMORY_WINDOW=40),
+    so the model only ever "remembered" the last 3 exchanges even though
+    40 were pulled from storage. Raised to 20 messages (~10 turns) to
+    actually use what's fetched. Long messages are still truncated
+    individually so a huge single message can't blow the token budget.
     """
-    was_truncated = len(history) > 6
+    LEAN_HISTORY_LIMIT = 20
+    was_truncated = len(history) > LEAN_HISTORY_LIMIT
     lean = []
-    for msg in history[-6:]:
+    for msg in history[-LEAN_HISTORY_LIMIT:]:
         content = msg["content"]
         if isinstance(content, str) and len(content) > 1500:
             content = content[:750] + "... [Truncated] ..." + content[-750:]
