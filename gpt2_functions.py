@@ -450,28 +450,19 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
 # ---------------------------------------------------------------------------
 def get_lean_history(history):
     """
-    Returns (lean_history, was_truncated). was_truncated is True whenever
-    there were more than LEAN_HISTORY_LIMIT messages to begin with — the
-    model needs to know this so it can honestly say "I don't have your
-    earlier messages" instead of confidently guessing based on only what
-    it can see.
+    FIXED — this used to hard-cap history and cut individual messages down
+    with a "...[Truncated]..." marker. Per direction: don't strip anything.
+    memory_service.py's MEMORY_WINDOW is the real limit on how much history
+    exists at all (currently 40 messages) — this function just passes all
+    of it straight through, untouched, to match how the working app treats
+    history (no re-trimming downstream of the DB fetch).
 
-    FIXED: this used to hard-cap at the last 6 messages (3 turns) no
-    matter what memory_service.py fetched from the DB (MEMORY_WINDOW=40),
-    so the model only ever "remembered" the last 3 exchanges even though
-    40 were pulled from storage. Raised to 20 messages (~10 turns) to
-    actually use what's fetched. Long messages are still truncated
-    individually so a huge single message can't blow the token budget.
+    Returns (history, False) — kept as a tuple for compatibility with every
+    existing caller that does `get_lean_history(history)[0]` or unpacks
+    both values; was_truncated is always False now since nothing here
+    truncates anymore.
     """
-    LEAN_HISTORY_LIMIT = 20
-    was_truncated = len(history) > LEAN_HISTORY_LIMIT
-    lean = []
-    for msg in history[-LEAN_HISTORY_LIMIT:]:
-        content = msg["content"]
-        if isinstance(content, str) and len(content) > 1500:
-            content = content[:750] + "... [Truncated] ..." + content[-750:]
-        lean.append({"role": msg["role"], "content": content})
-    return lean, was_truncated
+    return history, False
 
 # ---------------------------------------------------------------------------
 # NEW — Qwen 3.6 (reasoning_effort on) returns its chain-of-thought inline
@@ -1097,7 +1088,7 @@ def build_file_with_continuation(prompt: str, filename: str, userid: Optional[st
         }
 
         answer, provider, finish_reason = _call_provider_chain_full(
-            TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=4096,
+            TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=16000,
         )
 
         if answer is None:

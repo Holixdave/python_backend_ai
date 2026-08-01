@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 
-# gpt2_test.py 
+# gpt2_test.py — Multi-provider fallback edition
 # ─────────────────────────────────────────────────────────────────────────────
 # WHAT CHANGED FROM THE OLD VERSION
 #   1. ask_gpt2() / ask_with_vision() no longer hit Groq only. They walk a
@@ -68,7 +68,14 @@ TAVILY_API_KEY:     Optional[str] = os.getenv("TAVILY_API_KEY")
 
 MAX_RETRIES_PER_PROVIDER: int = 2     # quick retries before moving to the next provider
 RETRY_BASE_DELAY:         float = 1.0
-REQUEST_TIMEOUT:          int   = 45  # bumped for vision
+REQUEST_TIMEOUT:          int   = 120  # raised from 45 — big max_tokens generations (long code, big tool-call JSON) take longer
+
+# NEW — real answers/tool-calls no longer get artificially capped short.
+# This is what was cutting off long code (limited to a few hundred lines)
+# and truncating large tool-call JSON payloads mid-array before they could
+# close. Raised well above what a single answer realistically needs so the
+# model's own context window is the real limit, not this number.
+MAX_ANSWER_TOKENS: int = 16000
 
 if not OPENROUTER_API_KEY:
     raise EnvironmentError("OPENROUTER_API_KEY environment variable is not set.")
@@ -534,7 +541,7 @@ def _ask_gpt2_core(
         TEXT_PROVIDERS,
         messages,
         temperature=0.2 if intent["complex"] else 0.6,
-        max_tokens=10000 if intent["complex"] else 2048,
+        max_tokens=MAX_ANSWER_TOKENS,
         reasoning_effort="default" if intent["complex"] else "none",
     )
 
@@ -574,7 +581,7 @@ def _ask_gpt2_core(
             ),
         })
         compliance_answer, compliance_provider = _call_provider_chain(
-            TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=4096, reasoning_effort="default",
+            TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=MAX_ANSWER_TOKENS, reasoning_effort="default",
         )
         if compliance_answer is not None:
             compliance_answer, compliance_thinking = _split_thinking(compliance_answer)
@@ -612,6 +619,22 @@ def _ask_gpt2_core(
     }
     tool_round = 0
     search_text = (model_thinking or "") + "\n" + (answer or "")
+
+    # FIXED — verify_image_relevance (and build_file, analyze_image) take a
+    # session-injected param (image_results / history / image_urls) that's
+    # supposed to be auto-filled, never typed by the model. That guidance
+    # only ever got shown during the "show real source" round trip below.
+    # When a model skipped straight to a one-shot <<TOOL_CALL>> instead —
+    # which several free models do — it never saw that guidance, guessed a
+    # plausible-but-wrong param name (e.g. "candidates" instead of
+    # "image_results"), and tried to hand-paste the entire previous
+    # search_images result set as literal JSON. That routinely got cut off
+    # mid-array by the token cap, produced invalid JSON, and leaked the
+    # raw half-finished <<TOOL_CALL>> straight into the visible answer.
+    # Forcing these specific tools through the guided round trip no matter
+    # which way the model requested them closes that off entirely.
+    NEEDS_SOURCE_ROUNDTRIP = {"verify_image_relevance", "build_file", "analyze_image"}
+
     while tool_round < MAX_TOOL_ROUNDS:
         # Some models don't reliably follow the intended 2-step protocol
         # (REQUEST tool name -> we show real source -> model sends CALL with
@@ -621,11 +644,16 @@ def _ask_gpt2_core(
         # text leaked straight into the visible answer. Now: check for a
         # ready-to-run call FIRST (it's more specific/complete) and skip
         # straight to execution if found; only fall back to the
-        # source-code round trip when just a bare tool name was requested.
+        # source-code round trip when just a bare tool name was requested
+        # OR when the tool is one of NEEDS_SOURCE_ROUNDTRIP above.
         direct_call = parse_tool_call(search_text)
         requested_tool = direct_call["tool"] if direct_call else detect_tool_request(search_text)
         if not requested_tool:
             break
+        # Discard a guessed one-shot call for these tools — force the
+        # guided round trip instead of trusting hand-typed session args.
+        if direct_call and requested_tool in NEEDS_SOURCE_ROUNDTRIP:
+            direct_call = None
         tool_round += 1
 
         yield {
@@ -680,7 +708,7 @@ def _ask_gpt2_core(
                 "icon": "tool",
             }
             call_answer, _ = _call_provider_chain(
-                TEXT_PROVIDERS, messages, temperature=0.0, max_tokens=2048,
+                TEXT_PROVIDERS, messages, temperature=0.0, max_tokens=MAX_ANSWER_TOKENS,
             )
             call_data = parse_tool_call(call_answer)
             if not call_data:
@@ -715,7 +743,7 @@ def _ask_gpt2_core(
                     "icon": "thinking",
                 }
                 answer, provider = _call_provider_chain(
-                    TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=2048,
+                    TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=MAX_ANSWER_TOKENS,
                 )
                 if answer is None:
                     yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None, "file": file_result, "suggestions": []}
@@ -842,7 +870,7 @@ def _ask_gpt2_core(
             "icon": "thinking",
         }
         answer, provider = _call_provider_chain(
-            TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=2048,
+            TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=MAX_ANSWER_TOKENS,
         )
         if answer is None:
             yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None, "file": file_result, "suggestions": []}
@@ -901,7 +929,7 @@ def _ask_gpt2_core(
                 "icon": "search"
             }
             retry_answer, retry_provider = _call_provider_chain(
-                TEXT_PROVIDERS, retry_messages, temperature=0.5, max_tokens=2048, reasoning_effort="none"
+                TEXT_PROVIDERS, retry_messages, temperature=0.5, max_tokens=MAX_ANSWER_TOKENS, reasoning_effort="none"
             )
             if retry_answer:
                 # NEW — same safety strip, in case a provider ever returns
