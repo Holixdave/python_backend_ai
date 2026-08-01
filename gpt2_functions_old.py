@@ -33,9 +33,6 @@ from gpt2_test import (
     REASONING_STEP_ICONS,
 )
 
-# All prompt text now lives in prompts.py — see that file's header for why.
-from prompts import INTENT_SYSTEM_PROMPT
-
 # ---------------------------------------------------------------------------
 # WEB SEARCH — multi-engine fallback chain (ddgs -> Brave -> Tavily)
 # ---------------------------------------------------------------------------
@@ -330,9 +327,39 @@ CODING_KEYWORDS = [
     "fix", "debug", "error", "screen", "app", "file",
 ]
 
-# NOTE: the intent-classifier system prompt used to be defined right here
-# as _INTENT_SYSTEM_PROMPT — it now lives in prompts.py as
-# INTENT_SYSTEM_PROMPT (imported above) so every prompt is in one file.
+_INTENT_SYSTEM_PROMPT = (
+    "You are an intent classifier for a Nigerian study/social AI backend. "
+    "You will be shown the last few turns of a conversation, then the user's "
+    "newest message. Reply with ONLY a raw JSON object and nothing else — "
+    "no markdown fences, no explanation. Fields:\n"
+    '"search_type": one of "web", "user_docs", or "none". Set to "user_docs" if '
+    "the user is asking about their own saved files, previous conversations, "
+    "documents they shared, or explicitly says \"remember\", \"do you have\", "
+    "\"check my files\", \"from my docs\", \"my previous\", etc. Set to \"web\" "
+    "if the user needs current/live/factual info (prices, links, news, recent "
+    "events, dates, \"who won\", specific people/businesses/churches you're unsure "
+    "about). Set to \"none\" for everything else (greetings, code, analysis, "
+    "general conversation). IMPORTANT: pure date/time questions (\"what's today\", "
+    "\"what day is it\") are always \"none\" — the assistant already knows the "
+    "real current date from its own system.\n"
+    '"search_query": Required whenever search_type is "web" or "user_docs". '
+    "DISTILL this down to 3-8 clean lookup keywords a search engine would "
+    "understand — resolve vague refs (\"the church\", \"these\") to real "
+    "names/subjects from earlier turns, strip greetings/filler/slang (\"abeg\", "
+    "\"pls\", \"man\", \"dude\", \"biko\"), and drop your own assistant framing "
+    "entirely. NEVER just copy the user's sentence — even a fairly clean-"
+    "sounding one should still be reduced to its core search terms. Example: "
+    "user says \"dude can u find the current dollar to naira rate abeg\" -> "
+    "search_query should be \"dollar to naira exchange rate today\", NOT the "
+    "original sentence. For user_docs: the hint/tag to search for (e.g. if "
+    "user says \"my recipe\", the query is \"recipe\").\n"
+    '"complex": true if the request needs code, math, multi-step reasoning, or a '
+    "long detailed answer — false for greetings, small talk, simple one-line "
+    "questions.\n"
+    '"topic": one of "jamb", "mojizela", or "general" — "jamb" only if about '
+    "JAMB/UTME/WAEC/Post-UTME/exam prep, \"mojizela\" only if about the Mojizela "
+    "app/coins/wallet/creators, else \"general\"."
+)
 
 
 def _fallback_intent(prompt: str) -> dict:
@@ -394,7 +421,7 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
             json={
                 "model": INTENT_MODEL,
                 "messages": [
-                    {"role": "system", "content": INTENT_SYSTEM_PROMPT},
+                    {"role": "system", "content": _INTENT_SYSTEM_PROMPT},
                     {"role": "user", "content": user_payload},
                 ],
                 "temperature": 0.0,

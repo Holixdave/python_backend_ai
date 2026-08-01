@@ -1,0 +1,46 @@
+services:
+  - type: web
+    name: utme26-ai-backend
+    runtime: docker
+    plan: free
+    envVars:
+      # Required — app raises EnvironmentError on startup without this.
+      # OpenRouter is now the PRIMARY provider (walks its free model chain
+      # in gpt2_test.py) before falling back to Groq/Cerebras.
+      - key: OPENROUTER_API_KEY
+        sync: false
+
+      # Optional fallback — only reached if every OpenRouter free model
+      # fails or is rate-limited.
+      - key: GROQ_API_KEY
+        sync: false
+
+      # NEW — backend chat memory. Point this at a Postgres instance
+      # (same as the Zindryx backend's DATABASE_URL) for real persistence.
+      # If omitted, falls back to a local SQLite file — fine for testing,
+      # but that file won't survive a redeploy on Render's free plan.
+      - key: DATABASE_URL
+        sync: false
+
+      # NEW — durable memory backup. Every chat turn is dual-written here
+      # (users/{userid}/messages/{auto_id}) so that when Render redeploys
+      # and wipes Postgres/SQLite, build_memory() can recover the user's
+      # history from Firestore instead of starting them over from scratch.
+      # Use the same Firebase project/service account as the working
+      # Zindryx app if you want, or a separate one — either works.
+      - key: FIREBASE_CREDENTIALS_JSON
+        sync: false
+
+      # Optional fallback providers — app runs fine without these, just
+      # skips straight past them in the provider chain if unset
+      - key: CEREBRAS_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+
+      # Optional search fallbacks — ddgs is tried first, these are only
+      # used if ddgs fails
+      - key: BRAVE_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false

@@ -1,9 +1,8 @@
 # main.py
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from typing import List, Optional
-from sqlalchemy.orm import Session
+from typing import List
 import os
 import json
 import re
@@ -12,22 +11,10 @@ from equation_solver import solve_equation_with_steps
 from gpt2_test import ask_gpt2, ask_gpt2_stream
 from user_doc_manager import UserDocManager
 
-# ── Backend-side chat memory (NEW) ──────────────────────────────────────
-# Same pattern as the working Zindryx/Gemini backend: a DB-backed history
-# table keyed by userid. The frontend no longer needs to replay the whole
-# conversation on every request — this app now remembers it server-side.
-from database import get_db, Base, engine
-from memory_service import build_memory, remember_turn
-import firebase_config  # noqa: F401  (must init before firestore_repository is used)
-
 app = FastAPI(
     title="UTME26 AI Backend",
     description="Brilliant AI Study Assistant"
 )
-
-# Creates the chat_history table on startup if it doesn't exist yet —
-# same as the working app's main.py does with Base.metadata.create_all.
-Base.metadata.create_all(bind=engine)
 
 # -------------------------------------------------------
 # Pydantic models — DO NOT CHANGE (frontend depends on these)
@@ -42,11 +29,6 @@ class ChatMessage(BaseModel):
 
 class QuestionRequest(BaseModel):
     query:     str
-    # DEPRECATED: the backend now keeps its own memory per userid (see
-    # database.py / memory_service.py) and ignores this field even if the
-    # frontend still sends it. Left on the model, still accepted, purely so
-    # older app builds don't break with a validation error mid-rollout —
-    # safe to delete from the frontend payload whenever convenient.
     history:   List[ChatMessage] = Field(default_factory=list)
     imageUrls: List[str]         = Field(default_factory=list)
     userid:    str                = None
@@ -148,18 +130,16 @@ def _equation_solved_ok(eq_answer: str) -> bool:
 # only an additive "sources" field is included in the response now)
 # -------------------------------------------------------
 @app.post("/ai-query")
-async def ask_ai(request: QuestionRequest, db: Session = Depends(get_db)):
+async def ask_ai(request: QuestionRequest):
     user_question = request.query.strip()
 
-    # NEW: history is loaded from the backend's own DB (keyed by userid),
-    # not from request.history. If no userid was sent, this comes back
-    # empty and the turn behaves statelessly, same as before this fix.
-    chat_history = build_memory(db, request.userid)
+    # Convert Pydantic history objects to simple dictionaries for the AI
+    chat_history = [m.model_dump() for m in request.history] if request.history else []
 
     if not user_question:
         return {"label": "unknown", "answer": "Please type a question!", "sources": []}
 
-    print(f"[REQUEST] /ai-query: {user_question[:100]!r} (memory={len(chat_history)} msgs, userid={request.userid!r})")
+    print(f"[REQUEST] /ai-query: {user_question[:100]!r} (history={len(chat_history)} msgs)")
 
     # 1. Check for Math/Algebra first (Calculators don't need history) —
     #    only attempted when the text actually looks like an equation.
@@ -167,18 +147,12 @@ async def ask_ai(request: QuestionRequest, db: Session = Depends(get_db)):
         eq_answer = solve_equation_with_steps(user_question)
         print(f"[EQUATION] input looked equation-like, solver said: {eq_answer!r}")
         if _equation_solved_ok(eq_answer):
-            # Equation answers are still saved to memory so a later "what
-            # was that equation I solved earlier" question can find it.
-            remember_turn(db, request.userid, user_question, eq_answer)
             return {"label": "algebra", "answer": eq_answer, "sources": []}
 
     # 2. AI provider chain (Groq -> fallback providers) — now with web search
     #    sources returned alongside the answer when search was used.
     image_urls = request.imageUrls or []
     result = ask_gpt2(user_question, history=chat_history, image_urls=image_urls if image_urls else None, userid=request.userid)
-
-    # NEW: persist this turn to the backend memory for next time.
-    remember_turn(db, request.userid, user_question, result["answer"])
 
     return {
         "label": "general",
@@ -198,10 +172,9 @@ async def ask_ai(request: QuestionRequest, db: Session = Depends(get_db)):
 #   {"type": "final", "answer": "...", "sources": [...]}       -- once, last
 # -------------------------------------------------------
 @app.post("/ai-query-stream")
-async def ask_ai_stream(request: QuestionRequest, db: Session = Depends(get_db)):
+async def ask_ai_stream(request: QuestionRequest):
     user_question = request.query.strip()
-    # NEW: history loaded from backend DB memory, same as /ai-query above.
-    chat_history = build_memory(db, request.userid)
+    chat_history = [m.model_dump() for m in request.history] if request.history else []
     image_urls = request.imageUrls or []
 
     async def event_generator():
@@ -209,7 +182,7 @@ async def ask_ai_stream(request: QuestionRequest, db: Session = Depends(get_db))
             yield f"data: {json.dumps({'type': 'final', 'answer': 'Please type a question!', 'sources': []})}\n\n"
             return
 
-        print(f"[REQUEST] /ai-query-stream: {user_question[:100]!r} (memory={len(chat_history)} msgs, userid={request.userid!r})")
+        print(f"[REQUEST] /ai-query-stream: {user_question[:100]!r} (history={len(chat_history)} msgs)")
 
         # 1. Math/algebra short-circuit 
         if _looks_like_equation(user_question):
@@ -218,23 +191,14 @@ async def ask_ai_stream(request: QuestionRequest, db: Session = Depends(get_db))
             if _equation_solved_ok(eq_answer):
                 yield f"data: {json.dumps({'type': 'status', 'text': 'Solving equation...'})}\n\n"
                 yield f"data: {json.dumps({'type': 'final', 'answer': eq_answer, 'sources': []})}\n\n"
-                remember_turn(db, request.userid, user_question, eq_answer)
                 return
 
         # 2. Real generator from gpt2_test
-        final_answer = None
         for event in ask_gpt2_stream(user_question, history=chat_history, image_urls=image_urls if image_urls else None, userid=request.userid):
             if event["type"] == "status":
                 yield f"data: {json.dumps({'type': 'status', 'text': event['text'], 'detail': event.get('detail'), 'icon': event.get('icon')})}\n\n"
             elif event["type"] == "final":
-                final_answer = event["answer"]
                 yield f"data: {json.dumps({'type': 'final', 'answer': event['answer'], 'sources': event.get('sources', []), 'images': event.get('images', []), 'file': event.get('file')})}\n\n"
-
-        # NEW: persist the completed turn once the stream is done — the
-        # "final" event above always carries the full answer text, so
-        # there's nothing to accumulate chunk-by-chunk here.
-        if final_answer is not None:
-            remember_turn(db, request.userid, user_question, final_answer)
 
     # FIXED: Moved 4 spaces to the left out of the inner event_generator block!
     return StreamingResponse(event_generator(), media_type="text/event-stream")

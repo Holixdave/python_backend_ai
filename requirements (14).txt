@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+pydantic
+pydantic_core
+python-multipart
+requests
+sympy
+pandas
+numpy
+typing
+ddgs
+firebase_admin
+sqlalchemy
+psycopg2-binary
