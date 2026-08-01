@@ -483,6 +483,7 @@ def get_lean_history(history):
 # uncut reasoning shows up step-by-step in the Thought sheet.
 # ---------------------------------------------------------------------------
 _THINK_BLOCK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
+_ORPHAN_THINK_CLOSE_RE = re.compile(r"^.*?</think>\s*", re.DOTALL | re.IGNORECASE)
 _STEP_SPLIT_RE = re.compile(r"(?:^|\n)\s*\d+[\.\)]\s+")
 
 
@@ -501,6 +502,17 @@ def _split_thinking(raw):
         return raw, None
     match = _THINK_BLOCK_RE.search(raw)
     if not match:
+        # FIXED — weaker models sometimes start their answer already
+        # mid-reasoning and only emit the closing "</think>" with no
+        # opening tag at all. That fragment (plus whatever meta-
+        # commentary came before it) used to leak straight into the
+        # visible answer since it's not a complete <think>...</think>
+        # pair. If we see a lone closer, treat everything up to and
+        # including it as leaked reasoning debris and drop it.
+        if "</think>" in raw.lower():
+            stripped = _ORPHAN_THINK_CLOSE_RE.sub("", raw, count=1).strip()
+            if stripped:
+                return stripped, None
         return raw, None
     thinking = match.group(1).strip()
     cleaned = _THINK_BLOCK_RE.sub("", raw).strip()
@@ -595,7 +607,28 @@ def _derive_step_label(step_text: str, index: int) -> str:
 # ---------------------------------------------------------------------------
 # GENERIC OPENAI-COMPATIBLE CALLER — used by both text and vision chains
 # ---------------------------------------------------------------------------
-def _call_provider_chain(providers: list, messages: list, temperature: float, max_tokens: int, reasoning_effort: str = None):
+# ---------------------------------------------------------------------------
+# NEW — degenerate output guard. A model can return HTTP 200 with non-empty
+# content that is actually a broken repetition loop (e.g. the same 20-40
+# char chunk repeated dozens of times instead of stopping). That used to be
+# accepted as a real answer since the old check only looked for "is content
+# non-empty". This catches that failure mode and treats it exactly like an
+# empty response — try the next provider in the chain instead of shipping
+# garbage to the user.
+# ---------------------------------------------------------------------------
+_DEGENERATE_LOOP_RE = re.compile(r"(.{10,80}?)\1{3,}", re.DOTALL)
+
+
+def _is_degenerate_output(content: str) -> bool:
+    if not content or len(content) < 200:
+        return False
+    # Only scan the tail — loops like this build up gradually and are
+    # always still looping by the end of the response.
+    tail = content[-3000:]
+    return bool(_DEGENERATE_LOOP_RE.search(tail))
+
+
+
     """
     Walks `providers` in order. For each enabled provider: retries a couple
     times on 429 (rate limit), but moves to the next provider immediately on
@@ -651,6 +684,10 @@ def _call_provider_chain(providers: list, messages: list, temperature: float, ma
                 if response.status_code == 200:
                     result = response.json()
                     content = result.get("choices", [{}])[0].get("message", {}).get("content")
+                    if content and _is_degenerate_output(content):
+                        last_error = f"{provider['name']}: degenerate/looping output"
+                        print(f"[AI] {provider['name']} returned 200 but content is a repetition loop — trying next provider")
+                        break  # try next provider
                     if content:
                         print(f"[AI] answered via {provider['name']} ({len(content)} chars)")
                         return content, provider["name"]
@@ -726,6 +763,10 @@ def _call_provider_chain_full(providers: list, messages: list, temperature: floa
                     choice = result.get("choices", [{}])[0]
                     content = choice.get("message", {}).get("content")
                     finish_reason = choice.get("finish_reason")
+                    if content and _is_degenerate_output(content):
+                        last_error = f"{provider['name']}: degenerate/looping output"
+                        print(f"[FILEBUILD] {provider['name']} returned a repetition loop — trying next provider")
+                        break
                     if content:
                         print(f"[FILEBUILD] {provider['name']} answered ({len(content)} chars, finish_reason={finish_reason})")
                         return content, provider["name"], finish_reason

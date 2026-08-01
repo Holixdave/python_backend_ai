@@ -82,9 +82,26 @@ MAX_TOOL_ROUNDS = 3
 # is too easy for a model to almost-produce by accident while just talking
 # about code. Wrapping real JSON in a tag this specific only fires when the
 # model actually means to invoke it.
+#
+# FIXED: weaker/free models (unlike Groq's bigger models) are less
+# reliable at reproducing the exact "<<END_TOOL_REQUEST>>" closing tag —
+# they sometimes drop the final ">", producing "<<END_TOOL_REQUEST>"
+# instead. The old strict regex required an exact match, so that single
+# dropped character meant: (a) detect_tool_request() never recognized the
+# tool call, so it never actually ran, and (b) strip_tool_markers() used
+# the SAME regex, so it never stripped the raw marker either — it leaked
+# straight into the chat bubble as visible garbage. ">>?" below matches
+# either ">" or ">>" on both the opening and closing tag, on both markers.
 # ---------------------------------------------------------------------------
-_TOOL_REQUEST_RE = re.compile(r"<<TOOL_REQUEST>>\s*(\{.*?\})\s*<<END_TOOL_REQUEST>>", re.DOTALL)
-_TOOL_CALL_RE = re.compile(r"<<TOOL_CALL>>\s*(\{.*?\})\s*<<END_TOOL_CALL>>", re.DOTALL)
+_TOOL_REQUEST_RE = re.compile(r"<<TOOL_REQUEST>>?\s*(\{.*?\})\s*<<END_TOOL_REQUEST>>?", re.DOTALL)
+_TOOL_CALL_RE = re.compile(r"<<TOOL_CALL>>?\s*(\{.*?\})\s*<<END_TOOL_CALL>>?", re.DOTALL)
+
+# Catch-all safety nets — if a model opens a marker but the closing tag
+# never shows up at all (cut off by max_tokens, or some other malformed
+# variant we haven't seen yet), strip everything from the opening tag to
+# the end of the string rather than leaking a half-finished tool call.
+_TOOL_REQUEST_OPEN_RE = re.compile(r"<<TOOL_REQUEST>>?.*", re.DOTALL)
+_TOOL_CALL_OPEN_RE = re.compile(r"<<TOOL_CALL>>?.*", re.DOTALL)
 
 
 def build_tool_manifest() -> str:
@@ -156,11 +173,18 @@ def strip_tool_markers(text: Optional[str]) -> str:
     intended protocol, produces malformed JSON, or gets cut off by
     MAX_TOOL_ROUNDS should never be able to leak raw marker syntax into a
     real chat bubble, no matter which of those causes it.
+
+    Two passes: first the well-formed (or near-well-formed, see the >>?
+    tolerance above) open+close pair, then a catch-all that strips from an
+    opening tag to end-of-string if no closing tag showed up at all — a
+    half-emitted tool call is never useful to show the user either way.
     """
     if not text:
         return text
     text = _TOOL_REQUEST_RE.sub("", text)
     text = _TOOL_CALL_RE.sub("", text)
+    text = _TOOL_REQUEST_OPEN_RE.sub("", text)
+    text = _TOOL_CALL_OPEN_RE.sub("", text)
     return text.strip()
 
 
