@@ -28,6 +28,17 @@ import json
 import re
 from typing import Optional
 
+def see_tool_arg(tool_name: str) -> str:
+    """
+    Meta-tool — lets the AI look up any OTHER registered tool's real source
+    code on demand, without waiting for the backend-forced REQUEST/CALL
+    round trip. Call this BEFORE calling an unfamiliar tool if unsure of
+    its exact argument names, instead of guessing.
+    """
+    if tool_name not in TOOL_REGISTRY:
+        return f"No tool named '{tool_name}'. Available tools: {', '.join(TOOL_REGISTRY.keys())}"
+    return get_tool_source(tool_name)
+
 from gpt2_functions import (
     search_web,
     search_images,
@@ -35,6 +46,7 @@ from gpt2_functions import (
     _verify_image_relevance,
     ask_with_vision,
     build_file_with_continuation,
+    fetch_webpage,
 )
 
 # ---------------------------------------------------------------------------
@@ -50,8 +62,10 @@ TOOL_REGISTRY = {
     "verify_image_relevance": _verify_image_relevance,
     "analyze_image": ask_with_vision,
     "build_file": build_file_with_continuation,
+    "fetch_webpage": fetch_webpage,
+    "see_tool_arg": see_tool_arg,
+ 
 }
-
 # Short, hand-written purpose lines for the initial manifest only — this is
 # deliberately NOT the full docs. Once the AI picks one, it gets the real
 # source instead of trusting this one-liner for anything beyond "should I
@@ -63,6 +77,9 @@ TOOL_DESCRIPTIONS = {
     "verify_image_relevance": "Check a batch of candidate images against a query using vision.",
     "analyze_image": "Look at image(s) and answer a question about what's in them.",
     "build_file": "Build a complete downloadable file and upload it for the user.",
+    "fetch_webpage": "Open a Specific url and read its actual page text/content.",
+    "see_tool_arg":   "Look up any tool's real source code/params before calling it, so "
+        "you don't have to guess argument names."
 }
 
 # Params that should NEVER come from the AI's own JSON — they belong to the
@@ -75,7 +92,7 @@ TOOL_DESCRIPTIONS = {
 # full result set back in, and it got cut off mid-JSON by the token cap).
 SESSION_INJECTED_PARAMS = {"prompt", "history", "userid", "image_urls", "image_results"}
 
-MAX_TOOL_ROUNDS = 3
+MAX_TOOL_ROUNDS = 20  # raised from 3 — allows deeper multi-step chains (e.g. several rounds of search_web self-correction, or search + verify_image_relevance + search again)
 
 # ---------------------------------------------------------------------------
 # MARKERS — distinctive on purpose. A bare "name()" or a loose JSON object

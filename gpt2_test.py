@@ -160,17 +160,16 @@ VISION_PROVIDERS = [
         "enabled": bool(GROQ_API_KEY),
         "url": "https://api.groq.com/openai/v1/chat/completions",
         "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {GROQ_API_KEY}"},
-        "model": "qwen/qwen3.6-27b",  # Changed from meta-llama/llama-4-scout
+        "model": "meta-llama/llama-4-scout-17b-16e-instruct",
     },
     {
         "name": "openrouter-vision-free",
         "enabled": bool(OPENROUTER_API_KEY),
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {OPENROUTER_API_KEY}"},
-        "model": "google/gemini-flash-1.5-8b:free",  # Changed from qwen2.5-vl:free which is dead
+        "model": "qwen/qwen2.5-vl-32b-instruct:free",
     },
 ]
-
 
 # ---------------------------------------------------------------------------
 # KNOWLEDGE BASE + IMAGE-DECISION PROMPT — content moved to prompts.py, see
@@ -704,7 +703,7 @@ def _ask_gpt2_core(
             yield {
                 "type": "status",
                 "text": f"Reviewing {requested_tool}'s code...",
-                "detail": None,
+                "detail": f"```python\n{tool_source}\n```{auto_supplied_note}",
                 "icon": "tool",
             }
             call_answer, _ = _call_provider_chain(
@@ -851,6 +850,31 @@ def _ask_gpt2_core(
                 "once the results genuinely support it, or you've run out of "
                 "reasonable ways to rephrase the query."
             )
+
+        # FIXED — a failed call to one of the session-injected-param tools
+        # used to just get told "you may request the tool again the same
+        # way", relying on the model correctly re-triggering the full
+        # source-showing round trip on its own. In practice it often just
+        # retried blind with another guessed arg name, failed again, and
+        # burned all MAX_TOOL_ROUNDS the same way. Now: on failure, hand it
+        # the real source + auto-supplied-param note directly in this same
+        # message, so every retry is grounded in the real signature, not
+        # a second guess.
+        if not success and call_data["tool"] in NEEDS_SOURCE_ROUNDTRIP:
+            retry_tool_source = get_tool_source(call_data["tool"])
+            retry_note = (
+                "\n\nHere is the real source code again — call it with ONLY "
+                f"this block:\n```python\n{retry_tool_source}\n```\n\n"
+                'Reply with ONLY: <<TOOL_CALL>>{"tool": "'
+                f'{call_data["tool"]}", "args": {{...}}'
+                '}<<END_TOOL_CALL>>\n\n'
+                "Some of these parameters are session data you do NOT need "
+                "to supply — they're filled in automatically: `prompt`, "
+                "`history`, `userid`, `image_urls`, and `image_results`. "
+                "Do NOT retype those yourself, that's what caused this "
+                "failure. Only fill in the other real arguments."
+            )
+            retry_guidance = retry_guidance + retry_note
 
         messages.append({
             "role": "user",

@@ -12,3 +12,4 @@ ddgs
 firebase_admin
 sqlalchemy
 psycopg2-binary
+beautifulsoup4

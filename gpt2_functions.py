@@ -18,7 +18,7 @@ import random
 import requests
 from typing import Optional
 from user_doc_manager import UserDocManager
-
+from bs4 import BeautifulSoup
 # Pulled back from gpt2_test.py — see the note over the matching import
 # there for why this is safe despite being circular.
 from gpt2_test import (
@@ -164,7 +164,7 @@ def _image_candidate_score(query: str, candidate: dict) -> int:
     return sum(1 for w in query_words if w in haystack)
 
 
-def search_images(query: str, max_results: int = 200):
+def search_images(query: str, max_results: int = 20):
     """
     Best-effort pictorial results to accompany a web search — never raises,
     returns [] on any failure so a broken image search can't take down the
@@ -267,7 +267,7 @@ def _verify_image_relevance(
                 break
 
     return verified
-def search_web(query: str, max_results: int = 4):
+def search_web(query: str, max_results: int = 20):
     """
     Tries each search engine in order. Returns (formatted_text, sources).
     sources is a list of {"title": str, "url": str} for the frontend to render.
@@ -308,7 +308,25 @@ def search_web(query: str, max_results: int = 4):
 
     print("[SEARCH] all engines failed or unavailable — continuing without web context")
     return "", []
-
+def fetch_webpage(url: str, max_chars: int = 6000) -> str:
+    """
+    Fetches a webpage by URL and returns its main readable text content.
+    Never raises — returns an error string instead, matching the fail-quiet
+    pattern the rest of this file uses (og_image, search_web, etc).
+    """
+    if not url:
+        return "No URL provided."
+    try:
+        resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for tag in soup(["script", "style", "nav", "footer", "header"]):
+            tag.decompose()
+        text = " ".join(soup.get_text(separator=" ").split())
+        return text[:max_chars]
+    except Exception as e:
+        print(f"[FETCH_WEBPAGE] failed for {url}: {e}")
+        return f"Couldn't load that page ({e})."
 # ---------------------------------------------------------------------------
 # INTENT CLASSIFIER — one small, cheap call per prompt.
 #

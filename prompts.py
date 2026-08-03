@@ -297,6 +297,11 @@ SUGGESTION_HINT = (
 # gpt2_test.py builds: "\n\n" + build_tool_manifest() + TOOL_USE_HINT_TAIL
 # ---------------------------------------------------------------------------
 TOOL_USE_HINT_TAIL = (
+    "TIP — if you're not fully sure of a tool's exact argument names before "
+"calling it (especially one you haven't used yet this conversation), you "
+"may first request see_tool_arg with {\"tool_name\": \"<name>\"} to see "
+"its real source, then call the real tool with correct args. This is "
+"optional and skippable when you're already confident.\n\n"
     "\n\nWHEN TO REACH FOR AN IMAGE: if the user explicitly asks to SEE, "
     "find, or view a picture/photo/image of something real — a person, "
     "place, animal, product, landmark — you MUST request search_images "
@@ -336,6 +341,7 @@ TOOL_USE_HINT_TAIL = (
     "vague (\"write some python\", \"can you write html code\") with no "
     "real subject attached, don't call build_file — ask a clarifying "
     "question in your answer instead of generating an empty/generic file."
+    
 )
 
 
