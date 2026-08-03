@@ -2,8 +2,6 @@
 
 
 # gpt2_test.py — Multi-provider fallback edition
-# ─────────────────────────────────────────────────────────────────────────────
-# WHAT CHANGED FROM THE OLD VERSION
 #   1. ask_gpt2() / ask_with_vision() no longer hit Groq only. They walk a
 #      chain of providers (Groq -> OpenRouter free models -> Cerebras free
 #      tier -> Gemini) and fail over automatically. If Groq is out of
