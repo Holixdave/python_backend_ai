@@ -132,13 +132,16 @@ def _openrouter_provider(model_name: str) -> dict:
 # GEMINI PROVIDER BUILDERS (Translates list strings to native Google API shapes)
 # ---------------------------------------------------------------------------
 def _gemini_text_provider(model_name: str) -> dict:
+    raw_model_id = model_name.replace("models/", "")
     return {
-        "name": f"google/{model_name}",
+        "name": f"google/{raw_model_id}",
         "enabled": bool(GEMINI_API_KEY),
-        "url": f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={GEMINI_API_KEY}",
-        "headers": {"Content-Type": "application/json"},
-        "model": model_name,
-        "is_native_gemini": True  # Flag to handle Gemini's unique payload structure upstream
+        "url": "https://generativelanguage.googleapis.com/v1beta/chat/completions",
+        "headers": {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + GEMINI_API_KEY
+        },
+        "model": raw_model_id,
     }
 
 TEXT_PROVIDERS = [
