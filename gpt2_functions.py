@@ -33,7 +33,7 @@ from gpt2_test import (
     REASONING_STEP_ICONS,
 )
 
-# All prompt text now lives in prompts.py — see that file's header for why.
+
 from prompts import INTENT_SYSTEM_PROMPT
 
 # ---------------------------------------------------------------------------
@@ -203,7 +203,100 @@ def _fetch_og_image(url: str) -> Optional[str]:
     except Exception as e:
         print(f"[OG_IMAGE] failed for {url}: {e}")
     return None
+def _call_provider_chain(providers: list, messages: list, temperature: float, max_tokens: int, reasoning_effort: str = None):
+    """
+    Walks `providers` in order. For each enabled provider: retries a couple
+    times on 429 (rate limit), but moves to the next provider immediately on
+    any other failure (bad key, out of credits, network error, etc.) instead
+    of burning time/retries on a dead provider.
 
+    reasoning_effort ("default" or "none") is only ever sent to a provider
+    whose config sets supports_reasoning_effort — currently just Qwen 3.6
+    27B on Groq. Every other provider ignores this parameter entirely so
+    passing it never breaks a non-Qwen call.
+
+    Returns (content, provider_name) on success, or (None, None) if every
+    provider in the chain failed.
+    """
+    last_error = "No provider available."
+    print(f"[AI] provider chain starting — {len(providers)} configured, "
+          f"temperature={temperature}, max_tokens={max_tokens}, reasoning_effort={reasoning_effort}")
+
+    for provider in providers:
+        if not provider["enabled"]:
+            print(f"[AI] skipping {provider['name']} — no API key configured")
+            continue
+
+        payload = {
+            "model": provider["model"],
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": False,
+        }
+        if reasoning_effort is not None and provider.get("supports_reasoning_effort"):
+            payload["reasoning_effort"] = reasoning_effort
+            # FIXED — without this, Groq's reasoning-capable models default
+            # to putting reasoning in a separate `message.reasoning` field
+            # instead of inlining it as <think>...</think> tags in
+            # `message.content`. _split_thinking() only ever looks inside
+            # `content`, so the reasoning was very likely being generated
+            # the whole time and just landing somewhere this code never
+            # read — no error, nothing to catch, it just silently never
+            # showed up as thinking steps on the frontend.
+            payload["reasoning_format"] = "raw"
+
+        print(f"[AI] trying {provider['name']} ({provider['model']})...")
+
+        for attempt in range(1, MAX_RETRIES_PER_PROVIDER + 1):
+            try:
+                response = requests.post(
+                    provider["url"],
+                    headers=provider["headers"],
+                    json=payload,
+                    timeout=REQUEST_TIMEOUT,
+                )
+                if response.status_code == 200:
+                    result = response.json()
+                    content = result.get("choices", [{}])[0].get("message", {}).get("content")
+                    if content and _is_degenerate_output(content):
+                        last_error = f"{provider['name']}: degenerate/looping output"
+                        print(f"[AI] {provider['name']} returned 200 but content is a repetition loop — trying next provider")
+                        break  # try next provider
+                    if content:
+                        print(f"[AI] answered via {provider['name']} ({len(content)} chars)")
+                        return content, provider["name"]
+                    last_error = f"{provider['name']}: empty content"
+                    print(f"[AI] {provider['name']} returned 200 but empty content — trying next provider")
+                    break  # try next provider
+
+                if response.status_code == 429:
+                    # Rate limited — worth a quick retry before giving up on this provider
+                    if attempt < MAX_RETRIES_PER_PROVIDER:
+                        print(f"[AI] {provider['name']} rate limited (429), retry {attempt}/{MAX_RETRIES_PER_PROVIDER}")
+                        time.sleep(RETRY_BASE_DELAY * attempt)
+                        continue
+                    last_error = f"{provider['name']}: rate limited (429)"
+                    print(f"[AI] {last_error} — giving up on this provider")
+                    break
+
+                # Any other status (401 bad key, 402 out of credit, 404 model
+                # gone, 500, etc.) — this provider is down, move on now.
+                last_error = f"{provider['name']}: HTTP {response.status_code} — {response.text[:150]}"
+                print(f"[AI] {last_error}")
+                break
+
+            except requests.exceptions.RequestException as e:
+                last_error = f"{provider['name']}: {e}"
+                if attempt < MAX_RETRIES_PER_PROVIDER:
+                    print(f"[AI] {last_error} — retry {attempt}/{MAX_RETRIES_PER_PROVIDER}")
+                    time.sleep(RETRY_BASE_DELAY * attempt)
+                    continue
+                print(f"[AI] {last_error}")
+                break
+
+    print(f"[AI] all providers exhausted — last error: {last_error}")
+    return None, None
 
 def _verify_image_relevance(
     query: str,
@@ -638,99 +731,10 @@ def _is_degenerate_output(content: str) -> bool:
 
 
 
-    """
-    Walks `providers` in order. For each enabled provider: retries a couple
-    times on 429 (rate limit), but moves to the next provider immediately on
-    any other failure (bad key, out of credits, network error, etc.) instead
-    of burning time/retries on a dead provider.
+# ---------------------------------------------------------------------------
+# GENERIC OPENAI-COMPATIBLE CALLER — used by both text and vision chains
+# ---------------------------------------------------------------------------
 
-    reasoning_effort ("default" or "none") is only ever sent to a provider
-    whose config sets supports_reasoning_effort — currently just Qwen 3.6
-    27B on Groq. Every other provider ignores this parameter entirely so
-    passing it never breaks a non-Qwen call.
-
-    Returns (content, provider_name) on success, or (None, None) if every
-    provider in the chain failed.
-    """
-    last_error = "No provider available."
-    print(f"[AI] provider chain starting — {len(providers)} configured, "
-          f"temperature={temperature}, max_tokens={max_tokens}, reasoning_effort={reasoning_effort}")
-
-    for provider in providers:
-        if not provider["enabled"]:
-            print(f"[AI] skipping {provider['name']} — no API key configured")
-            continue
-
-        payload = {
-            "model": provider["model"],
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": False,
-        }
-        if reasoning_effort is not None and provider.get("supports_reasoning_effort"):
-            payload["reasoning_effort"] = reasoning_effort
-            # FIXED — without this, Groq's reasoning-capable models default
-            # to putting reasoning in a separate `message.reasoning` field
-            # instead of inlining it as <think>...</think> tags in
-            # `message.content`. _split_thinking() only ever looks inside
-            # `content`, so the reasoning was very likely being generated
-            # the whole time and just landing somewhere this code never
-            # read — no error, nothing to catch, it just silently never
-            # showed up as thinking steps on the frontend.
-            payload["reasoning_format"] = "raw"
-
-        print(f"[AI] trying {provider['name']} ({provider['model']})...")
-
-        for attempt in range(1, MAX_RETRIES_PER_PROVIDER + 1):
-            try:
-                response = requests.post(
-                    provider["url"],
-                    headers=provider["headers"],
-                    json=payload,
-                    timeout=REQUEST_TIMEOUT,
-                )
-                if response.status_code == 200:
-                    result = response.json()
-                    content = result.get("choices", [{}])[0].get("message", {}).get("content")
-                    if content and _is_degenerate_output(content):
-                        last_error = f"{provider['name']}: degenerate/looping output"
-                        print(f"[AI] {provider['name']} returned 200 but content is a repetition loop — trying next provider")
-                        break  # try next provider
-                    if content:
-                        print(f"[AI] answered via {provider['name']} ({len(content)} chars)")
-                        return content, provider["name"]
-                    last_error = f"{provider['name']}: empty content"
-                    print(f"[AI] {provider['name']} returned 200 but empty content — trying next provider")
-                    break  # try next provider
-
-                if response.status_code == 429:
-                    # Rate limited — worth a quick retry before giving up on this provider
-                    if attempt < MAX_RETRIES_PER_PROVIDER:
-                        print(f"[AI] {provider['name']} rate limited (429), retry {attempt}/{MAX_RETRIES_PER_PROVIDER}")
-                        time.sleep(RETRY_BASE_DELAY * attempt)
-                        continue
-                    last_error = f"{provider['name']}: rate limited (429)"
-                    print(f"[AI] {last_error} — giving up on this provider")
-                    break
-
-                # Any other status (401 bad key, 402 out of credit, 404 model
-                # gone, 500, etc.) — this provider is down, move on now.
-                last_error = f"{provider['name']}: HTTP {response.status_code} — {response.text[:150]}"
-                print(f"[AI] {last_error}")
-                break
-
-            except requests.exceptions.RequestException as e:
-                last_error = f"{provider['name']}: {e}"
-                if attempt < MAX_RETRIES_PER_PROVIDER:
-                    print(f"[AI] {last_error} — retry {attempt}/{MAX_RETRIES_PER_PROVIDER}")
-                    time.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
-                print(f"[AI] {last_error}")
-                break
-
-    print(f"[AI] all providers exhausted — last error: {last_error}")
-    return None, None
 
 def _call_provider_chain_full(providers: list, messages: list, temperature: float, max_tokens: int, reasoning_effort: str = None):
     """

@@ -93,7 +93,16 @@ if not OPENROUTER_API_KEY:
 # Groq only gets called if every OpenRouter free model in this chain fails
 # or is rate-limited. Cerebras stays as the last resort.
 # ---------------------------------------------------------------------------
-
+GEMINI_MODELS_CHAIN = [
+    "models/gemini-flash-latest",
+    "models/gemini-3.5-flash",
+    "models/gemini-3-flash-preview",
+    "models/gemini-3.1-flash-lite",
+    "models/gemini-3.1-flash-lite-preview",
+    "models/gemini-flash-lite-latest",
+    "models/gemma-4-31b-it",
+    "models/gemma-4-26b-a4b-it",
+]
 # Ordered best -> weakest, based on your test_models.py run. Reasoning/
 # thinking model is included (nemotron-3-nano-omni-30b-a3b-reasoning) —
 # that's OpenRouter's free "thinking" option.
@@ -119,22 +128,37 @@ def _openrouter_provider(model_name: str) -> dict:
         "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {OPENROUTER_API_KEY}"},
         "model": model_name,
     }
+# ---------------------------------------------------------------------------
+# GEMINI PROVIDER BUILDERS (Translates list strings to native Google API shapes)
+# ---------------------------------------------------------------------------
+def _gemini_text_provider(model_name: str) -> dict:
+    return {
+        "name": f"google/{model_name}",
+        "enabled": bool(GEMINI_API_KEY),
+        "url": f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={GEMINI_API_KEY}",
+        "headers": {"Content-Type": "application/json"},
+        "model": model_name,
+        "is_native_gemini": True  # Flag to handle Gemini's unique payload structure upstream
+    }
 
 TEXT_PROVIDERS = [
+    # ── Primary: Native Google Gemini endpoints to handle large context & bypass 429s ──
+    *[_gemini_text_provider(m) for m in GEMINI_MODELS_CHAIN],
+
+    # ── Secondary: OpenRouter Free Chain ─────────────────────────────────
     *[_openrouter_provider(m) for m in FREE_MODEL_CHAIN],
 
-    # ── Fallback: Groq, only reached if every OpenRouter free model above
-    # fails or is rate-limited. ──────────────────────────────────────────
+    # ── Fallback: Groq ──────────────────────────────────────────────────
     {
-         "name": "groq-qwen3.6-27b",
-    "enabled": bool(GROQ_API_KEY),
-    "url": "https://api.groq.com/openai/v1/chat/completions",
-    "headers": {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {GROQ_API_KEY}"
-    },
-    "model": "qwen/qwen3.6-27b",
-    "supports_reasoning_effort": True
+        "name": "groq-qwen3.6-27b",
+        "enabled": bool(GROQ_API_KEY),
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "headers": {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {GROQ_API_KEY}"
+        },
+        "model": "qwen/qwen3.6-27b",
+        "supports_reasoning_effort": True
     },
     {
         "name": "groq-gpt-oss-20b",
@@ -155,6 +179,11 @@ TEXT_PROVIDERS = [
 ]
 
 VISION_PROVIDERS = [
+    # ── Primary Vision: Native Gemini Pro / Flash Multimodal endpoints ──
+    _gemini_text_provider("models/gemini-3.5-flash"),
+    _gemini_text_provider("models/gemini-flash-latest"),
+
+    # ── Fallback Vision: Groq & OpenRouter ──────────────────────────────
     {
         "name": "groq-vision",
         "enabled": bool(GROQ_API_KEY),
