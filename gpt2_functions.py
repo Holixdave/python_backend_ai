@@ -164,22 +164,62 @@ def _image_candidate_score(query: str, candidate: dict) -> int:
     return sum(1 for w in query_words if w in haystack)
 
 
-def search_images(query: str, max_results: int = 20):
-    """
-    Best-effort pictorial results to accompany a web search — never raises,
-    returns [] on any failure so a broken image search can't take down the
-    whole answer.
-    """
-    try:
-        candidates = _search_ddgs_images(query, max_results)
-    except Exception as e:
-        print(f"[IMAGE SEARCH] failed: {e}")
-        return []
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
+SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 
-    # Rerank by cheap metadata match before anything else touches these —
-    # see _image_candidate_score above.
-    candidates.sort(key=lambda c: _image_candidate_score(query, c), reverse=True)
-    return candidates
+def _search_google_images(query: str, max_results: int):
+    if not (GOOGLE_API_KEY and GOOGLE_CSE_ID):
+        return None
+    resp = requests.get(
+        "https://www.googleapis.com/customsearch/v1",
+        params={
+            "key": GOOGLE_API_KEY, "cx": GOOGLE_CSE_ID,
+            "q": query, "searchType": "image", "num": min(max_results, 10),
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
+    items = resp.json().get("items", [])
+    return [
+        {"image": it["link"], "thumbnail": it.get("image", {}).get("thumbnailLink") or it["link"],
+         "title": it.get("title", ""), "source": it.get("image", {}).get("contextLink", "")}
+        for it in items
+    ] or None
+
+def _search_serpapi_images(query: str, max_results: int):
+    if not SERPAPI_KEY:
+        return None
+    resp = requests.get(
+        "https://serpapi.com/search",
+        params={"engine": "google_images", "q": query, "api_key": SERPAPI_KEY, "num": max_results},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    items = resp.json().get("images_results", [])[:max_results]
+    return [
+        {"image": it.get("original"), "thumbnail": it.get("thumbnail") or it.get("original"),
+         "title": it.get("title", ""), "source": it.get("link", "")}
+        for it in items
+    ] or None
+
+def search_images(query: str, max_results: int = 20):
+    for engine_name, engine_fn in (
+        ("google", _search_google_images),
+        ("serpapi", _search_serpapi_images),
+        ("ddgs", lambda q, n: _search_ddgs_images(q, n)),
+    ):
+        try:
+            candidates = engine_fn(query, max_results)
+        except Exception as e:
+            print(f"[IMAGE SEARCH] {engine_name} failed: {e}")
+            continue
+        if candidates:
+            print(f"[IMAGE SEARCH] succeeded via {engine_name} ({len(candidates)} results)")
+            candidates.sort(key=lambda c: _image_candidate_score(query, c), reverse=True)
+            return candidates
+    print("[IMAGE SEARCH] all engines failed")
+    return []
 
 
 def _fetch_og_image(url: str) -> Optional[str]:
