@@ -44,3 +44,10 @@ services:
         sync: false
       - key: TAVILY_API_KEY
         sync: false
+      # NEW — image search fallback chain (Google CSE -> SerpAPI -> ddgs)
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: GOOGLE_CSE_ID
+        sync: false
+      - key: SERPAPI_KEY
+        sync: false
