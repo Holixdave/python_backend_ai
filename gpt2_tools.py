@@ -47,6 +47,8 @@ from gpt2_functions import (
     ask_with_vision,
     build_file_with_continuation,
     fetch_webpage,
+    search_github,
+    fetch_github_file,
 )
 
 # ---------------------------------------------------------------------------
@@ -64,7 +66,9 @@ TOOL_REGISTRY = {
     "build_file": build_file_with_continuation,
     "fetch_webpage": fetch_webpage,
     "see_tool_arg": see_tool_arg,
- 
+    "search_github": search_github,
+    "fetch_github_file": fetch_github_file,
+
 }
 # Short, hand-written purpose lines for the initial manifest only — this is
 # deliberately NOT the full docs. Once the AI picks one, it gets the real
@@ -79,7 +83,9 @@ TOOL_DESCRIPTIONS = {
     "build_file": "Build a complete downloadable file and upload it for the user.",
     "fetch_webpage": "Open a Specific url and read its actual page text/content.",
     "see_tool_arg":   "Look up any tool's real source code/params before calling it, so "
-        "you don't have to guess argument names."
+        "you don't have to guess argument names.",
+    "search_github": "Search GitHub for repositories or code matching a query.",
+    "fetch_github_file": "Fetch a specific file's content from a GitHub repo by path.",
 }
 
 # Params that should NEVER come from the AI's own JSON — they belong to the

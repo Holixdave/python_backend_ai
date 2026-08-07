@@ -243,6 +243,57 @@ def _fetch_og_image(url: str) -> Optional[str]:
     except Exception as e:
         print(f"[OG_IMAGE] failed for {url}: {e}")
     return None
+
+
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+
+def search_github(query: str, kind: str = "repositories", max_results: int = 5):
+    """
+    Search GitHub for repositories or code matching a query.
+    kind: "repositories" or "code". Returns a list of dicts.
+    """
+    headers = {"Accept": "application/vnd.github+json"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+
+    endpoint = "code" if kind == "code" else "repositories"
+    resp = requests.get(
+        f"https://api.github.com/search/{endpoint}",
+        params={"q": query, "per_page": max_results},
+        headers=headers,
+        timeout=10,
+    )
+    resp.raise_for_status()
+    items = resp.json().get("items", [])
+
+    if kind == "code":
+        return [
+            {"path": i["path"], "repo": i["repository"]["full_name"], "url": i["html_url"]}
+            for i in items
+        ]
+    return [
+        {"name": i["full_name"], "description": i.get("description", ""),
+         "stars": i["stargazers_count"], "url": i["html_url"]}
+        for i in items
+    ]
+
+
+def fetch_github_file(repo: str, path: str, ref: str = "main") -> str:
+    """
+    Fetch a single file's raw text content from a GitHub repo.
+    repo: "owner/name", path: file path in repo, ref: branch/commit/tag.
+    """
+    headers = {"Accept": "application/vnd.github.raw+json"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    resp = requests.get(
+        f"https://api.github.com/repos/{repo}/contents/{path}",
+        params={"ref": ref}, headers=headers, timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.text
+
+
 def _call_provider_chain(providers: list, messages: list, temperature: float, max_tokens: int, reasoning_effort: str = None):
     """
     Walks `providers` in order. For each enabled provider: retries a couple
