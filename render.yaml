@@ -53,3 +53,5 @@ services:
         sync: false
       - key: GITHUB_TOKEN
         sync: false
+      - key: SERPER_API_KEY
+        sync: false
