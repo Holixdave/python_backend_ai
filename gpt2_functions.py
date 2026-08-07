@@ -166,7 +166,8 @@ def _image_candidate_score(query: str, candidate: dict) -> int:
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
-SERPAPI_KEY = os.getenv("SERPAPI_KEY")
+SERPERAPI_KEY = os.getenv("SERPERAPI_KEY")  # serpapi.com
+SERPER_API_KEY = os.getenv("SERPER_API_KEY")  # serper.dev
 
 def _search_google_images(query: str, max_results: int):
     if not (GOOGLE_API_KEY and GOOGLE_CSE_ID):
@@ -188,11 +189,11 @@ def _search_google_images(query: str, max_results: int):
     ] or None
 
 def _search_serpapi_images(query: str, max_results: int):
-    if not SERPAPI_KEY:
+    if not SERPERAPI_KEY:
         return None
     resp = requests.get(
         "https://serpapi.com/search",
-        params={"engine": "google_images", "q": query, "api_key": SERPAPI_KEY, "num": max_results},
+        params={"engine": "google_images", "q": query, "api_key": SERPERAPI_KEY, "num": max_results},
         timeout=10,
     )
     resp.raise_for_status()
@@ -203,10 +204,28 @@ def _search_serpapi_images(query: str, max_results: int):
         for it in items
     ] or None
 
+def _search_serper_images(query: str, max_results: int):
+    if not SERPER_API_KEY:
+        return None
+    resp = requests.post(
+        "https://google.serper.dev/images",
+        headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+        json={"q": query, "num": max_results},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    items = resp.json().get("images", [])[:max_results]
+    return [
+        {"image": it.get("imageUrl"), "thumbnail": it.get("thumbnailUrl") or it.get("imageUrl"),
+         "title": it.get("title", ""), "source": it.get("link", "")}
+        for it in items
+    ] or None
+
 def search_images(query: str, max_results: int = 20):
     for engine_name, engine_fn in (
         ("google", _search_google_images),
         ("serpapi", _search_serpapi_images),
+        ("serper", _search_serper_images),
         ("ddgs", lambda q, n: _search_ddgs_images(q, n)),
     ):
         try:

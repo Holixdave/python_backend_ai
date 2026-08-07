@@ -318,6 +318,12 @@ def execute_tool(tool_name: str, ai_args: dict, session_context: dict):
             return True, json.dumps(last_event, default=str)[:4000]
 
         result = fn(**final_args)
+        # fetch_github_file gets a much higher cap than other tools — a
+        # truncated search result is still useful, but a source file cut
+        # off mid-import/mid-syntax just confuses the model into reasoning
+        # about broken code instead of the real thing.
+        if tool_name == "fetch_github_file":
+            return True, json.dumps(result, default=str)[:20000]
         return True, json.dumps(result, default=str)[:4000]
 
     except TypeError as e:
