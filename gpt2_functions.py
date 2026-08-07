@@ -35,6 +35,8 @@ from gpt2_test import (
 
 
 from prompts import INTENT_SYSTEM_PROMPT
+import firebase_config  # noqa: F401 (ensures firebase_admin is initialized)
+from firebase_admin import firestore
 
 # ---------------------------------------------------------------------------
 # WEB SEARCH — multi-engine fallback chain (ddgs -> Brave -> Tavily)
@@ -311,6 +313,120 @@ def fetch_github_file(repo: str, path: str, ref: str = "main") -> str:
     )
     resp.raise_for_status()
     return resp.text
+
+
+def fetch_document(url: str, max_chars: int = 15000) -> str:
+    """
+    Downloads a PDF or Word (.docx) document from a URL and extracts its
+    text content. Returns the extracted text, truncated to max_chars.
+    Raises a clear error if the file type isn't supported or download fails.
+    """
+    resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+    resp.raise_for_status()
+    content_type = resp.headers.get("Content-Type", "").lower()
+
+    is_pdf = "pdf" in content_type or url.lower().endswith(".pdf")
+    is_docx = "wordprocessingml" in content_type or url.lower().endswith(".docx")
+
+    if is_pdf:
+        import io
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(resp.content))
+        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+
+    elif is_docx:
+        import io
+        from docx import Document
+        doc = Document(io.BytesIO(resp.content))
+        text = "\n".join(p.text for p in doc.paragraphs)
+
+    else:
+        raise ValueError(f"Unsupported document type for URL: {url} (content-type: {content_type})")
+
+    text = text.strip()
+    if not text:
+        return "Document was fetched but no extractable text was found (it may be a scanned/image-based file)."
+    return text[:max_chars]
+
+
+# ---------------------------------------------------------------------------
+# USER IDENTITY / MEMORY — reuses the same firebase_config init and
+# users/{userid} Firestore structure already established in
+# firestore_repository.py (chat history lives at
+# users/{userid}/utme26_messages/{auto_id}). These tools read the user's
+# own profile doc directly, and add a NEW subcollection
+# users/{userid}/ai_notes/{auto_id} for facts the AI jots down about the
+# user across conversations — separate from raw chat history, deliberately
+# small/curated rather than a full transcript.
+# ---------------------------------------------------------------------------
+
+def get_user_profile(userid: str) -> dict:
+    """
+    Fetch this user's display name from Firestore (users/{userid} doc).
+    Checks 'name', 'displayName', 'username' fields in that order —
+    whichever is actually set on the account. Returns
+    {"name": str|None, "found": bool}. Never raises; a Firestore hiccup
+    just means the AI doesn't know the user's name this turn, not a
+    broken request.
+    """
+    if not userid:
+        return {"name": None, "found": False}
+    try:
+        doc = firestore.client().collection("users").document(userid).get()
+        if not doc.exists:
+            return {"name": None, "found": False}
+        data = doc.to_dict() or {}
+        name = data.get("name") or data.get("displayName") or data.get("username")
+        return {"name": name, "found": bool(name)}
+    except Exception as e:
+        print(f"[USER_PROFILE] failed for userid={userid!r}: {e}")
+        return {"name": None, "found": False}
+
+
+def save_user_note(userid: str, note: str) -> bool:
+    """
+    Jot down a fact/preference about the user for later recall, stored at
+    users/{userid}/ai_notes/{auto_id}. Call this when the user shares
+    something worth remembering across conversations (their goals,
+    preferences, ongoing projects) — not for routine chat content, which
+    is already saved separately by remember_turn(). Never raises; returns
+    False on failure so the AI can tell the user it couldn't save it.
+    """
+    if not userid or not note:
+        return False
+    try:
+        firestore.client().collection("users").document(userid).collection("ai_notes").add({
+            "note": note,
+            "created_at": firestore.SERVER_TIMESTAMP,
+        })
+        return True
+    except Exception as e:
+        print(f"[USER_NOTES] save failed for userid={userid!r}: {e}")
+        return False
+
+
+def get_user_notes(userid: str, limit: int = 20) -> list:
+    """
+    Retrieve previously saved notes about this user, oldest first. Never
+    raises; returns [] on any failure or if nothing's been saved yet.
+    """
+    if not userid:
+        return []
+    try:
+        docs = (
+            firestore.client()
+            .collection("users").document(userid)
+            .collection("ai_notes")
+            .order_by("created_at", direction=firestore.Query.DESCENDING)
+            .limit(limit)
+            .stream()
+        )
+        notes = [d.to_dict().get("note") for d in docs if d.to_dict().get("note")]
+        notes.reverse()
+        return notes
+    except Exception as e:
+        print(f"[USER_NOTES] fetch failed for userid={userid!r}: {e}")
+        return []
 
 
 def _call_provider_chain(providers: list, messages: list, temperature: float, max_tokens: int, reasoning_effort: str = None):

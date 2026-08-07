@@ -43,12 +43,15 @@ from gpt2_functions import (
     search_web,
     search_images,
     _fetch_og_image,
-    _verify_image_relevance,
     ask_with_vision,
     build_file_with_continuation,
     fetch_webpage,
     search_github,
     fetch_github_file,
+    fetch_document,
+    get_user_profile,
+    save_user_note,
+    get_user_notes,
 )
 
 # ---------------------------------------------------------------------------
@@ -61,14 +64,16 @@ TOOL_REGISTRY = {
     "search_web": search_web,
     "search_images": search_images,
     "fetch_page_preview_image": _fetch_og_image,
-    "verify_image_relevance": _verify_image_relevance,
     "analyze_image": ask_with_vision,
     "build_file": build_file_with_continuation,
     "fetch_webpage": fetch_webpage,
     "see_tool_arg": see_tool_arg,
     "search_github": search_github,
     "fetch_github_file": fetch_github_file,
-
+    "fetch_document": fetch_document,
+    "get_user_profile": get_user_profile,
+    "save_user_note": save_user_note,
+    "get_user_notes": get_user_notes,
 }
 # Short, hand-written purpose lines for the initial manifest only — this is
 # deliberately NOT the full docs. Once the AI picks one, it gets the real
@@ -78,7 +83,6 @@ TOOL_DESCRIPTIONS = {
     "search_web": "Search the live web for current info; returns text + source links.",
     "search_images": "Search the web for candidate images matching a query.",
     "fetch_page_preview_image": "Grab a specific webpage's own declared preview image.",
-    "verify_image_relevance": "Check a batch of candidate images against a query using vision.",
     "analyze_image": "Look at image(s) and answer a question about what's in them.",
     "build_file": "Build a complete downloadable file and upload it for the user.",
     "fetch_webpage": "Open a Specific url and read its actual page text/content.",
@@ -86,6 +90,10 @@ TOOL_DESCRIPTIONS = {
         "you don't have to guess argument names.",
     "search_github": "Search GitHub for repositories or code matching a query.",
     "fetch_github_file": "Fetch a specific file's content from a GitHub repo by path.",
+    "fetch_document": "Download a PDF or Word (.docx) document from a URL and read its text content.",
+    "get_user_profile": "Look up the current user's real name/display name so you can address them personally.",
+    "save_user_note": "Save a fact or preference about the current user for future conversations.",
+    "get_user_notes": "Retrieve previously saved facts/notes about the current user.",
 }
 
 # Params that should NEVER come from the AI's own JSON — they belong to the
