@@ -52,6 +52,9 @@ from gpt2_functions import (
     get_user_profile,
     save_user_note,
     get_user_notes,
+    save_study_note,
+    get_study_notes,
+    schedule_reminder,
 )
 
 # ---------------------------------------------------------------------------
@@ -74,6 +77,9 @@ TOOL_REGISTRY = {
     "get_user_profile": get_user_profile,
     "save_user_note": save_user_note,
     "get_user_notes": get_user_notes,
+    "save_study_note": save_study_note,
+    "get_study_notes": get_study_notes,
+    "schedule_reminder": schedule_reminder,
 }
 # Short, hand-written purpose lines for the initial manifest only — this is
 # deliberately NOT the full docs. Once the AI picks one, it gets the real
@@ -94,6 +100,9 @@ TOOL_DESCRIPTIONS = {
     "get_user_profile": "Look up the current user's real name/display name so you can address them personally.",
     "save_user_note": "Save a fact or preference about the current user for future conversations.",
     "get_user_notes": "Retrieve previously saved facts/notes about the current user.",
+    "save_study_note": "Save a drafted question or note to the user's JAMB study notebook.",
+    "get_study_notes": "Retrieve the user's saved JAMB study notes/questions to review or help solve.",
+    "schedule_reminder": "Schedule a push-notification reminder for the user at a specific future time.",
 }
 
 # Params that should NEVER come from the AI's own JSON — they belong to the
@@ -326,11 +335,16 @@ def execute_tool(tool_name: str, ai_args: dict, session_context: dict):
             return True, json.dumps(last_event, default=str)[:4000]
 
         result = fn(**final_args)
-        # fetch_github_file gets a much higher cap than other tools — a
-        # truncated search result is still useful, but a source file cut
-        # off mid-import/mid-syntax just confuses the model into reasoning
-        # about broken code instead of the real thing.
-        if tool_name == "fetch_github_file":
+        # fetch_github_file and search_images both get a much higher cap
+        # than other tools. For fetch_github_file, a source file cut off
+        # mid-import/mid-syntax just confuses the model. For search_images,
+        # this is even more critical: gpt2_test.py's gallery-population
+        # code does json.loads() on this exact string to build the real
+        # image gallery — a [:4000] cut lands mid-JSON-string on anything
+        # over ~10 candidates, throws inside that parse, gets silently
+        # swallowed by its try/except, and the gallery just never renders
+        # even though the search itself succeeded. This was a live bug.
+        if tool_name in ("fetch_github_file", "search_images"):
             return True, json.dumps(result, default=str)[:20000]
         return True, json.dumps(result, default=str)[:4000]
 
