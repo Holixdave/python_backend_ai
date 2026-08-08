@@ -379,7 +379,7 @@ def _ask_gpt2_core(
         if isinstance(url, str) and url.startswith(("http://", "https://"))
     ]
 
-    image_results = []  # populated later only if the model calls verify_image_relevance itself
+    image_results = []  # populated automatically whenever search_images succeeds
     file_result = None  # populated later only if the model calls build_file itself
 
     if valid_image_urls:
@@ -664,7 +664,7 @@ def _ask_gpt2_core(
     # raw half-finished <<TOOL_CALL>> straight into the visible answer.
     # Forcing these specific tools through the guided round trip no matter
     # which way the model requested them closes that off entirely.
-    NEEDS_SOURCE_ROUNDTRIP = {"verify_image_relevance", "build_file", "analyze_image"}
+    NEEDS_SOURCE_ROUNDTRIP = {"build_file", "analyze_image"}
 
     while tool_round < MAX_TOOL_ROUNDS:
         # Some models don't reliably follow the intended 2-step protocol
@@ -708,7 +708,7 @@ def _ask_gpt2_core(
             # search_images result set as literal JSON, which routinely got
             # cut off mid-array by the token cap and produced invalid JSON.
             auto_supplied_note = ""
-            if requested_tool in ("verify_image_relevance", "build_file", "analyze_image"):
+            if requested_tool in ("build_file", "analyze_image"):
                 auto_supplied_note = (
                     "\n\nNOTE: some of this function's parameters are session "
                     "data you do NOT need to supply — they're filled in "
@@ -833,20 +833,17 @@ def _ask_gpt2_core(
         else:
             success, tool_result = execute_tool(call_data["tool"], call_data["args"], session_context)
             if success and call_data["tool"] == "search_images":
-                # Chain straight into session_context so a follow-up
-                # verify_image_relevance call auto-receives these results
-                # instead of the model having to retype them (see fix above).
-                try:
-                    parsed = json.loads(tool_result)
-                    if isinstance(parsed, list):
-                        session_context["image_results"] = parsed
-                except Exception:
-                    pass
-            if success and call_data["tool"] == "verify_image_relevance":
+                # search_images results ARE the gallery data now — no
+                # separate verify_image_relevance parsing step exists
+                # anymore, so this has to populate the real `image_results`
+                # (what actually reaches the frontend as "images" below),
+                # not just session_context for a follow-up call that will
+                # never happen.
                 try:
                     parsed = json.loads(tool_result)
                     if isinstance(parsed, list):
                         image_results = parsed
+                        session_context["image_results"] = parsed
                 except Exception:
                     pass
 
