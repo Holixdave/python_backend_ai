@@ -832,7 +832,7 @@ def _ask_gpt2_core(
                 file_result = file_event  # carried through to the final yield below
         else:
             success, tool_result = execute_tool(call_data["tool"], call_data["args"], session_context)
-            if success and call_data["tool"] == "search_images":
+            if success and call_data["tool"] in ("search_images", "redisplay_images"):
                 # search_images results ARE the gallery data now — no
                 # separate verify_image_relevance parsing step exists
                 # anymore, so this has to populate the real `image_results`

@@ -55,6 +55,7 @@ from gpt2_functions import (
     save_study_note,
     get_study_notes,
     schedule_reminder,
+    redisplay_images,
 )
 
 # ---------------------------------------------------------------------------
@@ -80,6 +81,7 @@ TOOL_REGISTRY = {
     "save_study_note": save_study_note,
     "get_study_notes": get_study_notes,
     "schedule_reminder": schedule_reminder,
+    "redisplay_images": redisplay_images,
 }
 # Short, hand-written purpose lines for the initial manifest only — this is
 # deliberately NOT the full docs. Once the AI picks one, it gets the real
@@ -103,6 +105,7 @@ TOOL_DESCRIPTIONS = {
     "save_study_note": "Save a drafted question or note to the user's JAMB study notebook.",
     "get_study_notes": "Retrieve the user's saved JAMB study notes/questions to review or help solve.",
     "schedule_reminder": "Schedule a push-notification reminder for the user at a specific future time.",
+    "redisplay_images": "Re-render a gallery of images already found earlier in this conversation, without searching again.",
 }
 
 # Params that should NEVER come from the AI's own JSON — they belong to the

@@ -511,6 +511,38 @@ def schedule_reminder(userid: str, message: str, send_at: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
+def redisplay_images(images: list) -> list:
+    """
+    Re-renders a real gallery from images the AI already found earlier in
+    THIS conversation — for when the user explicitly says something like
+    "don't search again, just show me what you found before." Does NOT
+    hit any search engine or the internet at all; it only reshapes
+    whatever list of image dicts the AI recalls (e.g. from its own
+    [INTERNAL MEMORY NOTE] in earlier history — see main.py's
+    _build_memory_reply) into the exact same shape search_images returns,
+    so gpt2_test.py's gallery-population logic renders it identically.
+
+    images: list of dicts, each needs at minimum {"image": <url>}.
+    "title", "thumbnail", "source" are optional and passed through as-is.
+    Malformed/missing-url entries are silently skipped rather than
+    raising, since a partial gallery beats a hard failure.
+    """
+    out = []
+    for item in images or []:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("image") or item.get("url")
+        if not url:
+            continue
+        out.append({
+            "image": url,
+            "thumbnail": item.get("thumbnail") or url,
+            "title": item.get("title", ""),
+            "source": item.get("source", ""),
+        })
+    return out
+
+
 def _call_provider_chain(providers: list, messages: list, temperature: float, max_tokens: int, reasoning_effort: str = None):
     """
     Walks `providers` in order. For each enabled provider: retries a couple
