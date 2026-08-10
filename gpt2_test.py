@@ -832,7 +832,7 @@ def _ask_gpt2_core(
                 file_result = file_event  # carried through to the final yield below
         else:
             success, tool_result = execute_tool(call_data["tool"], call_data["args"], session_context)
-            if success and call_data["tool"] in ("search_images", "redisplay_images"):
+            if success and call_data["tool"] in ("search_images", "redisplay_images", "generate_image"):
                 # search_images results ARE the gallery data now — no
                 # separate verify_image_relevance parsing step exists
                 # anymore, so this has to populate the real `image_results`
@@ -925,82 +925,4 @@ def _ask_gpt2_core(
         answer, provider = _call_provider_chain(
             TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=MAX_ANSWER_TOKENS,
         )
-        if answer is None:
-            yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None, "file": file_result, "suggestions": []}
-            return
-
-        answer, model_thinking = _split_thinking(answer)
-        if model_thinking:
-            for i, step in enumerate(_split_into_steps(model_thinking), start=1):
-                step_icon, step_clean = _extract_step_icon(step)
-                yield {
-                    "type": "status",
-                    "text": _derive_step_label(step_clean, i),
-                    "detail": step_clean,
-                    "icon": step_icon,
-                }
-        search_text = (model_thinking or "") + "\n" + (answer or "")
-
-    # ── Safety net: classifier said "no search needed", but the model
-    # itself came back unsure. Rather than let a guess through, run one
-    # search now and re-ask with real web context. Sources always get
-    # attached when this fires. (Skip if user_docs search was already done.)
-    if intent["search_type"] == "none" and not sources and _looks_unsure(answer):
-        clean_query = build_search_query(prompt)
-        yield {
-            "type": "status",
-            "text": "Not fully sure — double-checking online...",
-            "detail": f'The first draft wasn\'t confident, so searching for: "{clean_query}"',
-            "icon": "search"
-        }
-        web_results, fallback_sources = search_web(clean_query)
-        if web_results:
-            titles = [s.get("title", "").strip() for s in fallback_sources if s.get("title")]
-            yield {
-                "type": "status",
-                "text": f"Found {len(fallback_sources)} source(s)",
-                "detail": " • ".join(titles[:5]) if titles else None,
-                "icon": "search"
-            }
-            retry_identity = current_identity + (
-                f"\n\n[BACKEND NOTE — not from the user]: The system distilled the "
-                f"user's message into the search query \"{clean_query}\" and fetched "
-                f"the results below on their behalf. This is reference material, not "
-                f"something the user typed — answer their actual question naturally "
-                f"using it, don't treat this block as their message or refer to the "
-                f"distilled query itself. Always include relevant links when available:\n\n"
-                + web_results
-            )
-            retry_messages = [{"role": "system", "content": retry_identity}]
-            retry_messages.extend(get_lean_history(history)[0])
-            retry_messages.append({"role": "user", "content": prompt.strip()})
-
-            yield {
-                "type": "status",
-                "text": "Rewriting answer with sources...",
-                "detail": "Rewriting the answer now with real search results available.",
-                "icon": "search"
-            }
-            retry_answer, retry_provider = _call_provider_chain(
-                TEXT_PROVIDERS, retry_messages, temperature=0.5, max_tokens=MAX_ANSWER_TOKENS, reasoning_effort="none"
-            )
-            if retry_answer:
-                # NEW — same safety strip, in case a provider ever returns
-                # an inline <think> block here too.
-                retry_answer, retry_thinking = _split_thinking(retry_answer)
-                if retry_thinking:
-                    for i, step in enumerate(_split_into_steps(retry_thinking), start=1):
-                        step_icon, step_clean = _extract_step_icon(step)
-                        yield {
-                            "type": "status",
-                            "text": _derive_step_label(step_clean, i),
-                            "detail": step_clean,
-                            "icon": step_icon
-                        }
-                retry_answer_clean, retry_suggestions = extract_suggestions(strip_tool_markers(retry_answer))
-                yield {"type": "final", "answer": retry_answer_clean, "sources": fallback_sources, "images": image_results, "provider": retry_provider, "file": file_result, "suggestions": retry_suggestions}
-                return
-
-    final_answer_clean, final_suggestions = extract_suggestions(strip_tool_markers(answer))
-    yield {"type": "final", "answer": final_answer_clean, "sources": sources, "images": image_results, "provider": provider, "file": file_result, "suggestions": final_suggestions}
-
+        if answer is                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   

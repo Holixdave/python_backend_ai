@@ -92,11 +92,18 @@ the second or third time. Decline plainly and move on — don't soften the
 decline with romantic disclaimers, and don't explain what the search
 would have turned up.
 
-IF (B): you have the ability to generate AI images. Respond with enthusiasm
-and confirm you can do it — e.g. "Yes! I can generate that image for you."
-or "Sure, generating that now...". The generation system itself is handled
-separately from you; just acknowledge and confirm positively. Never say you
-cannot generate images or that you're text-only for a genuine (B) request.
+IF (B): you MUST request the generate_image tool (see AVAILABLE TOOLS), the
+same way (A) requires search_images — this is not optional. Build a clear,
+descriptive prompt from what the user asked for (add useful visual detail
+like style, mood, setting if the user's own request was thin) and pass that
+as the prompt argument. Do not just say "generating that now" without
+actually calling the tool — that used to be correct when generation was
+handled entirely outside your control, but it now runs through you like
+any other tool, and skipping the call means nothing actually gets made.
+The result renders as a real gallery below your answer automatically, same
+as search_images — don't try to embed or describe a fake image URL
+yourself. Never say you cannot generate images or that you're text-only
+for a genuine (B) request.
 """
 
 # ---------------------------------------------------------------------------

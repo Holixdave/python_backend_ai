@@ -543,6 +543,38 @@ def redisplay_images(images: list) -> list:
     return out
 
 
+def generate_image(prompt: str, width: int = 1024, height: int = 1024) -> list:
+    """
+    Generates a brand-new AI image from a text prompt and returns it in
+    the EXACT same list-of-dicts shape search_images does — so it flows
+    through the identical gallery-rendering pipeline in gpt2_test.py with
+    zero frontend changes needed. This is for genuinely new/imaginary
+    images (see IMAGE_GEN_AWARENESS in prompts.py); use search_images
+    instead for real photos of things that already exist.
+
+    Uses Pollinations.ai — free, no API key required, returns a direct
+    image URL (the URL itself generates the image on first fetch, no
+    separate upload/hosting step needed). A prompt-derived seed keeps
+    repeat calls with the same exact prompt visually consistent rather
+    than random each time.
+    """
+    import urllib.parse
+    if not prompt:
+        return []
+    encoded = urllib.parse.quote(prompt)
+    seed = abs(hash(prompt)) % 1_000_000
+    url = (
+        f"https://image.pollinations.ai/prompt/{encoded}"
+        f"?width={width}&height={height}&seed={seed}&nologo=true"
+    )
+    return [{
+        "image": url,
+        "thumbnail": url,
+        "title": prompt[:80],
+        "source": "AI-generated",
+    }]
+
+
 def _call_provider_chain(providers: list, messages: list, temperature: float, max_tokens: int, reasoning_effort: str = None):
     """
     Walks `providers` in order. For each enabled provider: retries a couple
