@@ -429,6 +429,88 @@ def get_user_notes(userid: str, limit: int = 20) -> list:
         return []
 
 
+def save_study_note(userid: str, content: str, subject: str = None) -> bool:
+    """
+    Save a drafted question/note to the user's JAMB study notebook, stored
+    at users/{userid}/study_notes/{auto_id}. Never raises; returns False
+    on failure so the AI can tell the user it couldn't save it.
+    """
+    if not userid or not content:
+        return False
+    try:
+        firestore.client().collection("users").document(userid).collection("study_notes").add({
+            "content": content,
+            "subject": subject,
+            "created_at": firestore.SERVER_TIMESTAMP,
+        })
+        return True
+    except Exception as e:
+        print(f"[STUDY_NOTES] save failed for userid={userid!r}: {e}")
+        return False
+
+
+def get_study_notes(userid: str, limit: int = 20) -> list:
+    """
+    Retrieve the user's saved study notes/questions, newest first — so the
+    AI can look them up when the user says "check my study notes" or
+    "help me solve the questions I saved". Never raises; returns [] on
+    any failure or if nothing's saved yet.
+    """
+    if not userid:
+        return []
+    try:
+        docs = (
+            firestore.client()
+            .collection("users").document(userid)
+            .collection("study_notes")
+            .order_by("created_at", direction=firestore.Query.DESCENDING)
+            .limit(limit)
+            .stream()
+        )
+        return [
+            {"content": d.to_dict().get("content"), "subject": d.to_dict().get("subject")}
+            for d in docs if d.to_dict().get("content")
+        ]
+    except Exception as e:
+        print(f"[STUDY_NOTES] fetch failed for userid={userid!r}: {e}")
+        return []
+
+
+def schedule_reminder(userid: str, message: str, send_at: str) -> dict:
+    """
+    Schedule a push-notification reminder for the user at a specific time.
+    send_at MUST be a full ISO 8601 datetime string (e.g.
+    "2026-08-07T14:00:00") — resolve any relative time ("by 2", "tomorrow
+    morning") to a real date/time before calling this. Treated as UTC if
+    no timezone is included.
+
+    This only WRITES the reminder to Firestore's top-level
+    scheduled_reminders collection — it does NOT send anything itself.
+    The separate notifier service (zindryx-notifier, always-on) polls
+    that collection every ~60s and delivers any reminder whose send_at
+    has passed, using the user's fcmToken stored on their users/{userid}
+    doc. Never raises; returns {"success": bool, "error": str|None}.
+    """
+    if not userid or not message or not send_at:
+        return {"success": False, "error": "Missing userid, message, or send_at."}
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(send_at)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        firestore.client().collection("scheduled_reminders").add({
+            "userid": userid,
+            "message": message,
+            "send_at": dt,
+            "sent": False,
+            "created_at": firestore.SERVER_TIMESTAMP,
+        })
+        return {"success": True, "error": None}
+    except Exception as e:
+        print(f"[SCHEDULE_REMINDER] failed for userid={userid!r}: {e}")
+        return {"success": False, "error": str(e)}
+
+
 def _call_provider_chain(providers: list, messages: list, temperature: float, max_tokens: int, reasoning_effort: str = None):
     """
     Walks `providers` in order. For each enabled provider: retries a couple
