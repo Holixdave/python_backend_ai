@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 import os
 import json
 import re
+
 from math_solver import solve_math_with_explanation
 from equation_solver import solve_equation_with_steps
 from gpt2_test import ask_gpt2, ask_gpt2_stream
@@ -18,7 +19,7 @@ from user_doc_manager import UserDocManager
 # conversation on every request — this app now remembers it server-side.
 from database import get_db, Base, engine
 from memory_service import build_memory, remember_turn
-import firebase_config  # noqa: F401  (must init before firestore_repository is used)
+import firebase_config  # noqa: F401 (must init before firestore_repository is used)
 
 app = FastAPI(
     title="UTME26 AI Backend",
@@ -29,27 +30,29 @@ app = FastAPI(
 # same as the working app's main.py does with Base.metadata.create_all.
 Base.metadata.create_all(bind=engine)
 
+
 # -------------------------------------------------------
 # Pydantic models — DO NOT CHANGE (frontend depends on these)
 # -------------------------------------------------------
-
 class GenerateRequest(BaseModel):
     prompt: str
+
 
 class ChatMessage(BaseModel):
     role: str  # "user" or "assistant"
     content: str
 
+
 class QuestionRequest(BaseModel):
-    query:     str
+    query: str
     # DEPRECATED: the backend now keeps its own memory per userid (see
     # database.py / memory_service.py) and ignores this field even if the
     # frontend still sends it. Left on the model, still accepted, purely so
     # older app builds don't break with a validation error mid-rollout —
     # safe to delete from the frontend payload whenever convenient.
-    history:   List[ChatMessage] = Field(default_factory=list)
-    imageUrls: List[str]         = Field(default_factory=list)
-    userid:    str                = None
+    history: List[ChatMessage] = Field(default_factory=list)
+    imageUrls: List[str] = Field(default_factory=list)
+    userid: str = None
 
 
 # -------------------------------------------------------
@@ -91,11 +94,11 @@ MATH_KEYWORDS = [
     "cube of", "cube root", "% of", "percent of", "calculate",
 ]
 
+
 def is_math_question(text: str) -> bool:
     t = text.lower()
     if any(kw in t for kw in MATH_KEYWORDS):
         return True
-    import re
     if re.search(r'\d+\s*[\+\-\*\/\^]\s*\d+', t):
         return True
     return False
@@ -143,8 +146,65 @@ def _equation_solved_ok(eq_answer: str) -> bool:
     return not any(marker in lowered for marker in _EQUATION_FAILURE_MARKERS)
 
 
+# ── NEW: tool-result memory enrichment ──────────────────────────────────
+# The problem this fixes: remember_turn() only ever persisted the plain
+# answer text. Everything a tool call actually found this turn — image
+# URLs, search source links — existed only in the live response and was
+# gone the moment the request finished. Ask "show me that image again"
+# two turns later and the model has nothing to work with, because its own
+# history never contained what it found.
+#
+# Fix: persist a RICHER string to history than what the user actually
+# sees. The HTTP response to the frontend always uses the original, clean
+# `result["answer"]` — untouched. Only what gets written to the DB (and
+# therefore read back by build_memory() on a future turn) gets this
+# additional internal-note suffix appended, so a later turn's model call
+# can see "oh, I already found these images/sources" in its own past
+# message instead of drawing a blank.
+def _build_memory_reply(answer: str, sources: list = None, images: list = None) -> str:
+    parts = [answer or ""]
+
+    if sources:
+        lines = []
+        for s in sources[:10]:
+            title = s.get("title") or s.get("name") or ""
+            url = s.get("url") or s.get("link") or ""
+            if url:
+                lines.append(f"- {title}: {url}")
+        if lines:
+            parts.append(
+                "\n\n[INTERNAL MEMORY NOTE — sources found this turn via "
+                "search_web, for your own future recall only. Never quote "
+                "this note or its formatting back to the user verbatim; if "
+                "asked about these again later, use the real information "
+                "naturally, or re-search if you need fresher results:\n"
+                + "\n".join(lines) + "]"
+            )
+
+    if images:
+        lines = []
+        for i in images[:10]:
+            title = i.get("title") or ""
+            url = i.get("image") or i.get("url") or ""
+            if url:
+                lines.append(f"- {title}: {url}")
+        if lines:
+            parts.append(
+                "\n\n[INTERNAL MEMORY NOTE — images found this turn via "
+                "search_images, for your own future recall only. Never "
+                "quote this note or its formatting back to the user "
+                "verbatim; if asked to see these again later, you may "
+                "reference that you found them, or call search_images "
+                "again for a fresh/live gallery rather than assuming "
+                "these old links still work:\n"
+                + "\n".join(lines) + "]"
+            )
+
+    return "".join(parts)
+
+
 # -------------------------------------------------------
-# POST /ai-query  — main chat endpoint (UNCHANGED path/schema for frontend;
+# POST /ai-query — main chat endpoint (UNCHANGED path/schema for frontend;
 # only an additive "sources" field is included in the response now)
 # -------------------------------------------------------
 @app.post("/ai-query")
@@ -162,7 +222,7 @@ async def ask_ai(request: QuestionRequest, db: Session = Depends(get_db)):
     print(f"[REQUEST] /ai-query: {user_question[:100]!r} (memory={len(chat_history)} msgs, userid={request.userid!r})")
 
     # 1. Check for Math/Algebra first (Calculators don't need history) —
-    #    only attempted when the text actually looks like an equation.
+    # only attempted when the text actually looks like an equation.
     if _looks_like_equation(user_question):
         eq_answer = solve_equation_with_steps(user_question)
         print(f"[EQUATION] input looked equation-like, solver said: {eq_answer!r}")
@@ -173,12 +233,15 @@ async def ask_ai(request: QuestionRequest, db: Session = Depends(get_db)):
             return {"label": "algebra", "answer": eq_answer, "sources": []}
 
     # 2. AI provider chain (Groq -> fallback providers) — now with web search
-    #    sources returned alongside the answer when search was used.
+    # sources returned alongside the answer when search was used.
     image_urls = request.imageUrls or []
     result = ask_gpt2(user_question, history=chat_history, image_urls=image_urls if image_urls else None, userid=request.userid)
 
-    # NEW: persist this turn to the backend memory for next time.
-    remember_turn(db, request.userid, user_question, result["answer"])
+    # NEW: persist this turn to the backend memory for next time. The DB
+    # gets the enriched version (answer + tool-result notes); the frontend
+    # still gets back the original, clean result["answer"] below.
+    memory_reply = _build_memory_reply(result["answer"], result.get("sources"), result.get("images"))
+    remember_turn(db, request.userid, user_question, memory_reply)
 
     return {
         "label": "general",
@@ -194,12 +257,13 @@ async def ask_ai(request: QuestionRequest, db: Session = Depends(get_db)):
 # actually happen instead of returning one blob at the end.
 #
 # Event shapes (each is one "data: <json>\n\n" line):
-#   {"type": "status", "text": "..."}                         -- real progress
-#   {"type": "final", "answer": "...", "sources": [...]}       -- once, last
+#   {"type": "status", "text": "..."}                    -- real progress
+#   {"type": "final", "answer": "...", "sources": [...]} -- once, last
 # -------------------------------------------------------
 @app.post("/ai-query-stream")
 async def ask_ai_stream(request: QuestionRequest, db: Session = Depends(get_db)):
     user_question = request.query.strip()
+
     # NEW: history loaded from backend DB memory, same as /ai-query above.
     chat_history = build_memory(db, request.userid)
     image_urls = request.imageUrls or []
@@ -211,7 +275,7 @@ async def ask_ai_stream(request: QuestionRequest, db: Session = Depends(get_db))
 
         print(f"[REQUEST] /ai-query-stream: {user_question[:100]!r} (memory={len(chat_history)} msgs, userid={request.userid!r})")
 
-        # 1. Math/algebra short-circuit 
+        # 1. Math/algebra short-circuit
         if _looks_like_equation(user_question):
             eq_answer = solve_equation_with_steps(user_question)
             print(f"[EQUATION] input looked equation-like, solver said: {eq_answer!r}")
@@ -223,25 +287,32 @@ async def ask_ai_stream(request: QuestionRequest, db: Session = Depends(get_db))
 
         # 2. Real generator from gpt2_test
         final_answer = None
+        final_sources = []
+        final_images = []
         for event in ask_gpt2_stream(user_question, history=chat_history, image_urls=image_urls if image_urls else None, userid=request.userid):
             if event["type"] == "status":
                 yield f"data: {json.dumps({'type': 'status', 'text': event['text'], 'detail': event.get('detail'), 'icon': event.get('icon')})}\n\n"
             elif event["type"] == "final":
                 final_answer = event["answer"]
+                final_sources = event.get("sources", [])
+                final_images = event.get("images", [])
                 yield f"data: {json.dumps({'type': 'final', 'answer': event['answer'], 'sources': event.get('sources', []), 'images': event.get('images', []), 'file': event.get('file')})}\n\n"
 
         # NEW: persist the completed turn once the stream is done — the
-        # "final" event above always carries the full answer text, so
-        # there's nothing to accumulate chunk-by-chunk here.
+        # "final" event above always carries the full answer text plus
+        # sources/images, so there's nothing to accumulate chunk-by-chunk
+        # here. Same enrichment as /ai-query: DB gets the richer version,
+        # the SSE stream above already sent the clean answer to the user.
         if final_answer is not None:
-            remember_turn(db, request.userid, user_question, final_answer)
+            memory_reply = _build_memory_reply(final_answer, final_sources, final_images)
+            remember_turn(db, request.userid, user_question, memory_reply)
 
     # FIXED: Moved 4 spaces to the left out of the inner event_generator block!
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 # -------------------------------------------------------
-# POST /generate-question  — UNCHANGED for frontend
+# POST /generate-question — UNCHANGED for frontend
 # -------------------------------------------------------
 @app.post("/generate-question")
 async def generate_question(request: GenerateRequest):
@@ -262,7 +333,7 @@ async def generate_question(request: GenerateRequest):
 
 
 # -------------------------------------------------------
-# GET /  — UNCHANGED
+# GET / — UNCHANGED
 # -------------------------------------------------------
 @app.get("/")
 async def root():
@@ -270,8 +341,10 @@ async def root():
         "message": "UTME26 AI backend is running and ready!",
         "endpoints": ["/ai-query", "/generate-question", "/health"]
     }
+
+
 # -------------------------------------------------------
-# GET /health  — UNCHANGED (used by loading screen), now also reports which
+# GET /health — UNCHANGED (used by loading screen), now also reports which
 # fallback provider keys are loaded so you can see at a glance what's active
 # -------------------------------------------------------
 @app.get("/health")
@@ -314,7 +387,7 @@ async def search_user_docs(userid: str, q: str, limit: int = 10):
     try:
         manager = UserDocManager(userid)
         results = manager.search_by_hint(q, limit=limit)
-        print(f"[DOC] search {userid} for '{q}' → {len(results)} results")
+        print(f"[DOC] search {userid} for '{q}' -> {len(results)} results")
         return {"status": "ok", "query": q, "results": results}
     except Exception as e:
         print(f"[DOC] search failed for {userid}: {e}")
@@ -329,7 +402,7 @@ async def list_user_docs(userid: str):
     try:
         manager = UserDocManager(userid)
         docs = manager.list_all_docs()
-        print(f"[DOC] list {userid} → {len(docs)} docs")
+        print(f"[DOC] list {userid} -> {len(docs)} docs")
         return {"status": "ok", "userid": userid, "docs": docs}
     except Exception as e:
         print(f"[DOC] list failed for {userid}: {e}")
