@@ -561,6 +561,22 @@ def generate_image(prompt: str, width: int = 1024, height: int = 1024) -> list:
     import urllib.parse
     if not prompt:
         return []
+
+    # Defensive cleanup: the model has been observed passing along leaked
+    # instructional preamble (e.g. a bracketed "[ADVANCED THINKING ENABLED
+    # - ...]" system/persona block that precedes the real user message in
+    # some setups) as if it were part of the visual description, instead
+    # of extracting just the actual thing to draw. A prompt like that
+    # produces unrelated, garbage generations — Pollinations tries to
+    # render literal instruction text. Strip any long leading bracketed
+    # block and hard-cap length; a real image prompt doesn't need to be
+    # this long, and this alone fixes it regardless of where the leak is
+    # actually coming from upstream.
+    prompt = re.sub(r'^\s*\[[^\]]{20,}\]\s*', '', prompt).strip()
+    prompt = prompt[:300]
+    if not prompt:
+        return []
+
     encoded = urllib.parse.quote(prompt)
     seed = abs(hash(prompt)) % 1_000_000
     url = (
