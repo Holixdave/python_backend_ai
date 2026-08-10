@@ -320,11 +320,19 @@ def execute_tool(tool_name: str, ai_args: dict, session_context: dict):
 
     try:
         sig = inspect.signature(fn)
-        final_args = {}
+        # BUG FIX: session values MUST be applied last. The old order did
+        # final_args.update(ai_args) AFTER injecting session values, which
+        # meant a guessed/wrong userid (or prompt/history/image_urls) from
+        # the AI's own JSON silently overwrote the real, securely-injected
+        # session value — completely defeating the purpose of
+        # SESSION_INJECTED_PARAMS. Real symptom this caused: get_user_profile
+        # kept getting called with the model's own literal "current_user"
+        # guess instead of the actual logged-in user's id, every time the
+        # model included a userid key in its own tool-call JSON at all.
+        final_args = dict(ai_args)  # AI-supplied args fill in first...
         for pname in sig.parameters:
             if pname in SESSION_INJECTED_PARAMS and pname in session_context:
-                final_args[pname] = session_context[pname]
-        final_args.update(ai_args)  # AI-supplied args always win for non-session params
+                final_args[pname] = session_context[pname]  # ...session values ALWAYS win for these
 
         if inspect.isgeneratorfunction(fn):
             last_event = None
