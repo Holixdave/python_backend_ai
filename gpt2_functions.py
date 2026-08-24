@@ -429,7 +429,7 @@ def get_user_notes(userid: str, limit: int = 20) -> list:
         return []
 
 
-def save_study_note(userid: str, content: str, subject: str = None) -> bool:
+def save_study_note(userid: str, content: str, title: str = None) -> bool:
     """
     Save a drafted question/note to the user's JAMB study notebook, stored
     at users/{userid}/study_notes/{auto_id}. Never raises; returns False
@@ -440,8 +440,8 @@ def save_study_note(userid: str, content: str, subject: str = None) -> bool:
     try:
         firestore.client().collection("users").document(userid).collection("study_notes").add({
             "content": content,
-            "subject": subject,
-            "created_at": firestore.SERVER_TIMESTAMP,
+            "title": title,
+            "timestamp": firestore.SERVER_TIMESTAMP,
         })
         return True
     except Exception as e:
