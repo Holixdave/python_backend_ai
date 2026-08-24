@@ -928,7 +928,8 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
                     {"role": "user", "content": user_payload},
                 ],
                 "temperature": 0.0,
-                "max_tokens": 200,
+                "max_tokens": 400,          # was 200 — gpt-oss burns tokens on internal reasoning before writing content
+                "reasoning_effort": "low",  # this is a routing classifier, not a hard problem — keep reasoning minimal so tokens go to the actual JSON
             },
             timeout=10,
         )
