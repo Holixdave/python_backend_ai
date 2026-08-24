@@ -852,7 +852,7 @@ def fetch_webpage(url: str, max_chars: int = 6000) -> str:
 # user never sees an error, they just get the slightly-dumber-but-safe
 # routing instead.
 # ---------------------------------------------------------------------------
-INTENT_MODEL = "llama-3.1-8b-instant"
+INTENT_MODEL = "openai/gpt-oss-20b"   # was: "llama-3.1-8b-instant" — Groq killed it Aug 16, 2026
 
 CODING_KEYWORDS = [
     "code", "write", "build", "create", "implement", "function",
