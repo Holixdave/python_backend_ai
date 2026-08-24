@@ -752,14 +752,30 @@ def search_web(query: str, max_results: int = 20):
     """
     Tries each search engine in order. Returns (formatted_text, sources).
     sources is a list of {"title": str, "url": str} for the frontend to render.
+
+    ORDER CHANGED: Brave and Tavily (real APIs) now go first — ddgs (free,
+    unofficial DuckDuckGo scraper) goes LAST. ddgs frequently gets
+    rate-limited/soft-blocked on server IPs and silently returns generic,
+    low-relevance junk instead of raising an error, which used to make this
+    function think the search "succeeded" and stop before ever trying the
+    real APIs.
+
+    Also added: a relevance check. If NONE of the query's real keywords
+    appear anywhere in a given engine's results, that engine's output is
+    treated as junk and we move to the next engine instead of trusting it.
+
     On total failure, returns ("", []) silently — no raw error text gets
     injected into the model's context or shown to the user.
     """
     print(f"[SEARCH TRIGGERED] Query: {query}")
+
+    query_words = set(re.findall(r"[a-z0-9]+", query.lower()))
+    query_words = {w for w in query_words if len(w) > 2}  # drop tiny stopword-ish tokens
+
     for engine_name, engine_fn in (
-        ("ddgs", _search_ddgs),
         ("brave", _search_brave),
         ("tavily", _search_tavily),
+        ("ddgs", _search_ddgs),  # unreliable on server IPs — last resort only
     ):
         try:
             results = engine_fn(query, max_results)
@@ -772,6 +788,21 @@ def search_web(query: str, max_results: int = 20):
 
         if not results:
             continue
+
+        # Relevance check — reject results that don't actually match the
+        # query. This is what catches ddgs's silent junk-fallback behavior
+        # (e.g. "JAMB registration" returning door-jamb architecture pages).
+        if query_words:
+            hits = 0
+            for r in results:
+                haystack = f"{r.get('title', '')} {r.get('body', '')}".lower()
+                haystack_words = set(re.findall(r"[a-z0-9]+", haystack))
+                if query_words & haystack_words:
+                    hits += 1
+            if hits == 0:
+                print(f"[SEARCH] {engine_name} results don't match query keywords "
+                      f"({query_words}) — treating as junk, trying next engine")
+                continue
 
         formatted = ""
         sources = []
@@ -787,7 +818,7 @@ def search_web(query: str, max_results: int = 20):
         print(f"[SEARCH] succeeded via {engine_name} ({len(results)} results)")
         return formatted.strip(), sources
 
-    print("[SEARCH] all engines failed or unavailable — continuing without web context")
+    print("[SEARCH] all engines failed, were unavailable, or returned irrelevant junk")
     return "", []
 def fetch_webpage(url: str, max_chars: int = 6000) -> str:
     """
