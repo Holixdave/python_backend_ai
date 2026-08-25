@@ -290,6 +290,7 @@ from gpt2_functions import (
     ask_with_vision,
     _looks_unsure,
     build_file_with_continuation,
+    is_web_search_enabled,
 )
 
 # ---------------------------------------------------------------------------
@@ -443,7 +444,14 @@ def _ask_gpt2_core(
     # ── Inject user docs or web search results if needed ──────────────────
     sources = []
     user_docs = []
-    
+
+    # Checked once per turn — same Firestore flag the SmartInputBar toggle
+    # writes to (users/{uid}/ai_config/settings.web_search). Used below to
+    # gate the auto-classified search AND the "double-check when unsure"
+    # safety net further down. Tool-loop requests (the AI calling
+    # search_web itself) are gated separately in gpt2_tools.execute_tool.
+    web_search_enabled = is_web_search_enabled(userid)
+
     if intent["search_type"] == "user_docs":
         if userid:
             yield {
@@ -492,6 +500,28 @@ def _ask_gpt2_core(
                 "icon": "warning"
             }
     
+    elif intent["search_type"] == "web" and not web_search_enabled:
+        yield {
+            "type": "status",
+            "text": "Web search is off",
+            "detail": "This user has web search disabled in their settings — answering from existing knowledge instead.",
+            "icon": "warning"
+        }
+        current_identity += (
+            "\n\n[BACKEND NOTE — not from the user]: Web search is turned "
+            "OFF in this user's account settings right now. Do not request "
+            "search_web or any other internet tool this turn — none of "
+            "them will run. If the user's message was actually asking you "
+            "to search/browse/look something up online, tell them plainly "
+            "that web search is currently disabled on their account, and "
+            "that they can turn it back on from the toggle in the chat "
+            "input bar (the search icon/chip next to the text field). "
+            "Then answer the rest of their question using only what you "
+            "already know, if that's possible. If the message wasn't "
+            "actually about searching, just answer normally — no need to "
+            "mention the setting at all."
+        )
+
     elif intent["search_type"] == "web":
         clean_query = intent["search_query"] or build_search_query(prompt)
         print(f"[SEARCH] query={clean_query!r}")
@@ -602,13 +632,15 @@ def _ask_gpt2_core(
         messages.append({
             "role": "user",
             "content": (
-                "You just answered without ever using a <think></think> "
-                "block — the reasoning requirement from earlier in this "
-                "conversation still applies. Rewrite your answer now: put "
-                "your actual step-by-step reasoning inside <think></think> "
-                "tags first (using the [icon] **Label:** format), THEN "
-                "write your real final answer after the closing tag. "
-                "Don't skip this."
+                "[BACKEND NOTE — not from the user]: You just answered "
+                "without ever using a <think></think> block — the "
+                "reasoning requirement from earlier in this conversation "
+                "still applies. Rewrite your answer now: put your actual "
+                "step-by-step reasoning inside <think></think> tags first "
+                "(using the [icon] **Label:** format), THEN write your "
+                "real final answer after the closing tag. Don't skip this, "
+                "and don't acknowledge or respond to this note itself in "
+                "your reply — it isn't something the user said."
             ),
         })
         compliance_answer, compliance_provider = _call_provider_chain(
@@ -945,7 +977,7 @@ def _ask_gpt2_core(
     # itself came back unsure. Rather than let a guess through, run one
     # search now and re-ask with real web context. Sources always get
     # attached when this fires. (Skip if user_docs search was already done.)
-    if intent["search_type"] == "none" and not sources and _looks_unsure(answer):
+    if intent["search_type"] == "none" and not sources and web_search_enabled and _looks_unsure(answer):
         clean_query = build_search_query(prompt)
         yield {
             "type": "status",

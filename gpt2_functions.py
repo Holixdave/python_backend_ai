@@ -383,6 +383,43 @@ def get_user_profile(userid: str) -> dict:
         return {"name": None, "found": False}
 
 
+def is_web_search_enabled(userid: Optional[str]) -> bool:
+    """
+    Reads users/{userid}/ai_config/settings.web_search from Firestore — the
+    exact doc/field the Flutter app's SmartInputBar toggle reads and writes
+    (see _loadWebSearchConfig / _setWebSearchEnabled in smart_input_bar.dart).
+
+    This is the ONE place the backend checks that flag. Every internet-
+    touching tool (search_web, search_images, fetch_webpage, search_github,
+    fetch_github_file, fetch_document, fetch_page_preview_image) routes
+    through here — via gpt2_tools.execute_tool's WEB_TOOLS gate, and via the
+    direct calls in gpt2_test.py — before it's allowed to run.
+
+    Defaults to True (search stays on) when there's no userid, the doc/field
+    doesn't exist yet, or Firestore errors — matches the frontend's own
+    default so a slow/missing doc never silently blocks someone who never
+    touched the toggle. Never raises.
+    """
+    if not userid:
+        return True
+    try:
+        doc = (
+            firestore.client()
+            .collection("users")
+            .document(userid)
+            .collection("ai_config")
+            .document("settings")
+            .get()
+        )
+        if not doc.exists:
+            return True
+        enabled = (doc.to_dict() or {}).get("web_search")
+        return enabled if isinstance(enabled, bool) else True
+    except Exception as e:
+        print(f"[WEB_SEARCH_CONFIG] failed for userid={userid!r}: {e}")
+        return True
+
+
 def save_user_note(userid: str, note: str) -> bool:
     """
     Jot down a fact/preference about the user for later recall, stored at

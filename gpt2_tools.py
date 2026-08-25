@@ -57,7 +57,23 @@ from gpt2_functions import (
     schedule_reminder,
     redisplay_images,
     generate_image,
+    is_web_search_enabled,
 )
+
+# Tools that reach out to the internet on the user's behalf. Every one of
+# these is gated by the user's own web_search toggle (see
+# is_web_search_enabled in gpt2_functions.py) before it's allowed to run —
+# not just search_web. fetch_page_preview_image/fetch_webpage/search_github/
+# fetch_github_file/fetch_document all hit external URLs/APIs too.
+WEB_TOOLS = {
+    "search_web",
+    "search_images",
+    "fetch_page_preview_image",
+    "fetch_webpage",
+    "search_github",
+    "fetch_github_file",
+    "fetch_document",
+}
 
 # ---------------------------------------------------------------------------
 # REGISTRY — every function the AI is allowed to self-trigger. Keys are the
@@ -323,6 +339,19 @@ def execute_tool(tool_name: str, ai_args: dict, session_context: dict):
     fn = TOOL_REGISTRY.get(tool_name)
     if fn is None:
         return False, f"Unknown tool '{tool_name}'."
+
+    if tool_name in WEB_TOOLS and not is_web_search_enabled(session_context.get("userid")):
+        return False, (
+            "Web search is turned OFF in this user's account settings — "
+            f"'{tool_name}' was blocked before it ran, and no internet "
+            "tool will run this turn. Tell the user plainly that web "
+            "search is currently disabled on their account, and that they "
+            "can turn it back on from the toggle in the chat input bar "
+            "(the search icon/chip next to the text field) — then answer "
+            "the rest of their request using only what you already know, "
+            "if possible. Do not request search_web or any other internet "
+            "tool again this turn."
+        )
 
     try:
         sig = inspect.signature(fn)
