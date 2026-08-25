@@ -383,6 +383,43 @@ def get_user_profile(userid: str) -> dict:
         return {"name": None, "found": False}
 
 
+def web_search_off_note() -> str:
+    """
+    Short internal status-step line shown while search is disabled by the
+    user's own settings — this is the "detail" text inside the collapsible
+    Thought Process step, NOT the final visible answer (the final answer
+    was already fully AI-written before this — see the note in gpt2_test.py
+    around web_search_enabled).
+
+    Generated fresh via a small, cheap model call each time instead of one
+    fixed hardcoded string, so it doesn't read as the exact same canned
+    line on every single turn for a user who has search off long-term.
+    Falls back to one plain fixed line if the model call fails for any
+    reason — this is decorative, never worth blocking a turn over.
+    """
+    messages = [
+        {"role": "system", "content": (
+            "Write ONE short internal status note, max 12 words, in the "
+            "same terse third-person style as status steps like 'Reading "
+            "your question...' or 'Writing answer...'. It should convey "
+            "that web search is off in the user's settings, so the "
+            "assistant is answering from what it already knows. Vary the "
+            "exact phrasing each time — don't default to one fixed "
+            "sentence. Reply with ONLY the note text, nothing else, no "
+            "quotes."
+        )},
+        {"role": "user", "content": "Write the note now."},
+    ]
+    try:
+        answer, _ = _call_provider_chain(TEXT_PROVIDERS, messages, temperature=0.9, max_tokens=40)
+        note = (answer or "").strip().strip('"').strip()
+        if note:
+            return note
+    except Exception as e:
+        print(f"[WEB_SEARCH_NOTE] generation failed: {e}")
+    return "Web search is off — answering from existing knowledge instead."
+
+
 def is_web_search_enabled(userid: Optional[str]) -> bool:
     """
     Reads users/{userid}/ai_config/settings.web_search from Firestore — the
@@ -1109,6 +1146,29 @@ def _split_into_steps(thinking):
 _LEADING_BOLD_HEADER_RE = re.compile(r"^\s*\*\*(.+?)\*\*\s*:?", re.DOTALL)
 _LEADING_ICON_TAG_RE = re.compile(r"^\s*\[([a-zA-Z_]+)\]\s*")
 
+# Code-level backstop for the leak REASONING_STEP_HINT's rule #4 asks the
+# model itself to avoid: quoting its own literal markdown/formatting syntax
+# (e.g. an inline-code-wrapped "### **Section Title**") inside a thinking
+# step that gets shown to the user in the Thought Process panel. Removed
+# entirely — this content is junk, not a real term worth keeping.
+_LEAKED_SYNTAX_RE = re.compile(r"`[^`\n]*[#*_]{2,}[^`\n]*`")
+
+# The Thought Process panel is plain text, not a markdown renderer — any
+# leftover backtick-wrapped inline code (e.g. `useState`, `search_web`)
+# shows up as literal grave-accent characters and looks broken instead of
+# rendering as a styled code chip. Unwrap these: keep the real word/term,
+# just drop the backticks around it. Runs AFTER _LEAKED_SYNTAX_RE above, so
+# genuine leaked-syntax spans are already gone by the time this runs.
+_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+
+
+def _scrub_leaked_formatting_syntax(text: str) -> str:
+    if not text:
+        return text
+    text = _LEAKED_SYNTAX_RE.sub("", text)
+    text = _INLINE_CODE_RE.sub(r"\1", text)
+    return text.strip()
+
 
 def _extract_step_icon(step_text: str, default: str = "thinking") -> tuple:
     """
@@ -1116,7 +1176,9 @@ def _extract_step_icon(step_text: str, default: str = "thinking") -> tuple:
     REASONING_STEP_HINT asks the model for — e.g. "[verifying] **Checking
     definition:** ...". Returns (icon, cleaned_step_text) where cleaned_step_text
     has the tag stripped so it doesn't show up twice (once as the real icon,
-    once as leftover text in the detail).
+    once as leftover text in the detail). Also runs the leaked-syntax scrub
+    (see _scrub_leaked_formatting_syntax above) so this stays the single
+    place every step's visible text passes through before reaching the UI.
 
     Falls back to `default` whenever there's no tag, the tag isn't one of
     REASONING_STEP_ICONS (guards against a hallucinated icon name reaching
@@ -1128,10 +1190,10 @@ def _extract_step_icon(step_text: str, default: str = "thinking") -> tuple:
 
     match = _LEADING_ICON_TAG_RE.match(step_text)
     if not match:
-        return default, step_text
+        return default, _scrub_leaked_formatting_syntax(step_text)
 
     icon = match.group(1).strip().lower()
-    cleaned = step_text[match.end():].lstrip()
+    cleaned = _scrub_leaked_formatting_syntax(step_text[match.end():].lstrip())
     if icon not in REASONING_STEP_ICONS:
         icon = default
     return icon, cleaned

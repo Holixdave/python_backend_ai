@@ -291,6 +291,7 @@ from gpt2_functions import (
     _looks_unsure,
     build_file_with_continuation,
     is_web_search_enabled,
+    web_search_off_note,
 )
 
 # ---------------------------------------------------------------------------
@@ -504,7 +505,7 @@ def _ask_gpt2_core(
         yield {
             "type": "status",
             "text": "Web search is off",
-            "detail": "This user has web search disabled in their settings — answering from existing knowledge instead.",
+            "detail": web_search_off_note(),
             "icon": "warning"
         }
         current_identity += (
