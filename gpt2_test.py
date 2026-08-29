@@ -181,6 +181,50 @@ TEXT_PROVIDERS = [
     },
 ]
 
+# NEW — for requests classify_intent flags "complex": true. TEXT_PROVIDERS
+# above is ordered fastest/cheapest-first (flash-lite Gemini variants,
+# then free OpenRouter models), which is the right default for quick
+# factual answers but means even a genuinely hard reasoning/coding request
+# used to start on your WEAKEST model and only reach the stronger ones
+# (qwen3.6-27b, gpt-oss-120b) after every flash model failed or rate-
+# limited. This chain flips that: strongest reasoning-capable options
+# first, flash models kept at the tail purely as a last-resort fallback
+# if Groq/Cerebras are both down.
+COMPLEX_TEXT_PROVIDERS = [
+    {
+        "name": "groq-qwen3.6-27b",
+        "enabled": bool(GROQ_API_KEY),
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {GROQ_API_KEY}"},
+        "model": "qwen/qwen3.6-27b",
+        "supports_reasoning_effort": True,
+    },
+    {
+        "name": "cerebras-gpt-oss-120b",
+        "enabled": bool(CEREBRAS_API_KEY),
+        "url": "https://api.cerebras.ai/v1/chat/completions",
+        "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {CEREBRAS_API_KEY}"},
+        "model": "gpt-oss-120b",
+    },
+    {
+        "name": "groq-gpt-oss-20b",
+        "enabled": bool(GROQ_API_KEY),
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {GROQ_API_KEY}"},
+        "model": "openai/gpt-oss-20b",
+    },
+    # Strong free options from the OpenRouter chain, pulled to the front —
+    # nemotron-3-ultra is your biggest/best-reasoning free model per the
+    # comment on FREE_MODEL_CHAIN below, but it used to sit behind every
+    # Gemini flash model in TEXT_PROVIDERS' order.
+    _openrouter_provider("nvidia/nemotron-3-ultra-550b-a55b:free"),
+    _openrouter_provider("nvidia/nemotron-3-super-120b-a12b:free"),
+
+    # ── Fallback: same flash chain as the simple path, last resort only ──
+    *[_gemini_text_provider(m) for m in GEMINI_MODELS_CHAIN],
+    *[_openrouter_provider(m) for m in FREE_MODEL_CHAIN],
+]
+
 VISION_PROVIDERS = [
     # ── Primary Vision: Groq (fast, and NOT the chronically rate-limited
     # Gemini quota this app's logs show hitting 429 on nearly every text
@@ -695,7 +739,7 @@ def _ask_gpt2_core(
     }
 
     answer, provider = _call_provider_chain(
-        TEXT_PROVIDERS,
+        COMPLEX_TEXT_PROVIDERS if intent["complex"] else TEXT_PROVIDERS,
         messages,
         temperature=0.2 if intent["complex"] else 0.6,
         max_tokens=MAX_ANSWER_TOKENS,
