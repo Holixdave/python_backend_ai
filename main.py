@@ -298,7 +298,7 @@ async def ask_ai_stream(request: QuestionRequest, db: Session = Depends(get_db))
                 final_answer = event["answer"]
                 final_sources = event.get("sources", [])
                 final_images = event.get("images", [])
-                yield f"data: {json.dumps({'type': 'final', 'answer': event['answer'], 'sources': event.get('sources', []), 'images': event.get('images', []), 'file': event.get('file')})}\n\n"
+                yield f"data: {json.dumps({'type': 'final', 'answer': event['answer'], 'sources': event.get('sources', []), 'images': event.get('images', []), 'file': event.get('file'), 'files': event.get('files', [])})}\n\n"
 
         # NEW: persist the completed turn once the stream is done — the
         # "final" event above always carries the full answer text plus

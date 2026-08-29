@@ -296,7 +296,8 @@ from gpt2_functions import (
     _friendly_failure_message,
     ask_with_vision,
     _looks_unsure,
-    build_file_with_continuation,
+    build_file,
+    redisplay_file,
     is_web_search_enabled,
     web_search_off_note,
     save_uploaded_files_as_docs,
@@ -355,6 +356,7 @@ def ask_gpt2(
         "images": final.get("images", []),
         "provider": final["provider"],
         "file": final.get("file"),
+        "files": final.get("files", []),
     }
 
 
@@ -451,7 +453,8 @@ def _ask_gpt2_core(
     ]
 
     image_results = []  # populated automatically whenever search_images succeeds
-    file_result = None  # populated later only if the model calls build_file itself
+    file_results = []  # every successful build_file/redisplay_file call this turn, in order
+    file_result = None  # back-compat alias — last file, for the legacy singular "file" field
 
     # NEW: non-image attachments (html/txt/md/etc) — fetch each one's raw
     # content, auto-save it into the user's UserDocManager (so
@@ -700,7 +703,7 @@ def _ask_gpt2_core(
     )
 
     if answer is None:
-        yield {"type": "final", "answer": _friendly_failure_message(), "sources": [], "images": image_results, "provider": None, "file": file_result, "suggestions": []}
+        yield {"type": "final", "answer": _friendly_failure_message(), "sources": [], "images": image_results, "provider": None, "file": file_result, "files": file_results, "suggestions": []}
         return
 
     # NEW — pull any <think>...</think> block Qwen returned inline out of
@@ -902,7 +905,7 @@ def _ask_gpt2_core(
                     TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=MAX_ANSWER_TOKENS,
                 )
                 if answer is None:
-                    yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None, "file": file_result, "suggestions": []}
+                    yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None, "file": file_result, "files": file_results, "suggestions": []}
                     return
                 answer, model_thinking = _split_thinking(answer)
                 if model_thinking:
@@ -924,29 +927,35 @@ def _ask_gpt2_core(
             "icon": "tool",
         }
 
-        # SPECIAL-CASED DISPATCH — two tools need more than execute_tool's
-        # generic "drain silently, stringify the result" handling:
+        # SPECIAL-CASED DISPATCH — build_file and redisplay_file need more
+        # than execute_tool's generic "drain silently, stringify" handling:
         #
         #   build_file: it's a generator that yields real, user-visible
-        #   progress ("Building output.txt...", "Reviewing for accuracy...")
-        #   — draining it silently (like execute_tool does for any other
-        #   generator tool) would hide that from the sheet. Called directly
-        #   here instead so those events stream live, and its real
-        #   file_result dict is kept (not just stringified) so the frontend
-        #   still gets a proper downloadable file card.
+        #   progress ("Building output.txt...", "Uploading...") — draining
+        #   it silently would hide that from the sheet. Called directly so
+        #   those events stream live, and its real file_result dict is
+        #   appended to file_results (plural, see multi-file rework notes
+        #   above build_file()'s definition in gpt2_functions.py).
         #
-        #   verify_image_relevance: its return value needs to end up as the
-        #   real `image_results` list (structured data for the gallery),
-        #   not just text fed back to the model.
+        #   verify_image_relevance / redisplay_file: return values need to
+        #   end up as the real image_results/file_results lists (structured
+        #   data for the gallery/file card), not just text fed back to the
+        #   model.
         if call_data["tool"] == "build_file":
+            # filename + content are REAL AI-supplied args now — this is
+            # the actual fix. The old version discarded everything except
+            # filename and re-derived content itself via a SEPARATE,
+            # disconnected model call, seeded with just the raw original
+            # message — so a multi-file plan the orchestrating AI had
+            # already worked out never made it into what got built.
+            # userid still comes from session, never trusted from the AI.
             file_args = {
-                "prompt": session_context["prompt"],
                 "filename": call_data["args"].get("filename") or "output.txt",
+                "content": call_data["args"].get("content") or "",
                 "userid": session_context["userid"],
-                "history": session_context["history"],
             }
             file_event = None
-            for event in build_file_with_continuation(**file_args):
+            for event in build_file(**file_args):
                 if event.get("type") == "file_result":
                     file_event = event
                 else:
@@ -954,7 +963,8 @@ def _ask_gpt2_core(
             success = bool(file_event and file_event.get("success"))
             tool_result = json.dumps(file_event, default=str) if file_event else "Tool produced no output."
             if success:
-                file_result = file_event  # carried through to the final yield below
+                file_results.append(file_event)
+                file_result = file_event  # legacy singular alias — last file wins, back-compat only
         else:
             success, tool_result = execute_tool(call_data["tool"], call_data["args"], session_context)
             if success and call_data["tool"] in ("search_images", "redisplay_images", "generate_image"):
@@ -969,6 +979,18 @@ def _ask_gpt2_core(
                     if isinstance(parsed, list):
                         image_results = parsed
                         session_context["image_results"] = parsed
+                except Exception:
+                    pass
+            elif success and call_data["tool"] == "redisplay_file":
+                # Same idea as image_results above — redisplay_file returns
+                # a real {"success","url","filename"} dict that needs to
+                # land in file_results (what actually reaches the frontend
+                # as "files"), not just be fed back to the model as text.
+                try:
+                    parsed = json.loads(tool_result)
+                    if isinstance(parsed, dict) and parsed.get("success"):
+                        file_results.append(parsed)
+                        file_result = parsed
                 except Exception:
                     pass
             elif success and call_data["tool"] in ("search_web", "search_github", "fetch_github_file", "fetch_document"):
@@ -1068,7 +1090,7 @@ def _ask_gpt2_core(
             TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=MAX_ANSWER_TOKENS,
         )
         if answer is None:
-            yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None, "file": file_result, "suggestions": []}
+            yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None, "file": file_result, "files": file_results, "suggestions": []}
             return
 
         answer, model_thinking = _split_thinking(answer)
@@ -1140,9 +1162,9 @@ def _ask_gpt2_core(
                             "icon": step_icon
                         }
                 retry_answer_clean, retry_suggestions = extract_suggestions(strip_tool_markers(retry_answer))
-                yield {"type": "final", "answer": retry_answer_clean, "sources": fallback_sources, "images": image_results, "provider": retry_provider, "file": file_result, "suggestions": retry_suggestions}
+                yield {"type": "final", "answer": retry_answer_clean, "sources": fallback_sources, "images": image_results, "provider": retry_provider, "file": file_result, "files": file_results, "suggestions": retry_suggestions}
                 return
 
     final_answer_clean, final_suggestions = extract_suggestions(strip_tool_markers(answer))
-    yield {"type": "final", "answer": final_answer_clean, "sources": sources, "images": image_results, "provider": provider, "file": file_result, "suggestions": final_suggestions}
+    yield {"type": "final", "answer": final_answer_clean, "sources": sources, "images": image_results, "provider": provider, "file": file_result, "files": file_results, "suggestions": final_suggestions}
 

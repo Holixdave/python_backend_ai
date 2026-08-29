@@ -1758,13 +1758,91 @@ def _verify_file_is_clean(filename: str, content: str) -> tuple:
     return True, "\n".join(cleaned_lines), sorted(bad_lines)
 
 
+def build_file(filename: str, content: str, userid: Optional[str] = None):
+    """
+    Uploads a file whose content the AI has ALREADY WRITTEN ITSELF, as a
+    real argument in its own tool call — `content` is the complete,
+    finished file text, not a request for this tool to go write one.
+
+    REPLACES build_file_with_continuation(): that version only ever took
+    `filename` from the AI's tool-call args, ignored everything else, and
+    opened a SEPARATE model conversation seeded with just the raw original
+    user message to generate content from scratch. That meant whatever
+    specific plan the orchestrating AI had already worked out (e.g. "file
+    1 is the login page styled X, file 2 is the dashboard styled Y") was
+    thrown away — every file came out generic and disconnected from the
+    real plan, and only one file could ever survive per turn since the
+    caller kept a single `file_result` variable. Now the AI supplies exact
+    content per file, in its own <<TOOL_CALL>>, so multiple distinct
+    build_file calls in one turn each carry their own real content.
+
+    Generator — yields the same {"type": "status", ...} shape as before,
+    plus a final {"type": "file_result", ...} event.
+    """
+    if not filename:
+        yield {"type": "file_result", "success": False, "url": None, "filename": "file"}
+        return
+    if not content or not content.strip():
+        yield {"type": "status", "text": f"{filename} had no content to save", "detail": None, "icon": "warning"}
+        yield {"type": "file_result", "success": False, "url": None, "filename": filename}
+        return
+
+    yield {"type": "status", "text": f"Building {filename}...", "detail": None, "icon": "build"}
+
+    # Strip a wrapping ```fence``` if the model added one anyway — the one
+    # bit of cleanup still worth doing even on trusted, AI-supplied content.
+    clean_content = _FENCE_RE.sub("", content).strip()
+
+    yield {"type": "status", "text": "Uploading file...", "detail": None, "icon": "upload"}
+    file_url = _upload_to_supabase(userid or "anonymous", filename, clean_content)
+
+    if file_url and userid:
+        try:
+            manager = UserDocManager(userid)
+            manager.save_doc(
+                filename=f"ref_{filename}.md",
+                content=f"File stored at: {file_url}",
+                hint=filename,
+                tags=["ai-built-file", filename.split(".")[-1]],
+                metadata={"supabase_url": file_url, "original_filename": filename},
+            )
+        except Exception as e:
+            print(f"[FILEBUILD] failed to register doc reference: {e}")
+
+    yield {
+        "type": "status",
+        "text": "Done" if file_url else "File built but upload failed",
+        "detail": None,
+        "icon": "success" if file_url else "warning",
+    }
+    yield {
+        "type": "file_result",
+        "success": bool(file_url),
+        "url": file_url,
+        "filename": filename,
+    }
+
+
+def redisplay_file(filename: str, url: str) -> dict:
+    """
+    Re-emits a file card for a file that was already built/uploaded
+    earlier in THIS conversation — for when the user says "send that file
+    again" / "drop it again" without wanting it rebuilt from scratch.
+    Mirrors redisplay_images: does NOT regenerate content or re-upload,
+    it only reshapes what the AI already recalls (filename + real url,
+    e.g. from its own [INTERNAL MEMORY NOTE] in earlier history) into the
+    same shape build_file's file_result event uses.
+    """
+    if not url or not filename:
+        return {"success": False, "url": None, "filename": filename or "file"}
+    return {"success": True, "url": url, "filename": filename}
+
+
 def build_file_with_continuation(prompt: str, filename: str, userid: Optional[str], history: list):
     """
-    Generator — builds a complete file, auto-continuing past truncation
-    using the provider's own finish_reason as ground truth, then uploads
-    it and registers it in the user's docs. Yields the same
-    {"type": "status", ...} shape as the rest of the pipeline, plus a
-    final {"type": "file_result", ...} event.
+    DEPRECATED — no longer registered as a tool (see build_file() above,
+    which replaced it). Left in place only for reference/rollback; not
+    imported or called anywhere anymore.
     """
     build_system = (
         "You are building a complete, real file for the user based on their "
