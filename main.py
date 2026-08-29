@@ -52,6 +52,8 @@ class QuestionRequest(BaseModel):
     # safe to delete from the frontend payload whenever convenient.
     history: List[ChatMessage] = Field(default_factory=list)
     imageUrls: List[str] = Field(default_factory=list)
+    fileUrls: List[str] = Field(default_factory=list)    # NEW — non-image attachments (html/txt/md/etc)
+    fileNames: List[str] = Field(default_factory=list)   # NEW — matching filenames, same order as fileUrls
     userid: str = None
 
 
@@ -235,7 +237,7 @@ async def ask_ai(request: QuestionRequest, db: Session = Depends(get_db)):
     # 2. AI provider chain (Groq -> fallback providers) — now with web search
     # sources returned alongside the answer when search was used.
     image_urls = request.imageUrls or []
-    result = ask_gpt2(user_question, history=chat_history, image_urls=image_urls if image_urls else None, userid=request.userid)
+    result = ask_gpt2(user_question, history=chat_history, image_urls=image_urls if image_urls else None, file_urls=request.fileUrls or None, file_names=request.fileNames or None, userid=request.userid)
 
     # NEW: persist this turn to the backend memory for next time. The DB
     # gets the enriched version (answer + tool-result notes); the frontend
@@ -289,7 +291,7 @@ async def ask_ai_stream(request: QuestionRequest, db: Session = Depends(get_db))
         final_answer = None
         final_sources = []
         final_images = []
-        for event in ask_gpt2_stream(user_question, history=chat_history, image_urls=image_urls if image_urls else None, userid=request.userid):
+        for event in ask_gpt2_stream(user_question, history=chat_history, image_urls=image_urls if image_urls else None, file_urls=request.fileUrls or None, file_names=request.fileNames or None, userid=request.userid):
             if event["type"] == "status":
                 yield f"data: {json.dumps({'type': 'status', 'text': event['text'], 'detail': event.get('detail'), 'icon': event.get('icon')})}\n\n"
             elif event["type"] == "final":

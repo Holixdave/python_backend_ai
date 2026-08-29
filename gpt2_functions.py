@@ -503,6 +503,119 @@ def get_user_notes(userid: str, limit: int = 20) -> list:
         return []
 
 
+def list_user_docs(userid: str) -> list:
+    """
+    List every doc saved for this user (filename, hint, tags, date, size —
+    NOT the full content, this is just the menu). Call this first when the
+    user refers to "my file" / "the file I sent" / "that html file" without
+    naming it exactly, so you can pick the right doc_id before reading it.
+    Never raises; returns [] if the user has no saved docs or on failure.
+    """
+    if not userid:
+        return []
+    try:
+        return UserDocManager(userid).list_all_docs()
+    except Exception as e:
+        print(f"[USER_DOCS] list failed for userid={userid!r}: {e}")
+        return []
+
+
+def read_user_doc(userid: str, doc_id: str) -> dict:
+    """
+    Read one saved doc's FULL content by its doc_id (this is the filename,
+    e.g. "help-1.html" — get the exact id from list_user_docs first if
+    unsure). Returns {"id", "filename", "content", "size", "hint", "tags",
+    "date"} or {"error": "..."} if no doc with that id exists for this user.
+    """
+    if not userid:
+        return {"error": "no userid on this session"}
+    try:
+        manager = UserDocManager(userid)
+        doc = manager.get_doc(doc_id)
+        if doc is None:
+            return {"error": f"No saved doc found with id '{doc_id}' for this user."}
+        return doc
+    except Exception as e:
+        print(f"[USER_DOCS] read failed for userid={userid!r}, doc_id={doc_id!r}: {e}")
+        return {"error": f"Failed to read '{doc_id}': {e}"}
+
+
+def read_doc_lines(userid: str, doc_id: str, start_line: int = 1, end_line: Optional[int] = None) -> dict:
+    """
+    Read a specific LINE RANGE (1-indexed, inclusive) from a saved doc
+    instead of pulling the whole thing — use this on a large file before
+    editing, the same way you'd `sed -n 'start,endp' file`. Leave end_line
+    out to read to the end of the file. Returns {"lines": {line_no: text,
+    ...}, "total_lines": int} so you always know how many lines exist, or
+    {"error": "..."} if the doc isn't found.
+    """
+    if not userid:
+        return {"error": "no userid on this session"}
+    try:
+        manager = UserDocManager(userid)
+        doc = manager.get_doc(doc_id)
+        if doc is None:
+            return {"error": f"No saved doc found with id '{doc_id}' for this user."}
+        all_lines = doc["content"].split("\n")
+        total = len(all_lines)
+        start = max(1, start_line)
+        end = total if end_line is None else min(end_line, total)
+        selected = {i: all_lines[i - 1] for i in range(start, end + 1)}
+        return {"lines": selected, "total_lines": total}
+    except Exception as e:
+        print(f"[USER_DOCS] read_lines failed for userid={userid!r}, doc_id={doc_id!r}: {e}")
+        return {"error": f"Failed to read lines from '{doc_id}': {e}"}
+
+
+def edit_doc_line(userid: str, doc_id: str, line_number: int, new_content: str) -> dict:
+    """
+    Replace ONE specific line (1-indexed) in a saved doc and re-save the
+    whole file with that line swapped in. Call read_doc_lines first to
+    confirm the exact line number and current content before editing —
+    never guess a line number blind. Returns the updated doc's metadata,
+    or {"error": "..."} if the doc isn't found or line_number is out of
+    range.
+    """
+    if not userid:
+        return {"error": "no userid on this session"}
+    try:
+        manager = UserDocManager(userid)
+        doc = manager.get_doc(doc_id)
+        if doc is None:
+            return {"error": f"No saved doc found with id '{doc_id}' for this user."}
+        lines = doc["content"].split("\n")
+        if line_number < 1 or line_number > len(lines):
+            return {"error": f"'{doc_id}' has {len(lines)} lines — line_number {line_number} is out of range."}
+        lines[line_number - 1] = new_content
+        updated_content = "\n".join(lines)
+        return manager.save_doc(
+            filename=doc_id,
+            content=updated_content,
+            hint=doc.get("hint"),
+            tags=doc.get("tags"),
+        )
+    except Exception as e:
+        print(f"[USER_DOCS] edit_line failed for userid={userid!r}, doc_id={doc_id!r}: {e}")
+        return {"error": f"Failed to edit line {line_number} in '{doc_id}': {e}"}
+
+
+def update_user_doc(userid: str, doc_id: str, content: str, hint: Optional[str] = None, tags: Optional[list] = None) -> dict:
+    """
+    Overwrite an entire saved doc with new content (or create it if it
+    doesn't exist yet) — use this for a full rewrite; use edit_doc_line
+    instead when only one line needs to change. Returns the saved doc's
+    metadata, or {"error": "..."} on failure.
+    """
+    if not userid:
+        return {"error": "no userid on this session"}
+    try:
+        manager = UserDocManager(userid)
+        return manager.save_doc(filename=doc_id, content=content, hint=hint, tags=tags)
+    except Exception as e:
+        print(f"[USER_DOCS] update failed for userid={userid!r}, doc_id={doc_id!r}: {e}")
+        return {"error": f"Failed to save '{doc_id}': {e}"}
+
+
 def save_study_note(userid: str, content: str, title: str = None) -> bool:
     """
     Save a drafted question/note to the user's JAMB study notebook, stored
@@ -913,6 +1026,56 @@ def fetch_webpage(url: str, max_chars: int = 6000) -> str:
     except Exception as e:
         print(f"[FETCH_WEBPAGE] failed for {url}: {e}")
         return f"Couldn't load that page ({e})."
+
+
+def fetch_raw_file_content(url: str, max_chars: int = 40000) -> str:
+    """
+    Fetches a URL's RAW content exactly as-is (no HTML-tag stripping,
+    unlike fetch_webpage) — this is for attachments like .html/.txt/.md
+    files where the user wants the actual source, not the rendered text,
+    and where later line-numbered editing needs the real, untouched
+    content. Never raises; returns an error string on failure.
+    """
+    if not url:
+        return ""
+    try:
+        resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        return resp.text[:max_chars]
+    except Exception as e:
+        print(f"[FETCH_RAW_FILE] failed for {url}: {e}")
+        return f"[Couldn't load this file: {e}]"
+
+
+def save_uploaded_files_as_docs(userid: Optional[str], file_urls: list, file_names: list) -> list:
+    """
+    For every (url, name) pair in a message's attachments: fetch the raw
+    content and persist it into this user's UserDocManager under that
+    filename, so it's immediately readable/editable later via
+    list_user_docs/read_user_doc/read_doc_lines/edit_doc_line — without
+    the AI having to explicitly call a save tool just to keep an upload.
+
+    Returns a list of {"filename", "content", "saved": bool} — content is
+    included here (not just the doc metadata) so the caller can also
+    inject it straight into the current turn's prompt for an immediate
+    answer, on top of it being saved for later. Skips silently (saved:
+    False) if userid is missing or a given fetch/save fails — never raises.
+    """
+    results = []
+    names = list(file_names or [])
+    for i, url in enumerate(file_urls or []):
+        filename = names[i] if i < len(names) and names[i] else f"upload_{i+1}.txt"
+        content = fetch_raw_file_content(url)
+        saved = False
+        if userid and content and not content.startswith("[Couldn't load this file"):
+            try:
+                manager = UserDocManager(userid)
+                manager.save_doc(filename=filename, content=content, hint=filename, tags=["user-upload"])
+                saved = True
+            except Exception as e:
+                print(f"[USER_DOCS] auto-save failed for userid={userid!r}, filename={filename!r}: {e}")
+        results.append({"filename": filename, "content": content, "saved": saved})
+    return results
 # ---------------------------------------------------------------------------
 # INTENT CLASSIFIER — one small, cheap call per prompt.
 #
@@ -1392,7 +1555,7 @@ def _vision_messages(prompt: str, image_urls: list, history: list) -> list:
 
 
 def ask_with_vision(prompt: str, image_urls: list, history: list = []) -> dict:
-    image_urls = image_urls[:4]
+    image_urls = image_urls[:3]  # was [:4] — qwen3.6-27b (now primary) caps at 3 images per request
     print(f"[VISION TRIGGERED] Images: {len(image_urls)}, Prompt: {prompt[:60]}")
 
     messages = _vision_messages(prompt, image_urls, history)

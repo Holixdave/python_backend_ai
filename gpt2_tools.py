@@ -58,6 +58,11 @@ from gpt2_functions import (
     redisplay_images,
     generate_image,
     is_web_search_enabled,
+    list_user_docs,
+    read_user_doc,
+    read_doc_lines,
+    edit_doc_line,
+    update_user_doc,
 )
 
 # Tools that reach out to the internet on the user's behalf. Every one of
@@ -100,6 +105,11 @@ TOOL_REGISTRY = {
     "schedule_reminder": schedule_reminder,
     "redisplay_images": redisplay_images,
     "generate_image": generate_image,
+    "list_user_docs": list_user_docs,
+    "read_user_doc": read_user_doc,
+    "read_doc_lines": read_doc_lines,
+    "edit_doc_line": edit_doc_line,
+    "update_user_doc": update_user_doc,
 }
 # Short, hand-written purpose lines for the initial manifest only — this is
 # deliberately NOT the full docs. Once the AI picks one, it gets the real
@@ -125,6 +135,11 @@ TOOL_DESCRIPTIONS = {
     "schedule_reminder": "Schedule a push-notification reminder for the user at a specific future time.",
     "redisplay_images": "Re-render a gallery of images already found earlier in this conversation, without searching again.",
     "generate_image": "Generate a brand-new AI image from a text description and show it in a real gallery, same as search_images.",
+    "list_user_docs": "List all files the user has saved/uploaded (filename, hint, tags) — use this to find the right doc_id when the user says 'my file' without naming it.",
+    "read_user_doc": "Read a specific saved file's full content by its doc_id (filename).",
+    "read_doc_lines": "Read a specific line range from a saved file, with the total line count — use before editing a specific line.",
+    "edit_doc_line": "Replace one specific line (by line number) in a saved file and re-save it.",
+    "update_user_doc": "Overwrite a whole saved file with new content, or create a new saved file.",
 }
 
 # Params that should NEVER come from the AI's own JSON — they belong to the

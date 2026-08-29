@@ -182,18 +182,25 @@ TEXT_PROVIDERS = [
 ]
 
 VISION_PROVIDERS = [
-    # ── Primary Vision: Native Gemini Pro / Flash Multimodal endpoints ──
-    _gemini_text_provider("models/gemini-3.5-flash"),
-    _gemini_text_provider("models/gemini-flash-latest"),
-
-    # ── Fallback Vision: Groq & OpenRouter ──────────────────────────────
+    # ── Primary Vision: Groq (fast, and NOT the chronically rate-limited
+    # Gemini quota this app's logs show hitting 429 on nearly every text
+    # request too) ───────────────────────────────────────────────────────
     {
         "name": "groq-vision",
         "enabled": bool(GROQ_API_KEY),
         "url": "https://api.groq.com/openai/v1/chat/completions",
         "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {GROQ_API_KEY}"},
-        "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+        "model": "qwen/qwen3.6-27b",  # was: meta-llama/llama-4-scout-17b-16e-instruct — Groq killed it Jun 17, 2026 same wave as the intent model
     },
+
+    # ── Fallback Vision: Gemini (moved down — this project's own logs
+    # show these two models rate-limited on the vast majority of calls) ──
+    _gemini_text_provider("models/gemini-3.5-flash"),
+    _gemini_text_provider("models/gemini-flash-latest"),
+
+    # ── Last resort: free OpenRouter model, prone to "overloaded" errors
+    # under its own free-tier load — only reached if both of the above
+    # actually fail now, instead of being the only functioning option. ───
     {
         "name": "openrouter-vision-free",
         "enabled": bool(OPENROUTER_API_KEY),
@@ -292,6 +299,7 @@ from gpt2_functions import (
     build_file_with_continuation,
     is_web_search_enabled,
     web_search_off_note,
+    save_uploaded_files_as_docs,
 )
 
 # ---------------------------------------------------------------------------
@@ -328,6 +336,8 @@ def ask_gpt2(
     prompt: str,
     history: Optional[list] = None,
     image_urls: Optional[list] = None,
+    file_urls: Optional[list] = None,
+    file_names: Optional[list] = None,
     userid: Optional[str] = None,
 ) -> dict:
     """
@@ -336,7 +346,7 @@ def ask_gpt2(
     drains _ask_gpt2_core() and keeps the final result.
     """
     final = None
-    for event in _ask_gpt2_core(prompt, history=history, image_urls=image_urls, userid=userid):
+    for event in _ask_gpt2_core(prompt, history=history, image_urls=image_urls, file_urls=file_urls, file_names=file_names, userid=userid):
         if event["type"] == "final":
             final = event
     return {
@@ -352,6 +362,8 @@ def ask_gpt2_stream(
     prompt: str,
     history: Optional[list] = None,
     image_urls: Optional[list] = None,
+    file_urls: Optional[list] = None,
+    file_names: Optional[list] = None,
     userid: Optional[str] = None,
 ):
     """
@@ -359,13 +371,65 @@ def ask_gpt2_stream(
     exact same real progress events _ask_gpt2_core() produces — nothing
     synthetic. main.py wraps these as SSE frames.
     """
-    yield from _ask_gpt2_core(prompt, history=history, image_urls=image_urls, userid=userid)
+    yield from _ask_gpt2_core(prompt, history=history, image_urls=image_urls, file_urls=file_urls, file_names=file_names, userid=userid)
+
+
+def _sources_from_tool_result(tool_name: str, tool_result: str, ai_args: dict) -> list:
+    """
+    Normalizes a successful web/GitHub/document tool call's result into the
+    same [{"title": ..., "url": ...}, ...] shape the automatic
+    classify_intent-triggered search_web path already produces — so
+    whichever way a source was found (automatic search OR the AI choosing
+    to call a tool itself), it ends up in the same real `sources` list
+    shown to the user. Never raises; returns [] on anything unexpected.
+    """
+    try:
+        if tool_name == "search_web":
+            # search_web returns (formatted_text, sources) — execute_tool
+            # stringifies that tuple as a 2-element JSON array.
+            parsed = json.loads(tool_result)
+            if isinstance(parsed, list) and len(parsed) == 2 and isinstance(parsed[1], list):
+                return parsed[1]
+            return []
+
+        if tool_name == "search_github":
+            parsed = json.loads(tool_result)
+            if isinstance(parsed, list):
+                return [
+                    {"title": item.get("name") or item.get("path") or "GitHub result", "url": item.get("url")}
+                    for item in parsed if isinstance(item, dict) and item.get("url")
+                ]
+            return []
+
+        if tool_name == "fetch_github_file":
+            # This one returns raw file text, not a URL — build the real
+            # GitHub URL from the AI's own call args instead.
+            repo = ai_args.get("repo")
+            path = ai_args.get("path")
+            ref = ai_args.get("ref") or "main"
+            if repo and path:
+                return [{"title": f"{repo}/{path}", "url": f"https://github.com/{repo}/blob/{ref}/{path}"}]
+            return []
+
+        if tool_name == "fetch_document":
+            # Also returns raw extracted text, not a URL — same fix, pull
+            # the URL from the call args.
+            url = ai_args.get("url")
+            if url:
+                return [{"title": url, "url": url}]
+            return []
+
+    except Exception as e:
+        print(f"[TOOL SOURCES] failed to extract sources from {tool_name}: {e}")
+    return []
 
 
 def _ask_gpt2_core(
     prompt: str,
     history: Optional[list] = None,
     image_urls: Optional[list] = None,
+    file_urls: Optional[list] = None,
+    file_names: Optional[list] = None,
     userid: Optional[str] = None,
 ):
     """
@@ -381,8 +445,36 @@ def _ask_gpt2_core(
         if isinstance(url, str) and url.startswith(("http://", "https://"))
     ]
 
+    valid_file_urls = [
+        url for url in (file_urls or [])
+        if isinstance(url, str) and url.startswith(("http://", "https://"))
+    ]
+
     image_results = []  # populated automatically whenever search_images succeeds
     file_result = None  # populated later only if the model calls build_file itself
+
+    # NEW: non-image attachments (html/txt/md/etc) — fetch each one's raw
+    # content, auto-save it into the user's UserDocManager (so
+    # list_user_docs/read_user_doc/edit_doc_line can find it later without
+    # a separate save step), and fold the content directly into THIS
+    # turn's prompt too, so a plain "output the text in this file" works
+    # in one round trip instead of forcing a tool call first.
+    attached_files_note = ""
+    if valid_file_urls:
+        yield {"type": "status", "text": "Reading attached file(s)...", "detail": None, "icon": "docs"}
+        saved_files = save_uploaded_files_as_docs(userid, valid_file_urls, file_names or [])
+        blocks = []
+        for f in saved_files:
+            saved_tag = " (saved for later as well)" if f["saved"] else ""
+            blocks.append(f"--- FILE: {f['filename']}{saved_tag} ---\n{f['content']}")
+        attached_files_note = (
+            "\n\n[The user attached the following file(s) with this message — "
+            "their full raw content is included below. If asked to edit a "
+            "specific line later, use read_doc_lines/edit_doc_line with the "
+            "filename as doc_id rather than retyping the whole file.]\n\n"
+            + "\n\n".join(blocks)
+        )
+        prompt = f"{prompt}{attached_files_note}"
 
     if valid_image_urls:
         yield {"type": "status", "text": "Looking at the image...", "detail": None, "icon": "vision"}
@@ -879,6 +971,23 @@ def _ask_gpt2_core(
                         session_context["image_results"] = parsed
                 except Exception:
                     pass
+            elif success and call_data["tool"] in ("search_web", "search_github", "fetch_github_file", "fetch_document"):
+                # FIXED — same class of bug as image_results above: these
+                # tools return real source data, but that data only ever
+                # lived inside tool_result's stringified JSON, fed back to
+                # the model as text. The actual `sources` list returned to
+                # the frontend was only ever populated by the AUTOMATIC
+                # classify_intent-triggered search_web call further up —
+                # never when the AI decided to call one of these tools
+                # itself mid-answer. Deduped by url against whatever's
+                # already there (e.g. from an earlier automatic search).
+                new_sources = _sources_from_tool_result(call_data["tool"], tool_result, call_data["args"])
+                if new_sources:
+                    existing_urls = {s.get("url") for s in sources if s.get("url")}
+                    for s in new_sources:
+                        if s.get("url") and s["url"] not in existing_urls:
+                            sources.append(s)
+                            existing_urls.add(s["url"])
 
         yield {
             "type": "status",
