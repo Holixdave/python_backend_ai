@@ -369,7 +369,7 @@ from gpt2_tools import (
 # around the dynamic manifest) moved to prompts.py. The manifest itself is
 # still generated at import time here since build_tool_manifest() is a
 # real function call, not static text.
-from prompts import SUGGESTION_HINT, TOOL_USE_HINT_TAIL, MEMORY_TRUNCATED_NOTE
+from prompts import SUGGESTION_HINT, TOOL_USE_HINT_TAIL, MEMORY_TRUNCATED_NOTE, INLINE_VISUAL_HINT
 
 TOOL_USE_HINT = "\n\n" + build_tool_manifest() + TOOL_USE_HINT_TAIL
 
@@ -717,6 +717,7 @@ def _ask_gpt2_core(
     # before the model starts writing its response.
     current_identity += TOOL_USE_HINT
     current_identity += SUGGESTION_HINT
+    current_identity += INLINE_VISUAL_HINT
     if intent["complex"]:
         current_identity += REASONING_STEP_HINT
 
