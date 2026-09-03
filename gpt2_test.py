@@ -465,6 +465,19 @@ def _sources_from_tool_result(tool_name: str, tool_result: str, ai_args: dict) -
                 return [{"title": url, "url": url}]
             return []
 
+        if tool_name == "fetch_webpage":
+            # FIXED — this was the exact gap: fetch_webpage returns plain
+            # text (see gpt2_functions.py), no URL inside it at all, and
+            # this tool was simply missing from the list of tools that get
+            # source-extraction applied — so a real page fetch never
+            # showed a source pill, even after the search_web/github/
+            # document fix. Same approach: the real URL is only ever in
+            # the AI's own call args, never in the function's return value.
+            url = ai_args.get("url")
+            if url:
+                return [{"title": url, "url": url}]
+            return []
+
     except Exception as e:
         print(f"[TOOL SOURCES] failed to extract sources from {tool_name}: {e}")
     return []
@@ -667,8 +680,8 @@ def _ask_gpt2_core(
         print(f"[SEARCH] query={clean_query!r}")
         yield {
             "type": "status",
-            "text": "Searching the web...",
-            "detail": f'Searching for: "{clean_query}"',
+            "text": f'Searched for "{clean_query}"',
+            "detail": None,
             "icon": "search"
         }
         web_results, sources = search_web(clean_query)
@@ -1038,7 +1051,7 @@ def _ask_gpt2_core(
                         file_result = parsed
                 except Exception:
                     pass
-            elif success and call_data["tool"] in ("search_web", "search_github", "fetch_github_file", "fetch_document"):
+            elif success and call_data["tool"] in ("search_web", "search_github", "fetch_github_file", "fetch_document", "fetch_webpage"):
                 # FIXED — same class of bug as image_results above: these
                 # tools return real source data, but that data only ever
                 # lived inside tool_result's stringified JSON, fed back to
