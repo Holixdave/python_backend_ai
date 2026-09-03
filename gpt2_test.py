@@ -341,10 +341,12 @@ from gpt2_functions import (
     ask_with_vision,
     _looks_unsure,
     build_file,
+    build_multiple_files,
     redisplay_file,
     is_web_search_enabled,
     web_search_off_note,
     save_uploaded_files_as_docs,
+    DESIGN_GUIDELINES,
 )
 
 # ---------------------------------------------------------------------------
@@ -567,7 +569,7 @@ def _ask_gpt2_core(
     )
 
     print(f"[INTENT] search_type={intent['search_type']} complex={intent['complex']} topic={intent['topic']} "
-          f"query={intent.get('search_query')!r}")
+          f"design={intent.get('needs_design_guidance')} query={intent.get('search_query')!r}")
 
     current_identity = (
         NEUTRAL_SYSTEM_PROMPT + "\n\n" + IMAGE_GEN_AWARENESS + already_has_image_note
@@ -733,6 +735,14 @@ def _ask_gpt2_core(
     current_identity += INLINE_VISUAL_HINT
     if intent["complex"]:
         current_identity += REASONING_STEP_HINT
+    if intent.get("needs_design_guidance"):
+        # NEW — auto-injected whenever needs_design_guidance() (deterministic
+        # keyword check in gpt2_functions.py) flags this as a webpage/UI
+        # design request. Gives the model concrete, opinionated defaults
+        # (spacing scale, type scale, contrast rules, layout patterns)
+        # instead of generic/dated guesses — this is the actual fix for
+        # "the AI doesn't know web design well."
+        current_identity += "\n\n" + DESIGN_GUIDELINES
 
     messages = [{"role": "system", "content": current_identity}]
     messages.extend(lean_history)
@@ -1023,6 +1033,43 @@ def _ask_gpt2_core(
             if success:
                 file_results.append(file_event)
                 file_result = file_event  # legacy singular alias — last file wins, back-compat only
+        elif call_data["tool"] == "build_multiple_files":
+            # NEW — builds a whole batch in ONE tool round instead of one
+            # round per file (see MAX_FILES_PER_BUILD_CALL / MAX_TOOL_ROUNDS
+            # notes on build_multiple_files() in gpt2_functions.py).
+            batch_args = {
+                "files": call_data["args"].get("files") or [],
+                "userid": session_context["userid"],
+            }
+            batch_event = None
+            for event in build_multiple_files(**batch_args):
+                if event.get("type") == "batch_result":
+                    batch_event = event
+                else:
+                    yield event
+            batch_files = (batch_event or {}).get("files", [])
+            for f in batch_files:
+                if f.get("success"):
+                    file_results.append(f)
+                    file_result = f  # legacy singular alias — last file wins, back-compat only
+            success = any(f.get("success") for f in batch_files)
+            # If truncated (>39 files requested), tell the model explicitly
+            # so it calls build_multiple_files again with the rest instead
+            # of assuming everything got built or silently giving up.
+            if batch_event and batch_event.get("truncated"):
+                tool_result = json.dumps({
+                    "built": batch_files,
+                    "truncated": True,
+                    "remaining_count": batch_event.get("remaining_count", 0),
+                    "instruction": (
+                        f"Only the first {len(batch_files)} files were built. "
+                        f"{batch_event.get('remaining_count', 0)} file(s) remain — "
+                        "call build_multiple_files again with ONLY the remaining "
+                        "files (do not repeat the ones already built above)."
+                    ),
+                }, default=str)
+            else:
+                tool_result = json.dumps(batch_files, default=str) if batch_files else "Tool produced no output."
         else:
             success, tool_result = execute_tool(call_data["tool"], call_data["args"], session_context)
             if success and call_data["tool"] in ("search_images", "redisplay_images", "generate_image"):

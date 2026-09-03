@@ -1097,6 +1097,67 @@ CODING_KEYWORDS = [
     "fix", "debug", "error", "screen", "app", "file",
 ]
 
+# NEW — deterministic (not model-classified) detection for "this request
+# is about visually designing a webpage/UI", so real design guidance gets
+# auto-injected into context without depending on the intent classifier
+# model correctly adding a new JSON field (which would also require
+# editing prompts.py's INTENT_SYSTEM_PROMPT, a file this module doesn't
+# have visibility into). A plain keyword check here is simpler and more
+# reliable for something this binary.
+DESIGN_KEYWORDS = [
+    "html", "css", "webpage", "web page", "website", "web design",
+    "landing page", "ui design", "user interface", "layout", "frontend",
+    "front-end", "front end", "style the page", "design a page",
+    "design a site", "web ui", "responsive design",
+]
+
+
+def needs_design_guidance(prompt: str) -> bool:
+    t = prompt.lower()
+    return any(k in t for k in DESIGN_KEYWORDS)
+
+
+# NEW — compact, opinionated web design reference. Injected into context
+# automatically (see _ask_gpt2_core in gpt2_test.py) whenever a request
+# is classified as design-related, giving the model concrete defaults to
+# follow instead of generic/dated guesses (centered Times New Roman
+# headers, harsh primary colors, no spacing rhythm, etc — the usual
+# tells of a model with no real design reference).
+DESIGN_GUIDELINES = """
+WEB DESIGN REFERENCE — follow these defaults unless the user specifies otherwise:
+
+SPACING: Use a consistent scale — 4, 8, 12, 16, 24, 32, 48, 64px. Never
+arbitrary values like 13px or 27px. Generous whitespace over cramped
+layouts; padding inside cards/buttons should rarely be under 12px.
+
+TYPOGRAPHY: One font family for headings, one (can be the same) for body.
+Use a real type scale, e.g. 14/16/20/24/32/48px — not random sizes.
+Body text: 16px minimum, line-height 1.5-1.7. Avoid pure black (#000) on
+pure white (#fff) — use dark gray (#1a1a1a on #fafafa) for less eye strain.
+
+COLOR: Pick ONE accent color, use it sparingly (buttons, links, key
+highlights only). Neutral palette (grays) for everything else. Check
+contrast: body text needs at least 4.5:1 contrast ratio against its
+background. Avoid saturated primary colors (#ff0000, #0000ff) as
+backgrounds — desaturate or darken/lighten them.
+
+LAYOUT: Use CSS Grid or Flexbox, never floats or absolute positioning for
+page structure. Max content width ~1200px, centered, with side padding on
+smaller screens. Mobile-first: design for 375px width first, then expand.
+
+COMPONENTS: Buttons need clear hover/active states and 8-12px border
+radius (not fully round unless it's a pill/icon button). Cards: subtle
+shadow (0 2px 8px rgba(0,0,0,0.08)) or a thin border, never both stacked
+heavily. Avoid harsh drop shadows or gradients unless explicitly asked.
+
+HIERARCHY: Every page needs ONE clear primary action, visually distinct
+from secondary actions (solid button vs outline/text button). Don't give
+five buttons equal visual weight.
+
+RESPONSIVE: Always include at least one breakpoint (e.g. @media
+(max-width: 768px)) — never ship a fixed-width-only layout.
+""".strip()
+
 # NOTE: the intent-classifier system prompt used to be defined right here
 # as _INTENT_SYSTEM_PROMPT — it now lives in prompts.py as
 # INTENT_SYSTEM_PROMPT (imported above) so every prompt is in one file.
@@ -1130,6 +1191,7 @@ def _fallback_intent(prompt: str) -> dict:
         "search_query": search_query,
         "complex": any(k in t for k in CODING_KEYWORDS),
         "topic": topic,
+        "needs_design_guidance": needs_design_guidance(prompt),
     }
 
 
@@ -1205,6 +1267,7 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
                 "search_query": search_query,
                 "complex": bool(data.get("complex", True)),
                 "topic": topic,
+                "needs_design_guidance": needs_design_guidance(prompt),
             }
         print(f"[INTENT] classifier HTTP {resp.status_code}, falling back to keywords")
         
@@ -1823,7 +1886,95 @@ def build_file(filename: str, content: str, userid: Optional[str] = None):
     }
 
 
-def redisplay_file(filename: str, url: str) -> dict:
+MAX_FILES_PER_BUILD_CALL = 39
+
+
+def build_multiple_files(files: list, userid: Optional[str] = None):
+    """
+    Builds and uploads several files in ONE tool call — each item in
+    `files` must be a dict like {"filename": ..., "content": ...}.
+
+    WHY THIS EXISTS: calling build_file() once per file would burn one
+    full tool-round per file (see MAX_TOOL_ROUNDS in gpt2_tools.py, = 20)
+    — so a request for even 25 files couldn't complete in a single turn.
+    This tool builds the whole batch inside a SINGLE round instead.
+
+    Capped at MAX_FILES_PER_BUILD_CALL (39) files per call. If more than
+    39 are supplied, only the first 39 are built — the rest are silently
+    dropped from this call, and the tool result explicitly tells the AI
+    to call build_multiple_files again with the remaining files to
+    continue, rather than trying to cram everything into one call or
+    silently losing the extra files with no explanation.
+
+    Generator — yields {"type": "status", ...} progress per file, plus a
+    final {"type": "batch_result", "files": [...], "truncated": bool,
+    "remaining_count": int} event. Each entry in the final "files" list
+    has the same {"success", "url", "filename"} shape build_file() uses.
+    """
+    if not files:
+        yield {"type": "batch_result", "files": [], "truncated": False, "remaining_count": 0}
+        return
+
+    total_requested = len(files)
+    truncated = total_requested > MAX_FILES_PER_BUILD_CALL
+    batch = files[:MAX_FILES_PER_BUILD_CALL]
+    remaining_count = max(0, total_requested - MAX_FILES_PER_BUILD_CALL)
+
+    if truncated:
+        yield {
+            "type": "status",
+            "text": f"Building first {MAX_FILES_PER_BUILD_CALL} of {total_requested} files "
+                    f"(call this tool again with the remaining {remaining_count} after)",
+            "detail": None,
+            "icon": "warning",
+        }
+
+    results = []
+    for i, item in enumerate(batch, 1):
+        filename = (item or {}).get("filename") or f"file_{i}.txt"
+        content = (item or {}).get("content") or ""
+
+        if not content.strip():
+            yield {"type": "status", "text": f"{filename} had no content, skipped", "detail": None, "icon": "warning"}
+            results.append({"success": False, "url": None, "filename": filename})
+            continue
+
+        yield {"type": "status", "text": f"Building {filename} ({i}/{len(batch)})...", "detail": None, "icon": "build"}
+        clean_content = _FENCE_RE.sub("", content).strip()
+        file_url = _upload_to_supabase(userid or "anonymous", filename, clean_content)
+
+        if file_url and userid:
+            try:
+                manager = UserDocManager(userid)
+                manager.save_doc(
+                    filename=f"ref_{filename}.md",
+                    content=f"File stored at: {file_url}",
+                    hint=filename,
+                    tags=["ai-built-file", filename.split(".")[-1]],
+                    metadata={"supabase_url": file_url, "original_filename": filename},
+                )
+            except Exception as e:
+                print(f"[FILEBUILD] failed to register doc reference for {filename}: {e}")
+
+        results.append({"success": bool(file_url), "url": file_url, "filename": filename})
+
+    succeeded = sum(1 for r in results if r["success"])
+    yield {
+        "type": "status",
+        "text": f"Built {succeeded}/{len(batch)} files"
+                + (f" — {remaining_count} more to go, call build_multiple_files again" if truncated else ""),
+        "detail": None,
+        "icon": "success" if succeeded == len(batch) else "warning",
+    }
+    yield {
+        "type": "batch_result",
+        "files": results,
+        "truncated": truncated,
+        "remaining_count": remaining_count,
+    }
+
+
+
     """
     Re-emits a file card for a file that was already built/uploaded
     earlier in THIS conversation — for when the user says "send that file

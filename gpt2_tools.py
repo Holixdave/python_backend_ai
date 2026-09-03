@@ -45,6 +45,7 @@ from gpt2_functions import (
     _fetch_og_image,
     ask_with_vision,
     build_file,
+    build_multiple_files,
     redisplay_file,
     fetch_webpage,
     search_github,
@@ -93,6 +94,7 @@ TOOL_REGISTRY = {
     "fetch_page_preview_image": _fetch_og_image,
     "analyze_image": ask_with_vision,
     "build_file": build_file,
+    "build_multiple_files": build_multiple_files,
     "redisplay_file": redisplay_file,
     "fetch_webpage": fetch_webpage,
     "see_tool_arg": see_tool_arg,
@@ -123,6 +125,7 @@ TOOL_DESCRIPTIONS = {
     "fetch_page_preview_image": "Grab a specific webpage's own declared preview image.",
     "analyze_image": "Look at image(s) and answer a question about what's in them.",
     "build_file": "Save and upload a file — you write the COMPLETE real file content yourself as the 'content' argument, this just uploads it. Call it once per file; call it multiple times in one turn for multiple files.",
+    "build_multiple_files": "Save and upload SEVERAL files in one call — pass files as a list of {\"filename\": ..., \"content\": ...} objects, each with the COMPLETE real content you wrote. Use this instead of calling build_file repeatedly when asked for more than a couple files. Capped at 39 files per call — if you have more, call it again with the rest after.",
     "redisplay_file": "Re-show a file you already built/uploaded earlier in this conversation, using its real filename + url — does not rebuild or re-upload anything.",
     "fetch_webpage": "Open a Specific url and read its actual page text/content.",
     "see_tool_arg":   "Look up any tool's real source code/params before calling it, so "
