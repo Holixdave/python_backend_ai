@@ -374,6 +374,73 @@ INLINE_VISUAL_HINT = (
 )
 
 # ---------------------------------------------------------------------------
+# NOTE / CALLOUT — a highlighted aside rendered inside the chat bubble as an
+# uncolored header (icon + title) followed by one or more tinted callout
+# boxes. General-purpose: a scam/product warning, a quoted proverb or verse,
+# a source citation, a safety caution, a "heads up" aside — anything the
+# model wants visually set apart from the surrounding paragraph text.
+# ---------------------------------------------------------------------------
+NOTE_CALLOUT_HINT = (
+    "\n\nNOTE / CALLOUT (optional): when something deserves to stand apart "
+    "from the normal paragraph flow — a warning, a caution, a quoted "
+    "proverb or verse, a source citation, a 'heads up' aside, a "
+    "contrasting fact — wrap it in this EXACT nested tag pair:\n"
+    "<<note variant=\"warning\" icon=\"alert-triangle\" title=\"A note on "
+    "\\\"The grounding co\\\"\">>\n"
+    "<<callout heading=\"Trustpilot and community reports\">>\n"
+    "Multiple users report shipping delays and non-responsive support.\n"
+    "<<callout>>\n"
+    "<<note>>\n\n"
+    "STRUCTURE — this is the one tag pair that DOES nest, unlike "
+    "<<in_line_svg>>/<<inline_html>> above which must never nest:\n"
+    "1. <<note>> is the outer wrapper. Its attributes control the header "
+    "row (icon + title), which always renders in plain, uncolored text — "
+    "the header is never tinted, only the callout box(es) inside it are.\n"
+    "2. One or more <<callout heading=\"...\">>...<<callout>> pairs go "
+    "INSIDE the note, each becoming its own tinted box with a heading and "
+    "a body paragraph. Use more than one callout only when you genuinely "
+    "have more than one distinct point to separate — most notes need "
+    "exactly one.\n"
+    "3. Nesting stops there — never put a <<note>> inside a <<callout>>, "
+    "and never put a second <<note>> inside the first one. One level "
+    "deep, no more.\n\n"
+    "ATTRIBUTES:\n"
+    "- variant: one of \"warning\", \"danger\", \"success\", \"info\", or "
+    "\"neutral\" — picks the callout box's color. warning = amber caution, "
+    "danger = red risk/failure, success = green confirmation, info = blue "
+    "factual aside, neutral = gray/no particular tone (e.g. a plain "
+    "quoted verse or proverb with nothing to flag).\n"
+    "- icon: optional, one of \"alert-triangle\", \"alert-circle\", "
+    "\"circle-check\", \"info-circle\", \"x-circle\". Omit it entirely to "
+    "get a sensible default icon for the variant you chose — don't invent "
+    "icon names outside this list.\n"
+    "- title: the header text, required.\n"
+    "- heading: the bold line at the top of each callout box, required "
+    "per callout.\n\n"
+    "ESCAPING — this is the part that breaks silently if you get it "
+    "wrong: every attribute value is wrapped in double quotes. If the "
+    "text you're putting into title or heading itself needs a literal "
+    "double-quote character (quoting a title, a nickname, a book name), "
+    "you MUST escape it as \\\" inside that attribute — never leave a "
+    "bare \" inside the value. A single unescaped quote ends the "
+    "attribute early and silently breaks the entire note/callout block, "
+    "so double-check this before emitting the tag whenever the content "
+    "you're quoting contains quotation marks of its own.\n\n"
+    "BODY TEXT: the paragraph between <<callout ...>> and <<callout>> "
+    "renders as plain text with no markdown processing — never use **, "
+    "###, backticks, or bullet symbols inside a callout's heading or "
+    "body; they'll show up as literal characters instead of being "
+    "styled. Write it as a clean, complete sentence or two.\n\n"
+    "WHEN TO USE THIS vs. a normal paragraph: reach for it when the "
+    "content is genuinely callout-shaped — a warning worth flagging, a "
+    "quote or verse worth setting apart, a caveat that could get lost in "
+    "a wall of text. Don't wrap ordinary explanatory sentences in it just "
+    "because the feature exists; most of a normal answer should stay "
+    "plain prose. Never show the raw tags as a demonstration to the "
+    "user — just emit the real tags and stop."
+)
+
+# ---------------------------------------------------------------------------
 # TOOL USE — build_tool_manifest() (gpt2_tools.py) generates the dynamic
 # list of tools/args at runtime; this is just the static wrapper text
 # around that manifest, kept here so all prompt copy lives in one file.
