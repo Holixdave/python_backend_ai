@@ -2037,6 +2037,186 @@ def _upload_to_supabase(userid: str, filename: str, content: str) -> Optional[st
         return None
 
 
+def _upload_bytes_to_supabase(userid: str, filename: str, data: bytes, content_type: str) -> Optional[str]:
+    """
+    Same as _upload_to_supabase() but for raw binary content (zips,
+    images, etc) instead of text — takes real bytes and an explicit
+    content_type rather than assuming text/plain + UTF-8 encoding.
+    Never raises; returns None on failure. Same deterministic
+    userid/filename -> storage_path -> public URL scheme, so re-uploading
+    under the same filename (e.g. after an edit) returns the SAME url.
+    """
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        print("[FILEBUILD] SUPABASE_URL / SUPABASE_SERVICE_KEY not set — skipping upload")
+        return None
+
+    storage_path = f"{userid}/{filename}"
+    upload_url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{storage_path}"
+
+    try:
+        resp = requests.post(
+            upload_url,
+            headers={
+                "apikey": SUPABASE_SERVICE_KEY,
+                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                "Content-Type": content_type,
+                "x-upsert": "true",
+            },
+            data=data,
+            timeout=30,
+        )
+        if resp.status_code not in (200, 201):
+            print(f"[FILEBUILD] Supabase binary upload failed: {resp.status_code} — {resp.text[:200]}")
+            return None
+        return f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_BUCKET}/{storage_path}"
+    except Exception as e:
+        print(f"[FILEBUILD] Supabase binary upload error: {e}")
+        return None
+
+
+_BRACKET_PAIRS = {"(": ")", "[": "]", "{": "}"}
+
+
+def _bracket_balance_ok(text: str) -> bool:
+    """
+    Heuristic sanity check, not a real parser — just totals up (), [], {}
+    across the WHOLE file and confirms opens == closes for each pair. This
+    can't catch every possible syntax break (a bracket inside a string
+    literal still counts), but it reliably catches the most common
+    edit_file mistake: a find/replace that adds or removes one side of a
+    pair without the other. Used only as an advisory warning to the AI,
+    never as a hard block — a legitimately balanced-looking edit can still
+    be wrong in other ways, and this should never stop a real edit from
+    saving.
+    """
+    counts = {ch: 0 for pair in _BRACKET_PAIRS.items() for ch in pair}
+    for ch in text:
+        if ch in counts:
+            counts[ch] += 1
+    return all(counts[open_ch] == counts[close_ch] for open_ch, close_ch in _BRACKET_PAIRS.items())
+
+
+def edit_file(doc_id: str, find_text: str, replace_text: str, userid: Optional[str] = None):
+    """
+    Surgically edits ONE saved file in place — finds an EXACT, UNIQUE
+    match of `find_text` in the file's real saved content and replaces it
+    with `replace_text`. Does NOT retype or resend the whole file; the AI
+    only has to write the small snippet that's actually changing.
+
+    WHY THIS EXISTS: for a big file, asking even a strong model to output
+    the ENTIRE file again just to change one line wastes huge amounts of
+    tokens/time, and is exactly where small/weak models start dropping or
+    corrupting content they were supposed to leave untouched. This tool
+    instead: reads the real content already saved via build_file (see the
+    fix above — build_file now saves REAL content, not just a pointer),
+    does a plain string find/replace, and re-uploads to the SAME storage
+    path — Supabase's x-upsert means this returns the exact same public
+    URL back, no new link, no cost of re-uploading unrelated files.
+
+    SAFETY: find_text must match EXACTLY ONCE in the file.
+      - 0 matches -> error, asks the AI to re-check the exact text (don't
+        guess/retry blindly — re-reading via read_user_doc/read_doc_lines
+        first is the correct move).
+      - 2+ matches -> error, asks the AI to include more surrounding
+        context in find_text to make the match unique, rather than
+        silently picking one and possibly editing the wrong occurrence.
+
+    Also runs a bracket-balance sanity check (see _bracket_balance_ok)
+    on the result and includes a "bracket_warning" flag if it looks like
+    the edit broke a (), [], or {} pairing — advisory only, the edit still
+    saves either way, since this heuristic can't tell a real break from a
+    bracket that was always inside a string/comment.
+
+    Generator — yields {"type": "status", ...} progress, then a final
+    {"type": "file_result", "success", "url", "filename", ...} event,
+    same shape build_file() uses.
+    """
+    if not userid:
+        yield {"type": "file_result", "success": False, "url": None, "filename": doc_id or "file", "error": "no userid on this session"}
+        return
+    if not doc_id:
+        yield {"type": "file_result", "success": False, "url": None, "filename": "file", "error": "no doc_id given"}
+        return
+
+    yield {"type": "status", "text": f"Reading {doc_id}...", "detail": None, "icon": "docs"}
+
+    try:
+        manager = UserDocManager(userid)
+        doc = manager.get_doc(doc_id)
+    except Exception as e:
+        yield {"type": "file_result", "success": False, "url": None, "filename": doc_id, "error": f"Failed to read '{doc_id}': {e}"}
+        return
+
+    if doc is None:
+        yield {"type": "file_result", "success": False, "url": None, "filename": doc_id, "error": f"No saved doc found with id '{doc_id}' for this user."}
+        return
+
+    content = doc.get("content", "")
+    occurrences = content.count(find_text) if find_text else 0
+
+    if occurrences == 0:
+        yield {
+            "type": "file_result",
+            "success": False,
+            "url": None,
+            "filename": doc_id,
+            "error": (
+                "find_text did not match anywhere in the file. Re-read the file "
+                "(read_user_doc or read_doc_lines) to get the exact current text "
+                "before trying again — do not guess."
+            ),
+        }
+        return
+
+    if occurrences > 1:
+        yield {
+            "type": "file_result",
+            "success": False,
+            "url": None,
+            "filename": doc_id,
+            "error": (
+                f"find_text matched {occurrences} times — it must match exactly "
+                "once. Include more surrounding lines/context in find_text to "
+                "make the match unique before retrying."
+            ),
+        }
+        return
+
+    yield {"type": "status", "text": f"Editing {doc_id}...", "detail": None, "icon": "build"}
+    new_content = content.replace(find_text, replace_text, 1)
+    bracket_warning = not _bracket_balance_ok(new_content)
+
+    yield {"type": "status", "text": "Uploading updated file...", "detail": None, "icon": "upload"}
+    file_url = _upload_to_supabase(userid, doc_id, new_content)
+
+    if file_url:
+        try:
+            manager.save_doc(
+                filename=doc_id,
+                content=new_content,
+                hint=doc.get("hint"),
+                tags=doc.get("tags"),
+            )
+        except Exception as e:
+            print(f"[EDIT_FILE] failed to update saved doc for {doc_id}: {e}")
+
+    yield {
+        "type": "status",
+        "text": "Done" + (" — heads up, brackets look unbalanced after this edit, worth double-checking" if bracket_warning else ""),
+        "detail": None,
+        "icon": "warning" if bracket_warning else "success",
+    }
+    yield {
+        "type": "file_result",
+        "success": bool(file_url),
+        "url": file_url,
+        "filename": doc_id,
+        "bracket_warning": bracket_warning,
+        "new_size": len(new_content),
+    }
+
+
+
 _CHAT_LEAD_RE = re.compile(
     r"^\s*(sure[,!.]|okay[,!.]|alright[,!.]|certainly[,!.]|of course[,!.]|"
     r"here'?s?\b|here is\b|here are\b|i'?ll\b.*\b(continue|resume|finish)\b|"
@@ -2172,11 +2352,10 @@ def build_file(filename: str, content: str, userid: Optional[str] = None):
         try:
             manager = UserDocManager(userid)
             manager.save_doc(
-                filename=f"ref_{filename}.md",
-                content=f"File stored at: {file_url}",
+                filename=filename,
+                content=clean_content,
                 hint=filename,
                 tags=["ai-built-file", filename.split(".")[-1]],
-                metadata={"supabase_url": file_url, "original_filename": filename},
             )
         except Exception as e:
             print(f"[FILEBUILD] failed to register doc reference: {e}")
@@ -2256,11 +2435,10 @@ def build_multiple_files(files: list, userid: Optional[str] = None):
             try:
                 manager = UserDocManager(userid)
                 manager.save_doc(
-                    filename=f"ref_{filename}.md",
-                    content=f"File stored at: {file_url}",
+                    filename=filename,
+                    content=clean_content,
                     hint=filename,
                     tags=["ai-built-file", filename.split(".")[-1]],
-                    metadata={"supabase_url": file_url, "original_filename": filename},
                 )
             except Exception as e:
                 print(f"[FILEBUILD] failed to register doc reference for {filename}: {e}")
@@ -2283,7 +2461,332 @@ def build_multiple_files(files: list, userid: Optional[str] = None):
     }
 
 
-def redisplay_file(url: str, filename: str) -> dict:
+def build_zip_file(files: list, zip_filename: str, userid: Optional[str] = None):
+    """
+    Bundles several files into ONE .zip archive and uploads that single
+    archive, instead of uploading each file separately — use this when
+    the user explicitly wants everything as one downloadable package
+    (e.g. "zip these up", "send it all as one file"). This is why
+    build_file/build_multiple_files were switched to store REAL content
+    directly with the AI's own tool call, instead of re-fetching from
+    Supabase after upload — that same real content is what gets packed
+    here, no extra round trip needed.
+
+    `files` is the same shape build_multiple_files() takes: a list of
+    {"filename": ..., "content": ...} dicts, each with COMPLETE real
+    content already written by the AI. Same MAX_FILES_PER_BUILD_CALL (39)
+    cap and truncation behavior — if more are supplied, only the first 39
+    go into the zip and the result tells the AI how many remain.
+
+    Generator — yields {"type": "status", ...} progress, then a final
+    {"type": "file_result", "success", "url", "filename"} event — the
+    SAME shape build_file() uses, since this produces exactly one
+    downloadable file (the archive itself). Zip content is binary, so
+    unlike build_file/build_multiple_files this does NOT register
+    editable content in UserDocManager — edit_file only makes sense on
+    the individual text files, not on a packed archive.
+    """
+    import zipfile
+    import io
+
+    if not files:
+        yield {"type": "file_result", "success": False, "url": None, "filename": zip_filename or "archive.zip"}
+        return
+
+    if not zip_filename:
+        zip_filename = "archive.zip"
+    if not zip_filename.lower().endswith(".zip"):
+        zip_filename += ".zip"
+
+    total_requested = len(files)
+    truncated = total_requested > MAX_FILES_PER_BUILD_CALL
+    batch = files[:MAX_FILES_PER_BUILD_CALL]
+    remaining_count = max(0, total_requested - MAX_FILES_PER_BUILD_CALL)
+
+    if truncated:
+        yield {
+            "type": "status",
+            "text": f"Zipping first {MAX_FILES_PER_BUILD_CALL} of {total_requested} files "
+                    f"(call build_zip_file again with the remaining {remaining_count} as a separate archive)",
+            "detail": None,
+            "icon": "warning",
+        }
+
+    yield {"type": "status", "text": f"Packing {len(batch)} file(s) into {zip_filename}...", "detail": None, "icon": "build"}
+
+    buffer = io.BytesIO()
+    packed = 0
+    try:
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for i, item in enumerate(batch):
+                inner_name = (item or {}).get("filename") or f"file_{i+1}.txt"
+                content = (item or {}).get("content") or ""
+                if not content.strip():
+                    continue
+                clean_content = _FENCE_RE.sub("", content).strip()
+                zf.writestr(inner_name, clean_content)
+                packed += 1
+    except Exception as e:
+        print(f"[FILEBUILD] zip packing failed: {e}")
+        yield {"type": "file_result", "success": False, "url": None, "filename": zip_filename}
+        return
+
+    if packed == 0:
+        yield {"type": "status", "text": "No files had content to zip", "detail": None, "icon": "warning"}
+        yield {"type": "file_result", "success": False, "url": None, "filename": zip_filename}
+        return
+
+    yield {"type": "status", "text": "Uploading archive...", "detail": None, "icon": "upload"}
+    zip_bytes = buffer.getvalue()
+    file_url = _upload_bytes_to_supabase(userid or "anonymous", zip_filename, zip_bytes, "application/zip")
+
+    if file_url and userid:
+        try:
+            manager = UserDocManager(userid)
+            manager.save_doc(
+                filename=f"ref_{zip_filename}.md",
+                content=f"Zip archive stored at: {file_url} ({packed} file(s) inside)",
+                hint=zip_filename,
+                tags=["ai-built-file", "zip"],
+            )
+        except Exception as e:
+            print(f"[FILEBUILD] failed to register zip doc reference: {e}")
+
+    yield {
+        "type": "status",
+        "text": "Done" if file_url else "Zip built but upload failed",
+        "detail": None,
+        "icon": "success" if file_url else "warning",
+    }
+    yield {
+        "type": "file_result",
+        "success": bool(file_url),
+        "url": file_url,
+        "filename": zip_filename,
+        "truncated": truncated,
+        "remaining_count": remaining_count,
+    }
+
+
+_REMBG_SESSION = None  # lazy-initialized, reused across calls so the model doesn't reload every request
+
+
+def _get_rembg_session():
+    global _REMBG_SESSION
+    if _REMBG_SESSION is None:
+        from rembg import new_session
+        # u2netp: ~4MB, lighter/faster than the default u2net (~176MB) —
+        # trades some accuracy for actually being viable on a CPU-only,
+        # limited-RAM host like Render's free/Starter tiers. Swap to
+        # "u2net" if hosting moves to something with more headroom and
+        # quality matters more than footprint.
+        _REMBG_SESSION = new_session("u2netp")
+    return _REMBG_SESSION
+
+
+def remove_background(image_url: str, userid: Optional[str] = None, filename: Optional[str] = None):
+    """
+    Removes the background from an existing image (given its URL) and
+    uploads the result as a transparent PNG. Uses rembg (a real ML
+    background-removal model) for the actual segmentation — Pillow alone
+    has no concept of "subject vs background" in a photo, it can only
+    draw/composite/convert, so rembg does the real work and Pillow just
+    handles decoding/re-encoding the result into a clean PNG.
+
+    Requires the `rembg` and `pillow` packages to be installed
+    (pip install rembg pillow --break-system-packages) — if they're
+    missing, this fails with a clear, honest error instead of crashing.
+
+    Generator — yields {"type": "status", ...} progress, then a final
+    {"type": "file_result", "success", "url", "filename"} event.
+    """
+    if not image_url:
+        yield {"type": "file_result", "success": False, "url": None, "filename": filename or "image.png", "error": "no image_url given"}
+        return
+
+    yield {"type": "status", "text": "Loading image...", "detail": None, "icon": "docs"}
+
+    try:
+        resp = requests.get(image_url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        input_bytes = resp.content
+    except Exception as e:
+        yield {"type": "file_result", "success": False, "url": None, "filename": filename or "image.png", "error": f"Couldn't fetch the image: {e}"}
+        return
+
+    yield {"type": "status", "text": "Removing background...", "detail": None, "icon": "build"}
+
+    try:
+        from rembg import remove as rembg_remove
+        from PIL import Image
+        import io as _io
+
+        session = _get_rembg_session()
+        output_bytes = rembg_remove(input_bytes, session=session)
+
+        # Round-trip through Pillow to guarantee a clean, valid PNG
+        # regardless of what rembg handed back.
+        img = Image.open(_io.BytesIO(output_bytes)).convert("RGBA")
+        out_buffer = _io.BytesIO()
+        img.save(out_buffer, format="PNG")
+        final_bytes = out_buffer.getvalue()
+    except ImportError:
+        yield {
+            "type": "file_result",
+            "success": False,
+            "url": None,
+            "filename": filename or "image.png",
+            "error": "Background removal isn't installed on this server yet — needs `pip install rembg pillow`.",
+        }
+        return
+    except Exception as e:
+        print(f"[REMOVE_BG] processing failed: {e}")
+        yield {"type": "file_result", "success": False, "url": None, "filename": filename or "image.png", "error": f"Background removal failed: {e}"}
+        return
+
+    out_filename = filename or "no_background.png"
+    if not out_filename.lower().endswith(".png"):
+        out_filename += ".png"
+
+    yield {"type": "status", "text": "Uploading result...", "detail": None, "icon": "upload"}
+    file_url = _upload_bytes_to_supabase(userid or "anonymous", out_filename, final_bytes, "image/png")
+
+    if file_url and userid:
+        try:
+            manager = UserDocManager(userid)
+            manager.save_doc(
+                filename=f"ref_{out_filename}.md",
+                content=f"Background-removed image stored at: {file_url}",
+                hint=out_filename,
+                tags=["ai-built-file", "image"],
+            )
+        except Exception as e:
+            print(f"[REMOVE_BG] failed to register doc reference: {e}")
+
+    yield {
+        "type": "status",
+        "text": "Done" if file_url else "Processed but upload failed",
+        "detail": None,
+        "icon": "success" if file_url else "warning",
+    }
+    yield {"type": "file_result", "success": bool(file_url), "url": file_url, "filename": out_filename}
+
+
+# Whitelisted drawing operations for create_image(). This is a fixed,
+# already-audited set of real Pillow calls — the AI supplies DATA (which
+# op, with what coordinates/colors), never CODE. This is deliberately not
+# an arbitrary-code-execution tool: there is no path from a tool call here
+# to executing anything the AI wrote itself.
+_IMAGE_MAX_DIM = 2000  # caps memory/time per image; generous for anything UI-mockup-sized
+
+
+def create_image(
+    width: int,
+    height: int,
+    operations: list,
+    background_color: Optional[str] = "#ffffff",
+    filename: Optional[str] = None,
+    userid: Optional[str] = None,
+):
+    """
+    Draws a real image from a list of structured drawing operations and
+    uploads it — NOT by running AI-written code, by interpreting a fixed,
+    whitelisted set of operation types against real Pillow calls. Each
+    item in `operations` is a dict like:
+      {"op": "rectangle", "xy": [x0, y0, x1, y1], "fill": "#ff0000"}
+      {"op": "ellipse",   "xy": [x0, y0, x1, y1], "fill": "#00ff00"}
+      {"op": "line",      "xy": [x0, y0, x1, y1], "fill": "#000000", "width": 2}
+      {"op": "polygon",   "xy": [x0, y0, x1, y1, x2, y2, ...], "fill": "#0000ff"}
+      {"op": "text",      "xy": [x, y], "text": "Hello", "fill": "#000000"}
+    Unknown op types or malformed entries are skipped individually (with a
+    warning collected) rather than failing the whole image.
+
+    width/height capped at _IMAGE_MAX_DIM (2000) each.
+
+    Generator — yields {"type": "status", ...} progress, then a final
+    {"type": "file_result", "success", "url", "filename", "warnings"}
+    event.
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        import io as _io
+    except ImportError:
+        yield {
+            "type": "file_result",
+            "success": False,
+            "url": None,
+            "filename": filename or "image.png",
+            "error": "Image creation isn't installed on this server yet — needs `pip install pillow`.",
+        }
+        return
+
+    width = max(1, min(int(width or 512), _IMAGE_MAX_DIM))
+    height = max(1, min(int(height or 512), _IMAGE_MAX_DIM))
+
+    yield {"type": "status", "text": f"Drawing {width}x{height} image...", "detail": None, "icon": "build"}
+
+    img = Image.new("RGBA", (width, height), background_color or "#ffffff")
+    draw = ImageDraw.Draw(img)
+    warnings = []
+
+    for i, op in enumerate(operations or []):
+        try:
+            kind = (op or {}).get("op")
+            if kind == "rectangle":
+                draw.rectangle(op["xy"], fill=op.get("fill"), outline=op.get("outline"), width=op.get("outline_width", 1))
+            elif kind == "ellipse":
+                draw.ellipse(op["xy"], fill=op.get("fill"), outline=op.get("outline"), width=op.get("outline_width", 1))
+            elif kind == "line":
+                draw.line(op["xy"], fill=op.get("fill", "#000000"), width=op.get("width", 1))
+            elif kind == "polygon":
+                draw.polygon(op["xy"], fill=op.get("fill"), outline=op.get("outline"))
+            elif kind == "text":
+                font = ImageFont.load_default()
+                draw.text(op["xy"], str(op.get("text", "")), fill=op.get("fill", "#000000"), font=font)
+            else:
+                warnings.append(f"op #{i}: unknown op type '{kind}', skipped")
+        except Exception as e:
+            warnings.append(f"op #{i} ({op.get('op') if isinstance(op, dict) else '?'}): {e}, skipped")
+
+    out_filename = filename or "generated_image.png"
+    if not out_filename.lower().endswith(".png"):
+        out_filename += ".png"
+
+    buffer = _io.BytesIO()
+    img.save(buffer, format="PNG")
+    image_bytes = buffer.getvalue()
+
+    yield {"type": "status", "text": "Uploading image...", "detail": None, "icon": "upload"}
+    file_url = _upload_bytes_to_supabase(userid or "anonymous", out_filename, image_bytes, "image/png")
+
+    if file_url and userid:
+        try:
+            manager = UserDocManager(userid)
+            manager.save_doc(
+                filename=f"ref_{out_filename}.md",
+                content=f"Generated image stored at: {file_url}",
+                hint=out_filename,
+                tags=["ai-built-file", "image"],
+            )
+        except Exception as e:
+            print(f"[CREATE_IMAGE] failed to register doc reference: {e}")
+
+    yield {
+        "type": "status",
+        "text": "Done" if file_url else "Image built but upload failed",
+        "detail": None,
+        "icon": "success" if file_url else "warning",
+    }
+    yield {
+        "type": "file_result",
+        "success": bool(file_url),
+        "url": file_url,
+        "filename": out_filename,
+        "warnings": warnings,
+    }
+
+
+
     """
     Re-emits a file card for a file that was already built/uploaded
     earlier in THIS conversation — for when the user says "send that file
