@@ -2786,7 +2786,7 @@ def create_image(
     }
 
 
-
+def redisplay_file(url: str, filename: str) -> dict:
     """
     Re-emits a file card for a file that was already built/uploaded
     earlier in THIS conversation — for when the user says "send that file
