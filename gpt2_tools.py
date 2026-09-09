@@ -59,6 +59,7 @@ from gpt2_functions import (
     schedule_reminder,
     redisplay_images,
     generate_image,
+    check_image_quota,
     is_web_search_enabled,
     list_user_docs,
     read_user_doc,
@@ -373,6 +374,15 @@ def execute_tool(tool_name: str, ai_args: dict, session_context: dict):
             "if possible. Do not request search_web or any other internet "
             "tool again this turn."
         )
+
+    # generate_image gets its own gate, same shape as the WEB_TOOLS one
+    # above: free-tier daily quota is checked BEFORE the tool runs at all,
+    # never inside generate_image itself. Premium accounts always pass
+    # this check untouched (see check_image_quota in gpt2_functions.py).
+    if tool_name == "generate_image":
+        quota = check_image_quota(session_context.get("userid"))
+        if not quota["allowed"]:
+            return False, quota["message"]
 
     try:
         sig = inspect.signature(fn)

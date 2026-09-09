@@ -55,3 +55,21 @@ services:
         sync: false
       - key: SERPER_API_KEY
         sync: false
+
+      # NEW — premium image-generation provider chain (gpt2_functions.py:
+      # _build_image_provider_chain). Every one of these is optional and
+      # independent: whichever keys are actually set here become the
+      # premium (isPremium=true) chain, in this priority order —
+      # Flux -> Stability -> Ideogram -> Recraft — with Ideogram jumping
+      # to the front only when a prompt asks for legible text in the
+      # image. Leave any of these blank and that provider is just skipped,
+      # nothing breaks. Free-tier accounts never touch these keys at all —
+      # they always use Pollinations (no key needed, already wired).
+      - key: BFL_API_KEY        # Black Forest Labs — Flux Pro
+        sync: false
+      - key: STABILITY_API_KEY
+        sync: false
+      - key: IDEOGRAM_API_KEY
+        sync: false
+      - key: RECRAFT_API_KEY
+        sync: false

@@ -730,7 +730,282 @@ def redisplay_images(images: list) -> list:
     return out
 
 
-def generate_image(prompt: str, width: int = 1024, height: int = 1024) -> list:
+# ---------------------------------------------------------------------------
+# PREMIUM IMAGE PROVIDERS — each one is only ever "enabled" because its own
+# env var is set in Render, never a hardcoded flag. Add a key on Render ->
+# it's live next deploy. Remove/blank it -> it's silently skipped, chain
+# just falls through to the next enabled provider. No code change needed
+# either way.
+# ---------------------------------------------------------------------------
+STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
+BFL_API_KEY = os.getenv("BFL_API_KEY")            # Black Forest Labs — Flux
+IDEOGRAM_API_KEY = os.getenv("IDEOGRAM_API_KEY")
+RECRAFT_API_KEY = os.getenv("RECRAFT_API_KEY")
+
+FREE_IMAGE_LIMIT = 3  # per free (non-premium) account, per UTC day
+
+
+def _dims_to_aspect(width: int, height: int) -> str:
+    """Reduces width/height to the nearest common aspect-ratio string the
+    paid providers actually accept (they take 'W:H' tokens, not raw px)."""
+    ratio = width / height if height else 1.0
+    candidates = {
+        "1:1": 1.0, "16:9": 16 / 9, "9:16": 9 / 16,
+        "4:3": 4 / 3, "3:4": 3 / 4, "3:2": 3 / 2, "2:3": 2 / 3,
+    }
+    return min(candidates, key=lambda k: abs(candidates[k] - ratio))
+
+
+def _wants_text_rendering(prompt: str) -> bool:
+    """
+    Heuristic only, no extra API/model call: true when the prompt is
+    clearly asking for legible words/letters baked INTO the image itself
+    (a logo, a sign, a poster with a caption) rather than just describing
+    a scene. This is Ideogram's actual strength over the others, so it's
+    worth moving to the front of the chain specifically for this case.
+    """
+    p = prompt.lower()
+    triggers = (
+        "text that says", "word \"", "words \"", "says \"", "caption",
+        "logo with", "sign that says", "typography", "lettering",
+        "poster with the text", "banner that says", "quote:",
+    )
+    return any(t in p for t in triggers)
+
+
+def _build_image_provider_chain(prompt: str) -> list:
+    """
+    Enabled-only, prompt-aware ordering of the premium providers. A
+    provider whose env key isn't set never appears here at all — it's
+    filtered out before the tool loop ever tries to call it, so a missing
+    key just means "one less option", never a crash.
+    """
+    providers = [
+        {"name": "flux", "enabled": bool(BFL_API_KEY), "call": _generate_flux},
+        {"name": "stability", "enabled": bool(STABILITY_API_KEY), "call": _generate_stability},
+        {"name": "ideogram", "enabled": bool(IDEOGRAM_API_KEY), "call": _generate_ideogram},
+        {"name": "recraft", "enabled": bool(RECRAFT_API_KEY), "call": _generate_recraft},
+    ]
+    if _wants_text_rendering(prompt):
+        # Ideogram jumps to the front only for this specific case; every
+        # other prompt keeps the default Flux -> Stability -> Recraft order.
+        providers.sort(key=lambda p: p["name"] != "ideogram")
+    return [p for p in providers if p["enabled"]]
+
+
+def _generate_stability(prompt: str, aspect_ratio: str = "1:1") -> Optional[str]:
+    """Stability AI 'core' endpoint. Returns raw image bytes on success (it
+    has no hosted URL of its own), so the caller still has to upload them
+    somewhere — see _host_image_bytes."""
+    if not STABILITY_API_KEY:
+        return None
+    try:
+        resp = requests.post(
+            "https://api.stability.ai/v2beta/stable-image/generate/core",
+            headers={"Authorization": f"Bearer {STABILITY_API_KEY}", "Accept": "image/*"},
+            files={"none": ""},  # multipart/form-data is required even with no file
+            data={"prompt": prompt, "aspect_ratio": aspect_ratio, "output_format": "png"},
+            timeout=60,
+        )
+        if resp.status_code == 200:
+            return _host_image_bytes(resp.content, "png")
+        print(f"[IMAGE] stability failed {resp.status_code}: {resp.text[:200]}")
+        return None
+    except Exception as e:
+        print(f"[IMAGE] stability exception: {e}")
+        return None
+
+
+def _generate_flux(prompt: str, aspect_ratio: str = "1:1") -> Optional[str]:
+    """Black Forest Labs Flux Pro 1.1 — async submit + poll, returns a
+    short-lived hosted URL directly (no upload step needed on our side)."""
+    if not BFL_API_KEY:
+        return None
+    dims = {"1:1": (1024, 1024), "16:9": (1344, 768), "9:16": (768, 1344),
+            "4:3": (1184, 880), "3:4": (880, 1184), "3:2": (1216, 832), "2:3": (832, 1216)}
+    w, h = dims.get(aspect_ratio, (1024, 1024))
+    try:
+        submit = requests.post(
+            "https://api.bfl.ml/v1/flux-pro-1.1",
+            headers={"x-key": BFL_API_KEY, "Content-Type": "application/json"},
+            json={"prompt": prompt, "width": w, "height": h},
+            timeout=30,
+        )
+        submit.raise_for_status()
+        request_id = submit.json().get("id")
+        if not request_id:
+            return None
+        for _ in range(30):  # ~30s max wait
+            time.sleep(1)
+            poll = requests.get(
+                "https://api.bfl.ml/v1/get_result",
+                headers={"x-key": BFL_API_KEY}, params={"id": request_id}, timeout=15,
+            )
+            data = poll.json()
+            status = data.get("status")
+            if status == "Ready":
+                return data.get("result", {}).get("sample")
+            if status in ("Error", "Failed", "Content Moderated", "Request Moderated"):
+                print(f"[IMAGE] flux status={status}")
+                return None
+        print("[IMAGE] flux timed out waiting for result")
+        return None
+    except Exception as e:
+        print(f"[IMAGE] flux exception: {e}")
+        return None
+
+
+def _generate_ideogram(prompt: str, aspect_ratio: str = "1:1") -> Optional[str]:
+    """Ideogram — best of the four at rendering actual legible text inside
+    the image. Returns a hosted URL directly."""
+    if not IDEOGRAM_API_KEY:
+        return None
+    ratio_map = {"1:1": "ASPECT_1_1", "16:9": "ASPECT_16_9", "9:16": "ASPECT_9_16",
+                 "4:3": "ASPECT_4_3", "3:4": "ASPECT_3_4", "3:2": "ASPECT_3_2", "2:3": "ASPECT_2_3"}
+    try:
+        resp = requests.post(
+            "https://api.ideogram.ai/generate",
+            headers={"Api-Key": IDEOGRAM_API_KEY, "Content-Type": "application/json"},
+            json={"image_request": {
+                "prompt": prompt,
+                "aspect_ratio": ratio_map.get(aspect_ratio, "ASPECT_1_1"),
+            }},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return resp.json()["data"][0]["url"]
+    except Exception as e:
+        print(f"[IMAGE] ideogram exception: {e}")
+        return None
+
+
+def _generate_recraft(prompt: str, aspect_ratio: str = "1:1") -> Optional[str]:
+    """Recraft — strongest for design/vector-leaning asks (posters, icons).
+    Returns a hosted URL directly."""
+    if not RECRAFT_API_KEY:
+        return None
+    dims = {"1:1": (1024, 1024), "16:9": (1365, 768), "9:16": (768, 1365),
+            "4:3": (1024, 768), "3:4": (768, 1024), "3:2": (1024, 683), "2:3": (683, 1024)}
+    w, h = dims.get(aspect_ratio, (1024, 1024))
+    try:
+        resp = requests.post(
+            "https://external.api.recraft.ai/v1/images/generations",
+            headers={"Authorization": f"Bearer {RECRAFT_API_KEY}"},
+            json={"prompt": prompt, "size": f"{w}x{h}"},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return resp.json()["data"][0]["url"]
+    except Exception as e:
+        print(f"[IMAGE] recraft exception: {e}")
+        return None
+
+
+def _host_image_bytes(image_bytes: bytes, ext: str = "png") -> Optional[str]:
+    """
+    Only Stability hands back raw bytes instead of a hosted URL, so it's
+    the only premium provider that needs this. Reuses the exact same
+    Supabase bucket/credentials as _upload_to_supabase (build_file) —
+    just a binary body and an image content-type instead of text/plain.
+    Falls back to None on any failure so the provider chain just moves on
+    to the next enabled provider rather than crashing the request.
+    """
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        print("[IMAGE] SUPABASE_URL / SUPABASE_SERVICE_KEY not set — skipping upload")
+        return None
+    import uuid
+    storage_path = f"generated_images/{uuid.uuid4().hex}.{ext}"
+    upload_url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{storage_path}"
+    try:
+        resp = requests.post(
+            upload_url,
+            headers={
+                "apikey": SUPABASE_SERVICE_KEY,
+                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                "Content-Type": f"image/{ext}",
+                "x-upsert": "true",
+            },
+            data=image_bytes,
+            timeout=30,
+        )
+        if resp.status_code not in (200, 201):
+            print(f"[IMAGE] Supabase upload failed: {resp.status_code} — {resp.text[:200]}")
+            return None
+        return f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_BUCKET}/{storage_path}"
+    except Exception as e:
+        print(f"[IMAGE] Supabase upload error: {e}")
+        return None
+
+
+def check_image_quota(userid: Optional[str]) -> dict:
+    """
+    Gate checked in gpt2_tools.py's execute_tool BEFORE generate_image is
+    even called — mirrors the WEB_TOOLS/is_web_search_enabled pattern.
+    Reads the same users/{uid} Firestore doc the Flutter PaymentService
+    already writes isPremium to.
+
+    Premium -> always allowed, no counting.
+    Free/no account -> FREE_IMAGE_LIMIT per UTC calendar day.
+
+    Never raises and never blocks on a Firestore hiccup (fails OPEN) — a
+    transient read error shouldn't be the reason a real user gets refused
+    an image; the generation call still needs a working provider to
+    succeed regardless.
+    """
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    if not userid:
+        return {"allowed": True, "is_premium": False}
+
+    try:
+        ref = firestore.client().collection("users").document(userid)
+        data = ref.get().to_dict() or {}
+        if bool(data.get("isPremium", False)):
+            return {"allowed": True, "is_premium": True}
+
+        count = data.get("imageGenCount", 0)
+        if data.get("imageGenResetDate") != today:
+            count = 0  # first check of a new UTC day — quota renewed
+
+        if count >= FREE_IMAGE_LIMIT:
+            return {
+                "allowed": False,
+                "is_premium": False,
+                "message": (
+                    f"This free account has already used its {FREE_IMAGE_LIMIT} "
+                    "image generations for today — generate_image was blocked "
+                    "before it ran. Tell the user plainly and kindly that "
+                    f"they've hit today's free limit ({FREE_IMAGE_LIMIT}/day), "
+                    "it resets tomorrow, and upgrading to Pro gives unlimited "
+                    "image generation. Do not call generate_image again this turn."
+                ),
+            }
+        return {"allowed": True, "is_premium": False}
+    except Exception as e:
+        print(f"[IMAGE_QUOTA] check failed for userid={userid!r}: {e}")
+        return {"allowed": True, "is_premium": False}
+
+
+def increment_image_count(userid: Optional[str]) -> None:
+    """Bumps today's free-tier counter. Call ONLY after a successful
+    generation for a non-premium account — premium is never counted."""
+    if not userid:
+        return
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    try:
+        ref = firestore.client().collection("users").document(userid)
+        data = ref.get().to_dict() or {}
+        count = data.get("imageGenCount", 0)
+        if data.get("imageGenResetDate") != today:
+            count = 0
+        ref.set({"imageGenCount": count + 1, "imageGenResetDate": today}, merge=True)
+    except Exception as e:
+        print(f"[IMAGE_QUOTA] increment failed for userid={userid!r}: {e}")
+
+
+def generate_image(prompt: str, width: int = 1024, height: int = 1024, userid: Optional[str] = None) -> list:
     """
     Generates a brand-new AI image from a text prompt and returns it in
     the EXACT same list-of-dicts shape search_images does — so it flows
@@ -739,11 +1014,17 @@ def generate_image(prompt: str, width: int = 1024, height: int = 1024) -> list:
     images (see IMAGE_GEN_AWARENESS in prompts.py); use search_images
     instead for real photos of things that already exist.
 
-    Uses Pollinations.ai — free, no API key required, returns a direct
-    image URL (the URL itself generates the image on first fetch, no
-    separate upload/hosting step needed). A prompt-derived seed keeps
-    repeat calls with the same exact prompt visually consistent rather
-    than random each time.
+    Two completely separate paths, chosen by the account's isPremium flag
+    on its Firestore user doc (userid is auto-injected — see
+    SESSION_INJECTED_PARAMS in gpt2_tools.py, quota is already checked
+    there before this function is even called):
+
+    - Premium: walks _build_image_provider_chain(prompt) — Flux, Stability,
+      Ideogram, Recraft, in an order picked for this specific prompt,
+      skipping any provider whose env key isn't set, falling through to
+      the next enabled one on any failure.
+    - Free / no userid: always Pollinations — free, no key, no cost, not a
+      "worse paid provider", just a separate always-available path.
     """
     import urllib.parse
     if not prompt:
@@ -764,12 +1045,40 @@ def generate_image(prompt: str, width: int = 1024, height: int = 1024) -> list:
     if not prompt:
         return []
 
+    is_premium = False
+    if userid:
+        try:
+            doc = firestore.client().collection("users").document(userid).get()
+            is_premium = bool((doc.to_dict() or {}).get("isPremium", False))
+        except Exception as e:
+            print(f"[IMAGE_GEN] premium check failed for userid={userid!r}: {e}")
+
+    if is_premium:
+        aspect_ratio = _dims_to_aspect(width, height)
+        chain = _build_image_provider_chain(prompt)
+        for provider in chain:
+            image_url = provider["call"](prompt, aspect_ratio)
+            if image_url:
+                print(f"[IMAGE_GEN] {provider['name']} succeeded for userid={userid!r}")
+                return [{
+                    "image": image_url,
+                    "thumbnail": image_url,
+                    "title": prompt[:80],
+                    "source": f"AI-generated ({provider['name']})",
+                }]
+            print(f"[IMAGE_GEN] {provider['name']} failed, trying next provider")
+        print(f"[IMAGE_GEN] every premium provider failed for userid={userid!r}, "
+              "falling back to Pollinations so the user still gets an image")
+        # falls through to Pollinations below rather than returning []
+
     encoded = urllib.parse.quote(prompt)
     seed = abs(hash(prompt)) % 1_000_000
     url = (
         f"https://image.pollinations.ai/prompt/{encoded}"
         f"?width={width}&height={height}&seed={seed}&nologo=true"
     )
+    if userid and not is_premium:
+        increment_image_count(userid)
     return [{
         "image": url,
         "thumbnail": url,
