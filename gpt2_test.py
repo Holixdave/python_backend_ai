@@ -342,6 +342,10 @@ from gpt2_functions import (
     _looks_unsure,
     build_file,
     build_multiple_files,
+    build_zip_file,
+    edit_file,
+    remove_background,
+    create_image,
     redisplay_file,
     is_web_search_enabled,
     web_search_off_note,
@@ -1071,6 +1075,86 @@ def _ask_gpt2_core(
                 }, default=str)
             else:
                 tool_result = json.dumps(batch_files, default=str) if batch_files else "Tool produced no output."
+        elif call_data["tool"] == "build_zip_file":
+            # Same single-file-result pattern as build_file — the "file"
+            # here is the zip archive itself.
+            zip_args = {
+                "files": call_data["args"].get("files") or [],
+                "zip_filename": call_data["args"].get("zip_filename") or "archive.zip",
+                "userid": session_context["userid"],
+            }
+            zip_event = None
+            for event in build_zip_file(**zip_args):
+                if event.get("type") == "file_result":
+                    zip_event = event
+                else:
+                    yield event
+            success = bool(zip_event and zip_event.get("success"))
+            tool_result = json.dumps(zip_event, default=str) if zip_event else "Tool produced no output."
+            if success:
+                file_results.append(zip_event)
+                file_result = zip_event
+        elif call_data["tool"] == "edit_file":
+            # doc_id/find_text/replace_text are the AI's real args — userid
+            # still comes from session, never trusted from the AI. Same
+            # single-file-result pattern; on failure (0 or 2+ matches),
+            # tool_result carries the specific "error" back to the model
+            # so it can re-read the file or narrow find_text instead of
+            # silently giving up or guessing.
+            edit_args = {
+                "doc_id": call_data["args"].get("doc_id"),
+                "find_text": call_data["args"].get("find_text") or "",
+                "replace_text": call_data["args"].get("replace_text") or "",
+                "userid": session_context["userid"],
+            }
+            edit_event = None
+            for event in edit_file(**edit_args):
+                if event.get("type") == "file_result":
+                    edit_event = event
+                else:
+                    yield event
+            success = bool(edit_event and edit_event.get("success"))
+            tool_result = json.dumps(edit_event, default=str) if edit_event else "Tool produced no output."
+            if success:
+                file_results.append(edit_event)
+                file_result = edit_event
+        elif call_data["tool"] == "remove_background":
+            bg_args = {
+                "image_url": call_data["args"].get("image_url"),
+                "filename": call_data["args"].get("filename"),
+                "userid": session_context["userid"],
+            }
+            bg_event = None
+            for event in remove_background(**bg_args):
+                if event.get("type") == "file_result":
+                    bg_event = event
+                else:
+                    yield event
+            success = bool(bg_event and bg_event.get("success"))
+            tool_result = json.dumps(bg_event, default=str) if bg_event else "Tool produced no output."
+            if success:
+                file_results.append(bg_event)
+                file_result = bg_event
+        elif call_data["tool"] == "create_image":
+            img_args = {
+                "width": call_data["args"].get("width") or 512,
+                "height": call_data["args"].get("height") or 512,
+                "operations": call_data["args"].get("operations") or [],
+                "background_color": call_data["args"].get("background_color") or "#ffffff",
+                "filename": call_data["args"].get("filename"),
+                "userid": session_context["userid"],
+            }
+            img_event = None
+            for event in create_image(**img_args):
+                if event.get("type") == "file_result":
+                    img_event = event
+                else:
+                    yield event
+            success = bool(img_event and img_event.get("success"))
+            tool_result = json.dumps(img_event, default=str) if img_event else "Tool produced no output."
+            if success:
+                file_results.append(img_event)
+                file_result = img_event
         else:
             success, tool_result = execute_tool(call_data["tool"], call_data["args"], session_context)
             if success and call_data["tool"] in ("search_images", "redisplay_images", "generate_image"):
@@ -1273,4 +1357,3 @@ def _ask_gpt2_core(
 
     final_answer_clean, final_suggestions = extract_suggestions(strip_tool_markers(answer))
     yield {"type": "final", "answer": final_answer_clean, "sources": sources, "images": image_results, "provider": provider, "file": file_result, "files": file_results, "suggestions": final_suggestions}
-
