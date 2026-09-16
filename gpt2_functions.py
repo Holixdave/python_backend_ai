@@ -1005,14 +1005,18 @@ def increment_image_count(userid: Optional[str]) -> None:
         print(f"[IMAGE_QUOTA] increment failed for userid={userid!r}: {e}")
 
 
-def generate_image(prompt: str, width: int = 1024, height: int = 1024, userid: Optional[str] = None) -> list:
+def generate_image(prompt: str, width: int = 1024, height: int = 1024, userid: Optional[str] = None):
     """
-    Generates a brand-new AI image from a text prompt and returns it in
-    the EXACT same list-of-dicts shape search_images does — so it flows
-    through the identical gallery-rendering pipeline in gpt2_test.py with
-    zero frontend changes needed. This is for genuinely new/imaginary
-    images (see IMAGE_GEN_AWARENESS in prompts.py); use search_images
-    instead for real photos of things that already exist.
+    Generator — yields {"type": "status", ...} progress events while the
+    image is being generated (so the frontend can mount a loading box the
+    instant this starts, instead of waiting on dead air), then a single
+    final {"type": "image_result", "success", "images": [...]} event.
+    `images` is the EXACT same list-of-dicts shape search_images returns,
+    so once unwrapped it flows through the identical gallery-rendering
+    pipeline in gpt2_test.py with zero frontend changes needed beyond
+    listening for the new status events. This is for genuinely new/
+    imaginary images (see IMAGE_GEN_AWARENESS in prompts.py); use
+    search_images instead for real photos of things that already exist.
 
     Two completely separate paths, chosen by the account's isPremium flag
     on its Firestore user doc (userid is auto-injected — see
@@ -1028,7 +1032,8 @@ def generate_image(prompt: str, width: int = 1024, height: int = 1024, userid: O
     """
     import urllib.parse
     if not prompt:
-        return []
+        yield {"type": "image_result", "success": False, "images": [], "error": "empty prompt"}
+        return
 
     # Defensive cleanup: the model has been observed passing along leaked
     # instructional preamble (e.g. a bracketed "[ADVANCED THINKING ENABLED
@@ -1043,7 +1048,15 @@ def generate_image(prompt: str, width: int = 1024, height: int = 1024, userid: O
     prompt = re.sub(r'^\s*\[[^\]]{20,}\]\s*', '', prompt).strip()
     prompt = prompt[:300]
     if not prompt:
-        return []
+        yield {"type": "image_result", "success": False, "images": [], "error": "empty prompt"}
+        return
+
+    # NEW: real progress signal. This used to be a plain function that
+    # returned silently until the whole generation was done — the frontend
+    # had nothing to render during that wait. Now a "status" event fires
+    # the instant generation starts, so the loading box can mount
+    # immediately instead of waiting on dead air.
+    yield {"type": "status", "text": "Generating image...", "detail": prompt[:60], "icon": "image"}
 
     is_premium = False
     if userid:
@@ -1057,19 +1070,25 @@ def generate_image(prompt: str, width: int = 1024, height: int = 1024, userid: O
         aspect_ratio = _dims_to_aspect(width, height)
         chain = _build_image_provider_chain(prompt)
         for provider in chain:
+            yield {"type": "status", "text": f"Trying {provider['name']}...", "detail": None, "icon": "image"}
             image_url = provider["call"](prompt, aspect_ratio)
             if image_url:
                 print(f"[IMAGE_GEN] {provider['name']} succeeded for userid={userid!r}")
-                return [{
-                    "image": image_url,
-                    "thumbnail": image_url,
-                    "title": prompt[:80],
-                    "source": f"AI-generated ({provider['name']})",
-                }]
+                yield {
+                    "type": "image_result",
+                    "success": True,
+                    "images": [{
+                        "image": image_url,
+                        "thumbnail": image_url,
+                        "title": prompt[:80],
+                        "source": f"AI-generated ({provider['name']})",
+                    }],
+                }
+                return
             print(f"[IMAGE_GEN] {provider['name']} failed, trying next provider")
         print(f"[IMAGE_GEN] every premium provider failed for userid={userid!r}, "
               "falling back to Pollinations so the user still gets an image")
-        # falls through to Pollinations below rather than returning []
+        # falls through to Pollinations below rather than yielding empty
 
     encoded = urllib.parse.quote(prompt)
     seed = abs(hash(prompt)) % 1_000_000
@@ -1079,12 +1098,16 @@ def generate_image(prompt: str, width: int = 1024, height: int = 1024, userid: O
     )
     if userid and not is_premium:
         increment_image_count(userid)
-    return [{
-        "image": url,
-        "thumbnail": url,
-        "title": prompt[:80],
-        "source": "AI-generated",
-    }]
+    yield {
+        "type": "image_result",
+        "success": True,
+        "images": [{
+            "image": url,
+            "thumbnail": url,
+            "title": prompt[:80],
+            "source": "AI-generated",
+        }],
+    }
 
 
 def _call_provider_chain(providers: list, messages: list, temperature: float, max_tokens: int, reasoning_effort: str = None):

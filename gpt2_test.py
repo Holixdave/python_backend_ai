@@ -351,6 +351,9 @@ from gpt2_functions import (
     web_search_off_note,
     save_uploaded_files_as_docs,
     DESIGN_GUIDELINES,
+    generate_image,       # NEW — was only reachable via the generic
+    check_image_quota,    # execute_tool() path, which swallowed its
+                           # status events. Special-cased below instead.
 )
 
 # ---------------------------------------------------------------------------
@@ -1155,9 +1158,41 @@ def _ask_gpt2_core(
             if success:
                 file_results.append(img_event)
                 file_result = img_event
+        elif call_data["tool"] == "generate_image":
+            # NEW — was previously falling through to the generic
+            # execute_tool() path below, which drains a generator silently
+            # and only keeps the LAST event. That's why no loading signal
+            # was ever reaching the frontend: even after generate_image
+            # becomes a generator, execute_tool() would have thrown away
+            # every "status" event and returned only the final result.
+            # Special-cased here exactly like create_image/remove_background
+            # so status events actually get yielded through to the SSE
+            # stream as they happen.
+            quota = check_image_quota(session_context.get("userid"))
+            if not quota["allowed"]:
+                success, tool_result = False, quota["message"]
+            else:
+                gen_event = None
+                for event in generate_image(
+                    prompt=call_data["args"].get("prompt") or "",
+                    width=call_data["args"].get("width") or 1024,
+                    height=call_data["args"].get("height") or 1024,
+                    userid=session_context["userid"],
+                ):
+                    if event.get("type") == "image_result":
+                        gen_event = event
+                    else:
+                        yield event
+                success = bool(gen_event and gen_event.get("success"))
+                tool_result = json.dumps(gen_event, default=str) if gen_event else "Tool produced no output."
+                if success:
+                    image_results = gen_event.get("images", [])
+                    session_context["image_results"] = image_results
         else:
             success, tool_result = execute_tool(call_data["tool"], call_data["args"], session_context)
-            if success and call_data["tool"] in ("search_images", "redisplay_images", "generate_image"):
+            if success and call_data["tool"] in ("search_images", "redisplay_images"):
+                # generate_image no longer reaches this branch — it's
+                # special-cased above now so its status events stream live.
                 # search_images results ARE the gallery data now — no
                 # separate verify_image_relevance parsing step exists
                 # anymore, so this has to populate the real `image_results`
