@@ -344,6 +344,7 @@ from gpt2_functions import (
     build_multiple_files,
     build_zip_file,
     edit_file,
+    edit_file_by_intent,
     remove_background,
     create_image,
     redisplay_file,
@@ -355,6 +356,7 @@ from gpt2_functions import (
     check_image_quota,    # execute_tool() path, which swallowed its
                            # status events. Special-cased below instead.
 )
+from gpt2_sandbox import run_code  # same reason as generate_image above — special-cased below too
 
 # ---------------------------------------------------------------------------
 # TOOL LOOP — gpt2_tools.py. Lets the AI request one of the functions above
@@ -521,6 +523,7 @@ def _ask_gpt2_core(
     image_results = []  # populated automatically whenever search_images succeeds
     file_results = []  # every successful build_file/redisplay_file call this turn, in order
     file_result = None  # back-compat alias — last file, for the legacy singular "file" field
+    code_results = []  # every run_code call this turn, in order — its own list, not file_results, so the frontend can tell "here's a saved file" apart from "here's a code-run's stdout/stderr"
 
     # NEW: non-image attachments (html/txt/md/etc) — fetch each one's raw
     # content, auto-save it into the user's UserDocManager (so
@@ -779,7 +782,7 @@ def _ask_gpt2_core(
     )
 
     if answer is None:
-        yield {"type": "final", "answer": _friendly_failure_message(), "sources": [], "images": image_results, "provider": None, "file": file_result, "files": file_results, "suggestions": []}
+        yield {"type": "final", "answer": _friendly_failure_message(), "sources": [], "images": image_results, "provider": None, "file": file_result, "files": file_results, "codes": code_results, "suggestions": []}
         return
 
     # NEW — pull any <think>...</think> block Qwen returned inline out of
@@ -981,7 +984,7 @@ def _ask_gpt2_core(
                     TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=MAX_ANSWER_TOKENS,
                 )
                 if answer is None:
-                    yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None, "file": file_result, "files": file_results, "suggestions": []}
+                    yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None, "file": file_result, "files": file_results, "codes": code_results, "suggestions": []}
                     return
                 answer, model_thinking = _split_thinking(answer)
                 if model_thinking:
@@ -1121,6 +1124,30 @@ def _ask_gpt2_core(
             if success:
                 file_results.append(edit_event)
                 file_result = edit_event
+        elif call_data["tool"] == "edit_file_by_intent":
+            # NEW — planner/executor split. The model only supplies
+            # doc_id + a plain-English instruction here; edit_file_by_intent
+            # itself makes a SEPARATE model call internally to work out the
+            # actual find/replace pair, validates it, retries on its own if
+            # the first attempt isn't unique, then calls edit_file() for
+            # real. Same single-file-result pattern as edit_file above —
+            # userid still comes from session, never trusted from the AI.
+            intent_args = {
+                "doc_id": call_data["args"].get("doc_id"),
+                "instruction": call_data["args"].get("instruction") or "",
+                "userid": session_context["userid"],
+            }
+            intent_event = None
+            for event in edit_file_by_intent(**intent_args):
+                if event.get("type") == "file_result":
+                    intent_event = event
+                else:
+                    yield event
+            success = bool(intent_event and intent_event.get("success"))
+            tool_result = json.dumps(intent_event, default=str) if intent_event else "Tool produced no output."
+            if success:
+                file_results.append(intent_event)
+                file_result = intent_event
         elif call_data["tool"] == "remove_background":
             bg_args = {
                 "image_url": call_data["args"].get("image_url"),
@@ -1188,6 +1215,33 @@ def _ask_gpt2_core(
                 if success:
                     image_results = gen_event.get("images", [])
                     session_context["image_results"] = image_results
+        elif call_data["tool"] == "run_code":
+            # Same reason as generate_image just above: run_code is a
+            # generator yielding real "status" events (icon:"sandbox") as
+            # it picks an engine and runs — draining it via the generic
+            # execute_tool() path below would throw those away and the
+            # frontend's running-card would never mount. Special-cased so
+            # they stream live; the real {"type":"code_result", ...} dict
+            # lands in code_results (own list — a code run isn't a saved
+            # file, so it doesn't belong in file_results).
+            code_event = None
+            for event in run_code(
+                code=call_data["args"].get("code") or "",
+                language=call_data["args"].get("language") or "python",
+                userid=session_context["userid"],
+            ):
+                if event.get("type") == "code_result":
+                    code_event = event
+                else:
+                    yield event
+            success = bool(code_event and code_event.get("success"))
+            tool_result = json.dumps(code_event, default=str) if code_event else "Tool produced no output."
+            if code_event:
+                # unlike file_results, appended whether or not the run
+                # succeeded — a failing run (non-zero exit, real stderr)
+                # is still a real result the user should see, not silently
+                # dropped the way a failed build_file is.
+                code_results.append(code_event)
         else:
             success, tool_result = execute_tool(call_data["tool"], call_data["args"], session_context)
             if success and call_data["tool"] in ("search_images", "redisplay_images"):
@@ -1315,7 +1369,7 @@ def _ask_gpt2_core(
             TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=MAX_ANSWER_TOKENS,
         )
         if answer is None:
-            yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None, "file": file_result, "files": file_results, "suggestions": []}
+            yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None, "file": file_result, "files": file_results, "codes": code_results, "suggestions": []}
             return
 
         answer, model_thinking = _split_thinking(answer)
@@ -1387,8 +1441,8 @@ def _ask_gpt2_core(
                             "icon": step_icon
                         }
                 retry_answer_clean, retry_suggestions = extract_suggestions(strip_tool_markers(retry_answer))
-                yield {"type": "final", "answer": retry_answer_clean, "sources": fallback_sources, "images": image_results, "provider": retry_provider, "file": file_result, "files": file_results, "suggestions": retry_suggestions}
+                yield {"type": "final", "answer": retry_answer_clean, "sources": fallback_sources, "images": image_results, "provider": retry_provider, "file": file_result, "files": file_results, "codes": code_results, "suggestions": retry_suggestions}
                 return
 
     final_answer_clean, final_suggestions = extract_suggestions(strip_tool_markers(answer))
-    yield {"type": "final", "answer": final_answer_clean, "sources": sources, "images": image_results, "provider": provider, "file": file_result, "files": file_results, "suggestions": final_suggestions}
+    yield {"type": "final", "answer": final_answer_clean, "sources": sources, "images": image_results, "provider": provider, "file": file_result, "files": file_results, "codes": code_results, "suggestions": final_suggestions}

@@ -48,6 +48,7 @@ from gpt2_functions import (
     build_multiple_files,
     build_zip_file,
     edit_file,
+    edit_file_by_intent,
     remove_background,
     create_image,
     redisplay_file,
@@ -71,6 +72,7 @@ from gpt2_functions import (
     edit_doc_line,
     update_user_doc,
 )
+from gpt2_sandbox import run_code
 
 # Tools that reach out to the internet on the user's behalf. Every one of
 # these is gated by the user's own web_search toggle (see
@@ -103,6 +105,7 @@ TOOL_REGISTRY = {
     "build_multiple_files": build_multiple_files,
     "build_zip_file": build_zip_file,
     "edit_file": edit_file,
+    "edit_file_by_intent": edit_file_by_intent,
     "remove_background": remove_background,
     "create_image": create_image,
     "redisplay_file": redisplay_file,
@@ -124,6 +127,7 @@ TOOL_REGISTRY = {
     "read_doc_lines": read_doc_lines,
     "edit_doc_line": edit_doc_line,
     "update_user_doc": update_user_doc,
+    "run_code": run_code,
 }
 # Short, hand-written purpose lines for the initial manifest only — this is
 # deliberately NOT the full docs. Once the AI picks one, it gets the real
@@ -137,7 +141,8 @@ TOOL_DESCRIPTIONS = {
     "build_file": "Save and upload a file — you write the COMPLETE real file content yourself as the 'content' argument, this just uploads it. Call it once per file; call it multiple times in one turn for multiple files.",
     "build_multiple_files": "Save and upload SEVERAL files in one call — pass files as a list of {\"filename\": ..., \"content\": ...} objects, each with the COMPLETE real content you wrote. Use this instead of calling build_file repeatedly when asked for more than a couple files. Capped at 39 files per call — if you have more, call it again with the rest after.",
     "build_zip_file": "Bundle several files into ONE downloadable .zip archive — same {\"filename\", \"content\"} list shape as build_multiple_files, but packs them into a single zip instead of uploading each separately. Use when the user wants everything as one package.",
-    "edit_file": "Surgically edit ONE existing saved file by exact find/replace — find_text must match exactly once in the file, so re-read it first if unsure. Use this instead of build_file when only part of a file needs to change; do not retype the whole file.",
+    "edit_file": "Surgically edit ONE existing saved file by exact find/replace — find_text must match exactly once in the file, so re-read it first if unsure. Use this instead of build_file when only part of a file needs to change; do not retype the whole file. Prefer edit_file_by_intent unless you already know the exact current text to find.",
+    "edit_file_by_intent": "Edit ONE existing saved file by describing the change in plain English — e.g. \"change the submit button color to blue\". You do NOT need to know or retype the exact current text; a separate step reads the real file and works out the precise find/replace for you, retrying itself if the first attempt isn't unique. Use this for any edit instead of edit_file/build_file — it's far more reliable when you can't see the file's exact current wording.",
     "remove_background": "Remove the background from an existing image (given its url) and get back a transparent PNG.",
     "create_image": "Draw a real image from simple shapes/text (rectangles, ellipses, lines, polygons, text) — describe what to draw as a list of operations, this renders and uploads the actual image.",
     "redisplay_file": "Re-show a file you already built/uploaded earlier in this conversation, using its real filename + url — does not rebuild or re-upload anything.",
@@ -155,6 +160,7 @@ TOOL_DESCRIPTIONS = {
     "schedule_reminder": "Schedule a push-notification reminder for the user at a specific future time.",
     "redisplay_images": "Re-render a gallery of images already found earlier in this conversation, without searching again.",
     "generate_image": "Generate a brand-new AI image from a text description and show it in a real gallery, same as search_images.",
+    "run_code": "Actually execute code you wrote (python/javascript/bash) in a sandbox and get back real stdout/stderr/exit_code — use this to verify code works instead of just asserting it does. Not for build_file's file content, only for checking correctness.",
     "list_user_docs": "List all files the user has saved/uploaded (filename, hint, tags) — use this to find the right doc_id when the user says 'my file' without naming it.",
     "read_user_doc": "Read a specific saved file's full content by its doc_id (filename).",
     "read_doc_lines": "Read a specific line range from a saved file, with the total line count — use before editing a specific line.",
