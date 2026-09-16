@@ -2239,6 +2239,165 @@ def edit_file(doc_id: str, find_text: str, replace_text: str, userid: Optional[s
     }
 
 
+EDIT_EXECUTOR_MAX_ATTEMPTS = 3
+
+
+def _edit_executor_system_prompt() -> str:
+    return (
+        "You are a precise code-editing executor. You will be given the FULL "
+        "current content of one file and a short plain-English instruction "
+        "describing a single change to make. Your entire job is to locate the "
+        "exact snippet in the file that needs to change and decide what it "
+        "should become.\n\n"
+        "Respond with ONLY a JSON object, nothing else — no markdown fences, "
+        "no explanation before or after:\n"
+        '{"find": "<exact substring copied verbatim from the file>", '
+        '"replace": "<the new text to put in its place>"}\n\n'
+        "Rules:\n"
+        "- find must be copied character-for-character from the file content "
+        "you were given — do not retype it from memory, do not fix "
+        "whitespace, do not guess.\n"
+        "- find must be the SMALLEST snippet that still uniquely identifies "
+        "the one spot to change — usually one line or a few, not the whole "
+        "function or file.\n"
+        "- If the instruction only makes sense applied to one specific "
+        "occurrence and the file has several similar-looking ones, include "
+        "enough surrounding lines in find to make it unique.\n"
+        "- Output ONLY the JSON object, nothing before or after it."
+    )
+
+
+def edit_file_by_intent(doc_id: str, instruction: str, userid: Optional[str] = None):
+    """
+    Two-step "planner -> executor" edit tool, for weak/small backend models
+    that struggle to both DECIDE what to change and correctly retype an
+    exact, unique find/replace pair in a single shot.
+
+    The calling model (the "planner") only supplies a short plain-English
+    instruction here — e.g. "change the submit button's color to blue" —
+    NOT exact find/replace text. This function is the "executor": it reads
+    the file's real current content, hands both the content and the
+    instruction to a dedicated model call whose ONLY job is to return
+    {"find", "replace"} JSON, validates that find matches EXACTLY ONCE
+    (the same rule edit_file() enforces), and on success calls the real
+    edit_file() to apply it.
+
+    If the executor's proposed find text doesn't match exactly once, it's
+    told precisely why (0 vs 2+ matches, or invalid JSON) and asked again
+    — up to EDIT_EXECUTOR_MAX_ATTEMPTS times, the same kind of corrective
+    feedback a human reviewer would give, rather than silently failing or
+    guessing which occurrence to touch.
+
+    Generator — yields {"type": "status", ...} progress, then delegates to
+    edit_file()'s own final {"type": "file_result", ...} event once a
+    valid find/replace pair is found (or yields its own file_result with
+    an "error" if every attempt is exhausted).
+    """
+    if not userid:
+        yield {"type": "file_result", "success": False, "url": None, "filename": doc_id or "file", "error": "no userid on this session"}
+        return
+    if not doc_id:
+        yield {"type": "file_result", "success": False, "url": None, "filename": "file", "error": "no doc_id given"}
+        return
+    if not instruction or not instruction.strip():
+        yield {"type": "file_result", "success": False, "url": None, "filename": doc_id, "error": "no instruction given"}
+        return
+
+    yield {"type": "status", "text": f"Reading {doc_id}...", "detail": None, "icon": "docs"}
+    try:
+        manager = UserDocManager(userid)
+        doc = manager.get_doc(doc_id)
+    except Exception as e:
+        yield {"type": "file_result", "success": False, "url": None, "filename": doc_id, "error": f"Failed to read '{doc_id}': {e}"}
+        return
+    if doc is None:
+        yield {"type": "file_result", "success": False, "url": None, "filename": doc_id, "error": f"No saved doc found with id '{doc_id}' for this user."}
+        return
+
+    content = doc.get("content", "")
+    if not content:
+        yield {"type": "file_result", "success": False, "url": None, "filename": doc_id, "error": "file is empty, nothing to edit"}
+        return
+
+    messages = [
+        {"role": "system", "content": _edit_executor_system_prompt()},
+        {"role": "user", "content": f"FILE CONTENT ({doc_id}):\n\n{content}\n\nINSTRUCTION: {instruction.strip()}"},
+    ]
+
+    feedback = None
+    for attempt in range(1, EDIT_EXECUTOR_MAX_ATTEMPTS + 1):
+        yield {
+            "type": "status",
+            "text": "Working out the exact edit..." if attempt == 1 else f"Refining edit (attempt {attempt})...",
+            "detail": instruction.strip()[:60],
+            "icon": "wrench",
+        }
+        if feedback:
+            messages.append({"role": "user", "content": feedback})
+
+        raw, provider, finish_reason = _call_provider_chain_full(
+            TEXT_PROVIDERS, messages, temperature=0.1, max_tokens=4000,
+        )
+        if raw is None:
+            yield {"type": "file_result", "success": False, "url": None, "filename": doc_id, "error": "editor model unavailable — try again shortly"}
+            return
+
+        messages.append({"role": "assistant", "content": raw})
+
+        try:
+            cleaned = _FENCE_RE.sub("", raw).strip()
+            parsed = json.loads(cleaned)
+            find_text = parsed.get("find", "") or ""
+            replace_text = parsed.get("replace", "") or ""
+        except Exception:
+            feedback = (
+                'That was not valid JSON. Respond with ONLY the JSON object '
+                '{"find": "...", "replace": "..."}, nothing else — no '
+                "explanation, no markdown fences."
+            )
+            continue
+
+        if not find_text:
+            feedback = (
+                '"find" was empty. It must be a real, non-empty snippet '
+                "copied exactly from the FILE CONTENT shown above."
+            )
+            continue
+
+        occurrences = content.count(find_text)
+        if occurrences == 0:
+            feedback = (
+                "That exact text was not found in the file — you may have "
+                "retyped it slightly wrong (whitespace, quotes, indentation, "
+                "etc). Copy the snippet character-for-character from the "
+                "FILE CONTENT shown above and try again."
+            )
+            continue
+        if occurrences > 1:
+            feedback = (
+                f"That text matched {occurrences} places in the file — it "
+                "must match exactly once. Include a bit more surrounding "
+                "context (e.g. the line above or below it) so it's unique, "
+                "then try again."
+            )
+            continue
+
+        # Valid, unique match — hand off to the real edit_file() to apply
+        # it. This is where the actual file gets read again, patched, and
+        # re-uploaded — edit_file() re-validates independently, so there's
+        # no risk of a race between this check and the real write.
+        for event in edit_file(doc_id=doc_id, find_text=find_text, replace_text=replace_text, userid=userid):
+            yield event
+        return
+
+    yield {
+        "type": "file_result",
+        "success": False,
+        "url": None,
+        "filename": doc_id,
+        "error": f"Couldn't land a unique edit after {EDIT_EXECUTOR_MAX_ATTEMPTS} attempts — try a more specific instruction, or describe exactly where in the file the change belongs.",
+    }
+
 
 _CHAT_LEAD_RE = re.compile(
     r"^\s*(sure[,!.]|okay[,!.]|alright[,!.]|certainly[,!.]|of course[,!.]|"
