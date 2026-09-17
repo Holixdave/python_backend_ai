@@ -47,6 +47,88 @@ MAX_MEMORY_BYTES = 256 * 1024 * 1024   # 256 MB, subprocess mode only
 MAX_PROCS = 32                          # fork-bomb guard, subprocess mode only
 
 # ---------------------------------------------------------------------------
+# PACKAGE INSTALL — a persistent, SHARED target directory every run_code
+# call points PYTHONPATH at, rather than a fresh venv/site-packages per
+# call. This is the actual fix for "it fails multiple times installing,
+# but it still works": a package like rembg pulls in onnxruntime, a
+# 100MB+ binary wheel — installing that fresh on every single call is
+# slow enough on a small host that it looks like repeated failures (each
+# one probably a timeout, not a real error), even though the previous
+# attempt likely finished fine, just not before the caller gave up
+# waiting. Sharing one target dir across calls means only the FIRST
+# request for a given package ever pays that cost — everything after
+# is an instant no-op.
+# ---------------------------------------------------------------------------
+PACKAGE_INSTALL_DIR = os.environ.get("SANDBOX_PACKAGE_DIR", "/tmp/sandbox_site_packages")
+PACKAGE_INSTALL_TIMEOUT_S = 120   # generous — first pull of a heavy package (torch, onnxruntime) is slow
+MAX_PACKAGES_PER_RUN = 6
+_PACKAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")   # blocks flags/paths/shell metacharacters
+
+
+def _installed_package_names() -> set:
+    # pip's --target layout drops a `<name>-<version>.dist-info` folder
+    # per package — reading those names back out is how we know what's
+    # already there without re-invoking pip (which would itself take a
+    # network round trip just to report "already satisfied").
+    names = set()
+    if os.path.isdir(PACKAGE_INSTALL_DIR):
+        for entry in os.listdir(PACKAGE_INSTALL_DIR):
+            base = entry.split("-")[0].split(".")[0]
+            if base:
+                names.add(base.lower().replace("_", "-"))
+    return names
+
+
+def _ensure_packages(packages: list, timeout_s: int = PACKAGE_INSTALL_TIMEOUT_S):
+    """
+    Installs any of `packages` not already present in the shared
+    PACKAGE_INSTALL_DIR. Returns (ok: bool, message: str) — message is
+    empty on success (nothing worth telling the AI), or a clear reason
+    on failure so it can be surfaced in the code_result error rather
+    than the run just silently failing with a confusing ModuleNotFoundError.
+    """
+    if not packages:
+        return True, ""
+    packages = packages[:MAX_PACKAGES_PER_RUN]
+    for pkg in packages:
+        if not _PACKAGE_NAME_RE.match(pkg):
+            return False, (
+                f"'{pkg}' isn't a valid package name — only letters, digits, "
+                "'.', '_', '-' are allowed, no flags, paths, or version pins "
+                "with extra characters."
+            )
+
+    os.makedirs(PACKAGE_INSTALL_DIR, exist_ok=True)
+    already_there = _installed_package_names()
+    to_install = [p for p in packages if p.lower().replace("_", "-") not in already_there]
+    if not to_install:
+        return True, ""
+
+    cmd = [
+        "python3", "-m", "pip", "install",
+        "--target", PACKAGE_INSTALL_DIR,
+        "--no-input", "--disable-pip-version-check", "--no-warn-script-location",
+        *to_install,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=timeout_s, text=True)
+    except subprocess.TimeoutExpired:
+        return False, (
+            f"Installing {', '.join(to_install)} took longer than {timeout_s}s "
+            "and was stopped. Large binary packages (onnxruntime, torch, "
+            "opencv, etc.) can be slow to pull on a small host — the "
+            "download that timed out is often still partially cached, so "
+            "retrying the same run_code call again is worth trying before "
+            "assuming it's broken."
+        )
+    except Exception as e:
+        return False, f"pip failed to run at all: {e}"
+
+    if proc.returncode != 0:
+        return False, f"pip install failed:\n{_truncate(proc.stderr, 2000)}"
+    return True, ""
+
+# ---------------------------------------------------------------------------
 # LANGUAGE_RUNNERS — one entry per supported language. Each entry knows how
 # to run itself both ways (subprocess + docker), so adding a language means
 # adding one dict here, not touching the chain/execution logic at all.
@@ -55,6 +137,14 @@ LANGUAGE_RUNNERS = {
     "python": {
         "ext": "py",
         "subprocess_cmd": lambda path: ["python3", "-I", "-S", path],
+        # Used instead of subprocess_cmd when packages were requested.
+        # -I (isolated mode) ignores PYTHONPATH entirely, which would
+        # make pip-installed packages unreachable no matter where they
+        # live — so packages drop -I but keep -S, which still skips the
+        # HOST's own global/user site-packages. Only our own
+        # PACKAGE_INSTALL_DIR (set via PYTHONPATH in _clean_env) becomes
+        # importable, never whatever happens to be installed on the host.
+        "subprocess_cmd_with_packages": lambda path: ["python3", "-S", path],
         "docker_image": "python:3.12-slim",
         "docker_cmd": lambda container_path: ["python3", container_path],
     },
@@ -88,16 +178,22 @@ def _truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
     return text[:limit] + f"\n...[truncated, {len(text) - limit} more chars]"
 
 
-def _clean_env() -> dict:
+def _clean_env(extra_pythonpath: Optional[str] = None) -> dict:
     # Deliberately NOT os.environ.copy() — this is the whole point. A
     # subprocess that inherited the real environment gets every API key/
     # DB credential/secret this backend process holds, for free. Hand it
     # a minimal, boring environment instead.
-    return {
+    env = {
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "HOME": "/tmp",
         "LANG": "C.UTF-8",
     }
+    if extra_pythonpath:
+        # Only ever set to PACKAGE_INSTALL_DIR (our own pip --target dir),
+        # never anything caller-supplied — this is not a general env
+        # passthrough, just how the installed packages become importable.
+        env["PYTHONPATH"] = extra_pythonpath
+    return env
 
 
 def _resource_limits():
@@ -134,8 +230,11 @@ def _docker_available() -> bool:
         return False
 
 
-def _run_subprocess(runner: dict, code_path: str, timeout_s: int) -> dict:
-    cmd = runner["subprocess_cmd"](code_path)
+def _run_subprocess(runner: dict, code_path: str, timeout_s: int, packages_dir: Optional[str] = None) -> dict:
+    if packages_dir and "subprocess_cmd_with_packages" in runner:
+        cmd = runner["subprocess_cmd_with_packages"](code_path)
+    else:
+        cmd = runner["subprocess_cmd"](code_path)
     if not shutil.which(cmd[0]):
         return {"ok": False, "skip_reason": f"'{cmd[0]}' not installed on this host"}
 
@@ -144,7 +243,7 @@ def _run_subprocess(runner: dict, code_path: str, timeout_s: int) -> dict:
         proc = subprocess.run(
             cmd,
             cwd=os.path.dirname(code_path),
-            env=_clean_env(),
+            env=_clean_env(extra_pythonpath=packages_dir),
             capture_output=True,
             timeout=timeout_s,
             preexec_fn=_resource_limits(),
@@ -171,7 +270,7 @@ def _run_subprocess(runner: dict, code_path: str, timeout_s: int) -> dict:
         return {"ok": False, "skip_reason": f"subprocess launch failed: {e}"}
 
 
-def _run_docker(runner: dict, code_path: str, timeout_s: int) -> dict:
+def _run_docker(runner: dict, code_path: str, timeout_s: int, packages_dir: Optional[str] = None) -> dict:
     if not _docker_available():
         return {"ok": False, "skip_reason": "docker not installed or daemon not reachable"}
 
@@ -186,9 +285,13 @@ def _run_docker(runner: dict, code_path: str, timeout_s: int) -> dict:
         "--pids-limit", str(MAX_PROCS),
         "--user", "nobody",
         "-v", f"{os.path.dirname(code_path)}:/code:ro",
-        runner["docker_image"],
-        *runner["docker_cmd"](container_path),
     ]
+    if packages_dir and os.path.isdir(packages_dir):
+        # Same shared install dir subprocess mode uses — mounted read-only
+        # so a container can import what was pip-installed on the host
+        # without re-downloading anything itself.
+        cmd += ["-v", f"{packages_dir}:/packages:ro", "-e", "PYTHONPATH=/packages"]
+    cmd += [runner["docker_image"], *runner["docker_cmd"](container_path)]
 
     start = time.time()
     try:
@@ -227,7 +330,8 @@ def _build_sandbox_chain(prefer_isolation: bool) -> list:
 
 
 def run_code(code: str, language: str = "python", timeout_s: int = DEFAULT_TIMEOUT_S,
-             prefer_isolation: bool = False, userid: Optional[str] = None):
+             prefer_isolation: bool = False, userid: Optional[str] = None,
+             packages: Optional[list] = None):
     """
     Executes AI-written code for real and returns actual stdout/stderr/
     exit_code — so the AI can verify code works instead of just asserting
@@ -238,6 +342,18 @@ def run_code(code: str, language: str = "python", timeout_s: int = DEFAULT_TIMEO
     language: one of LANGUAGE_RUNNERS' keys or an alias in LANGUAGE_ALIASES
     (currently python / javascript / bash). Unknown language -> failure
     result naming what's supported, no exception raised.
+
+    packages: optional list of pip package names (python only — leave
+    empty/None for javascript/bash) your code imports beyond the standard
+    library, e.g. ["numpy", "requests"]. These get installed automatically
+    into a shared, persistent directory before your code runs — you do
+    NOT need to run `pip install` yourself as a separate bash command,
+    just list what you need here and import it normally in your code. The
+    first request for a given package pays the real install cost; every
+    call after that (from anyone, not just you) reuses it instantly. Max
+    6 packages per call; invalid-looking names (anything that isn't a
+    plain package name — no flags, paths, or shell syntax) are rejected
+    before anything runs.
 
     Engine chain: tries subprocess first (fast, resource-limited, scrubbed
     env, no inherited secrets), falls through to Docker (real isolation —
@@ -271,8 +387,33 @@ def run_code(code: str, language: str = "python", timeout_s: int = DEFAULT_TIMEO
         }
         return
 
+    if packages and lang != "python":
+        yield {
+            "type": "code_result", "success": False, "engine": None,
+            "language": lang, "stdout": "", "stderr": "", "exit_code": None,
+            "error": f"packages is only supported for python right now, not {lang}.",
+        }
+        return
+
     code = code[:MAX_CODE_CHARS]
     timeout_s = max(1, min(int(timeout_s or DEFAULT_TIMEOUT_S), MAX_TIMEOUT_S))
+
+    packages_dir = None
+    if packages:
+        yield {
+            "type": "status",
+            "text": f"Installing {', '.join(packages[:MAX_PACKAGES_PER_RUN])}...",
+            "detail": lang, "icon": "sandbox",
+        }
+        ok, install_err = _ensure_packages(packages)
+        if not ok:
+            yield {
+                "type": "code_result", "success": False, "engine": None,
+                "language": lang, "stdout": "", "stderr": "", "exit_code": None,
+                "error": f"Couldn't install required packages: {install_err}",
+            }
+            return
+        packages_dir = PACKAGE_INSTALL_DIR
 
     # detail carries the language, same slot generate_image uses for its
     # prompt — the frontend reads event.statusDetail off the FIRST
@@ -289,7 +430,7 @@ def run_code(code: str, language: str = "python", timeout_s: int = DEFAULT_TIMEO
         chain = _build_sandbox_chain(prefer_isolation)
         for link in chain:
             yield {"type": "status", "text": f"Executing via {link['name']}...", "detail": None, "icon": "sandbox"}
-            outcome = link["call"](runner, code_path, timeout_s)
+            outcome = link["call"](runner, code_path, timeout_s, packages_dir)
             if outcome.get("ok"):
                 print(f"[SANDBOX] ran {lang} via {link['name']} — exit={outcome.get('exit_code')}, "
                       f"timed_out={outcome.get('timed_out')}, userid={userid!r}")

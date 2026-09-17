@@ -1228,6 +1228,7 @@ def _ask_gpt2_core(
             for event in run_code(
                 code=call_data["args"].get("code") or "",
                 language=call_data["args"].get("language") or "python",
+                packages=call_data["args"].get("packages"),
                 userid=session_context["userid"],
             ):
                 if event.get("type") == "code_result":

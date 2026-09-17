@@ -32,6 +32,12 @@ from gpt2_test import (
     REQUEST_TIMEOUT,
     REASONING_STEP_ICONS,
 )
+# gpt2_sandbox has no imports back into gpt2_functions/gpt2_test, so this
+# is a plain one-directional import — no circularity risk like the one
+# above. Reused here so remove_background/create_image share the exact
+# same shared, persistent install directory and install logic run_code
+# uses, instead of each tool inventing its own pip-install path.
+from gpt2_sandbox import _ensure_packages, PACKAGE_INSTALL_DIR
 
 
 from prompts import INTENT_SYSTEM_PROMPT
@@ -2799,8 +2805,32 @@ def remove_background(image_url: str, userid: Optional[str] = None, filename: Op
     yield {"type": "status", "text": "Removing background...", "detail": None, "icon": "build"}
 
     try:
-        from rembg import remove as rembg_remove
-        from PIL import Image
+        import sys as _sys
+        if PACKAGE_INSTALL_DIR not in _sys.path:
+            _sys.path.append(PACKAGE_INSTALL_DIR)
+        try:
+            from rembg import remove as rembg_remove
+            from PIL import Image
+        except ImportError:
+            # Not on the host yet — try the SAME shared install path
+            # run_code uses instead of failing immediately. First call
+            # ever to hit this pays the real cost (rembg pulls in
+            # onnxruntime, a large binary wheel); every call after that,
+            # from this tool or from run_code, reuses the same shared
+            # directory and skips straight to importable.
+            yield {"type": "status", "text": "Installing background-removal model (first time only)...", "detail": None, "icon": "sandbox"}
+            ok, install_err = _ensure_packages(["rembg", "pillow"])
+            if not ok:
+                yield {
+                    "type": "file_result",
+                    "success": False,
+                    "url": None,
+                    "filename": filename or "image.png",
+                    "error": f"Background removal isn't available and couldn't be installed automatically: {install_err}",
+                }
+                return
+            from rembg import remove as rembg_remove
+            from PIL import Image
         import io as _io
 
         session = _get_rembg_session()
@@ -2812,15 +2842,6 @@ def remove_background(image_url: str, userid: Optional[str] = None, filename: Op
         out_buffer = _io.BytesIO()
         img.save(out_buffer, format="PNG")
         final_bytes = out_buffer.getvalue()
-    except ImportError:
-        yield {
-            "type": "file_result",
-            "success": False,
-            "url": None,
-            "filename": filename or "image.png",
-            "error": "Background removal isn't installed on this server yet — needs `pip install rembg pillow`.",
-        }
-        return
     except Exception as e:
         print(f"[REMOVE_BG] processing failed: {e}")
         yield {"type": "file_result", "success": False, "url": None, "filename": filename or "image.png", "error": f"Background removal failed: {e}"}
@@ -2890,15 +2911,31 @@ def create_image(
     event.
     """
     try:
-        from PIL import Image, ImageDraw, ImageFont
+        import sys as _sys
+        if PACKAGE_INSTALL_DIR not in _sys.path:
+            _sys.path.append(PACKAGE_INSTALL_DIR)
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+        except ImportError:
+            ok, install_err = _ensure_packages(["pillow"])
+            if not ok:
+                yield {
+                    "type": "file_result",
+                    "success": False,
+                    "url": None,
+                    "filename": filename or "image.png",
+                    "error": f"Image creation isn't available and couldn't be installed automatically: {install_err}",
+                }
+                return
+            from PIL import Image, ImageDraw, ImageFont
         import io as _io
-    except ImportError:
+    except Exception as e:
         yield {
             "type": "file_result",
             "success": False,
             "url": None,
             "filename": filename or "image.png",
-            "error": "Image creation isn't installed on this server yet — needs `pip install pillow`.",
+            "error": f"Image creation failed to load: {e}",
         }
         return
 

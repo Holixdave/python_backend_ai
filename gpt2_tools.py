@@ -160,7 +160,7 @@ TOOL_DESCRIPTIONS = {
     "schedule_reminder": "Schedule a push-notification reminder for the user at a specific future time.",
     "redisplay_images": "Re-render a gallery of images already found earlier in this conversation, without searching again.",
     "generate_image": "Generate a brand-new AI image from a text description and show it in a real gallery, same as search_images.",
-    "run_code": "Actually execute code you wrote (python/javascript/bash) in a sandbox and get back real stdout/stderr/exit_code — use this to verify code works instead of just asserting it does. Not for build_file's file content, only for checking correctness.",
+    "run_code": "Actually execute code you wrote (python/javascript/bash) in a sandbox and get back real stdout/stderr/exit_code — use this whenever the user asks you to run/execute/test code, not just to verify build_file's output. Supports an optional packages list (python only) to auto-install third-party imports like numpy/requests before running — no separate pip install step needed.",
     "list_user_docs": "List all files the user has saved/uploaded (filename, hint, tags) — use this to find the right doc_id when the user says 'my file' without naming it.",
     "read_user_doc": "Read a specific saved file's full content by its doc_id (filename).",
     "read_doc_lines": "Read a specific line range from a saved file, with the total line count — use before editing a specific line.",
