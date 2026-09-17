@@ -1038,6 +1038,7 @@ def _ask_gpt2_core(
                 if event.get("type") == "file_result":
                     file_event = event
                 else:
+                    event["tool"] = "build_file"
                     yield event
             success = bool(file_event and file_event.get("success"))
             tool_result = json.dumps(file_event, default=str) if file_event else "Tool produced no output."
@@ -1057,6 +1058,7 @@ def _ask_gpt2_core(
                 if event.get("type") == "batch_result":
                     batch_event = event
                 else:
+                    event["tool"] = "build_file"
                     yield event
             batch_files = (batch_event or {}).get("files", [])
             for f in batch_files:
@@ -1094,6 +1096,7 @@ def _ask_gpt2_core(
                 if event.get("type") == "file_result":
                     zip_event = event
                 else:
+                    event["tool"] = "build_file"
                     yield event
             success = bool(zip_event and zip_event.get("success"))
             tool_result = json.dumps(zip_event, default=str) if zip_event else "Tool produced no output."
@@ -1118,6 +1121,7 @@ def _ask_gpt2_core(
                 if event.get("type") == "file_result":
                     edit_event = event
                 else:
+                    event["tool"] = "edit_file"
                     yield event
             success = bool(edit_event and edit_event.get("success"))
             tool_result = json.dumps(edit_event, default=str) if edit_event else "Tool produced no output."
@@ -1142,6 +1146,7 @@ def _ask_gpt2_core(
                 if event.get("type") == "file_result":
                     intent_event = event
                 else:
+                    event["tool"] = "edit_file"
                     yield event
             success = bool(intent_event and intent_event.get("success"))
             tool_result = json.dumps(intent_event, default=str) if intent_event else "Tool produced no output."
@@ -1159,6 +1164,7 @@ def _ask_gpt2_core(
                 if event.get("type") == "file_result":
                     bg_event = event
                 else:
+                    event["tool"] = "remove_background"
                     yield event
             success = bool(bg_event and bg_event.get("success"))
             tool_result = json.dumps(bg_event, default=str) if bg_event else "Tool produced no output."
@@ -1179,6 +1185,12 @@ def _ask_gpt2_core(
                 if event.get("type") == "file_result":
                     img_event = event
                 else:
+                    # Shares the existing image-generating card — both
+                    # tools produce "a new image", just via different
+                    # methods (ML model vs whitelisted drawing ops); no
+                    # reason for the user to see two different visual
+                    # languages for the same kind of wait.
+                    event["tool"] = "generate_image"
                     yield event
             success = bool(img_event and img_event.get("success"))
             tool_result = json.dumps(img_event, default=str) if img_event else "Tool produced no output."
@@ -1209,6 +1221,7 @@ def _ask_gpt2_core(
                     if event.get("type") == "image_result":
                         gen_event = event
                     else:
+                        event["tool"] = "generate_image"
                         yield event
                 success = bool(gen_event and gen_event.get("success"))
                 tool_result = json.dumps(gen_event, default=str) if gen_event else "Tool produced no output."
@@ -1234,6 +1247,7 @@ def _ask_gpt2_core(
                 if event.get("type") == "code_result":
                     code_event = event
                 else:
+                    event["tool"] = "run_code"
                     yield event
             success = bool(code_event and code_event.get("success"))
             tool_result = json.dumps(code_event, default=str) if code_event else "Tool produced no output."
