@@ -55,6 +55,8 @@ services:
         sync: false
       - key: SERPER_API_KEY
         sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
 
       # NEW — premium image-generation provider chain (gpt2_functions.py:
       # _build_image_provider_chain). Every one of these is optional and
