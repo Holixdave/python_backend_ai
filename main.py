@@ -20,12 +20,12 @@ from user_doc_manager import UserDocManager
 from database import get_db, Base, engine
 from memory_service import build_memory, remember_turn
 import firebase_config  # noqa: F401 (must init before firestore_repository is used)
-
+from tts_router import router as tts_router
 app = FastAPI(
     title="UTME26 AI Backend",
     description="Brilliant AI Study Assistant"
 )
-
+app.include_router(tts_router)
 # Creates the chat_history table on startup if it doesn't exist yet —
 # same as the working app's main.py does with Base.metadata.create_all.
 Base.metadata.create_all(bind=engine)
