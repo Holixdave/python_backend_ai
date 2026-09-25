@@ -267,6 +267,115 @@ def extract_suggestions(text: Optional[str]) -> tuple:
     return cleaned, suggestions[:4]  # cap at 4 — a wall of chips isn't useful
 
 
+_INLINE_VISUAL_RE = re.compile(
+    r"<<in_line_svg>>\s*(.*?)\s*<<in_line_svg>>"
+    r"|<<inline_html>>\s*(.*?)\s*<<inline_html>>",
+    re.DOTALL | re.IGNORECASE,
+)
+# Safety net for a malformed/cut-off tag pair (opening tag with no closing
+# tag, e.g. the model got cut off by the token cap mid-visual). The main
+# regex above simply won't match an unclosed pair, so the raw marker text
+# would otherwise fall through untouched into a "text" segment and leak to
+# the user. Same pattern as _ORPHAN_THINK_CLOSE_RE in gpt2_functions.py.
+_ORPHAN_VISUAL_TAG_RE = re.compile(r"<<in_line_svg>>|<<inline_html>>", re.IGNORECASE)
+
+
+# Blocks whose INTERIOR must never be scanned for inline visuals. The frontend
+# renders these as their own widgets and one of them (<<exam>>) legitimately
+# nests <<in_line_svg>>/<<inline_html>> inside a <<question>> as that
+# question's graphic; a fenced code block may also just *show* the tags as an
+# example. Splitting inside any of these tears the block in half (exam) or
+# turns documentation into a live widget (fence).
+_PROTECTED_BLOCK_RE = re.compile(
+    r"```.*?```"
+    r"|<<note\s[^>]*?>{1,2}.*?<<note>{1,2}"
+    r"|<<exam\s[^>]*?>{1,2}.*?<<exam>{1,2}",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def build_answer_segments(text: Optional[str]) -> list:
+    """
+    Splits a cleaned model answer into an ORDERED list of typed segments,
+    so the frontend never has to regex-scan raw text for <<in_line_svg>>
+    / <<inline_html>> markers itself: it iterates this list and switches on
+    segment["type"].
+
+    Returns, in original order:
+      {"type": "text", "content": "..."}                  -- markdown (may still contain
+                                                             code fences, <<note>>, <<exam>>,
+                                                             <<suggestion>> -- rendered client-side)
+      {"type": "inline_svg", "content": "<svg>...</svg>"}  -- raw SVG markup
+      {"type": "inline_html", "content": "<div>...</div>"} -- raw HTML/JS
+
+    Fenced code blocks and <<note>>/<<exam>> blocks are PROTECTED: they are
+    kept whole inside a text segment and never scanned for visuals (see
+    _PROTECTED_BLOCK_RE). Everywhere else, tags are never nested and each
+    pair holds exactly one visual, so one left-to-right scan is enough.
+
+    Always returns at least one segment (possibly an empty "text" one) so
+    callers can safely iterate blindly.
+    """
+    if not text:
+        return [{"type": "text", "content": text or ""}]
+
+    segments: list = []
+    buf: list = []
+
+    def flush_text():
+        joined = "".join(buf).strip()
+        buf.clear()
+        if joined:
+            segments.append({"type": "text", "content": joined})
+
+    def scan_unprotected(chunk: str):
+        pos = 0
+        for match in _INLINE_VISUAL_RE.finditer(chunk):
+            # Orphan/malformed opening tags (cut-off generation) are removed
+            # from plain text ONLY here -- never from protected blocks, where
+            # the literal tag text is legitimate content.
+            buf.append(_ORPHAN_VISUAL_TAG_RE.sub("", chunk[pos:match.start()]))
+            flush_text()
+            svg_content, html_content = match.group(1), match.group(2)
+            if svg_content is not None:
+                segments.append({"type": "inline_svg", "content": svg_content.strip()})
+            else:
+                segments.append({"type": "inline_html", "content": html_content.strip()})
+            pos = match.end()
+        buf.append(_ORPHAN_VISUAL_TAG_RE.sub("", chunk[pos:]))
+
+    cursor = 0
+    for block in _PROTECTED_BLOCK_RE.finditer(text):
+        scan_unprotected(text[cursor:block.start()])
+        buf.append(block.group(0))
+        cursor = block.end()
+    scan_unprotected(text[cursor:])
+    flush_text()
+
+    if not segments:
+        segments.append({"type": "text", "content": ""})
+    return segments
+
+
+def flatten_segments_to_text(segments: list) -> str:
+    """
+    Legacy-compat helper (not currently wired in — kept available for when
+    an OLDER client needs a flat string and shouldn't see raw SVG/HTML
+    markup dumped into a chat bubble). Collapses a segments list back into
+    one plain string, replacing visual segments with a short readable
+    placeholder instead of their raw markup.
+    """
+    parts = []
+    for seg in segments:
+        if seg["type"] == "text":
+            parts.append(seg["content"])
+        elif seg["type"] == "inline_svg":
+            parts.append("[diagram]")
+        elif seg["type"] == "inline_html":
+            parts.append("[interactive widget]")
+    return "\n\n".join(p for p in parts if p.strip()).strip()
+
+
 def strip_tool_markers(text: Optional[str]) -> str:
     """
     Safety net — removes any raw <<TOOL_REQUEST>>/<<TOOL_CALL>> block from

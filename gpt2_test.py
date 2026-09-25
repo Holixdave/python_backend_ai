@@ -358,6 +358,9 @@ from gpt2_functions import (
 )
 from gpt2_sandbox import run_code  # same reason as generate_image above — special-cased below too
 
+# Shown by the frontend as a chip on every image the model GENERATES (not searched).
+GENERATED_IMAGE_MODEL_NAME = "OOOR Sonnic 5gen"
+
 # ---------------------------------------------------------------------------
 # TOOL LOOP — gpt2_tools.py. Lets the AI request one of the functions above
 # for itself mid-answer by echoing a <<TOOL_REQUEST>> block, instead of us
@@ -373,6 +376,7 @@ from gpt2_tools import (
     execute_tool,
     strip_tool_markers,
     extract_suggestions,
+    build_answer_segments,
     MAX_TOOL_ROUNDS,
 )
 
@@ -782,7 +786,7 @@ def _ask_gpt2_core(
     )
 
     if answer is None:
-        yield {"type": "final", "answer": _friendly_failure_message(), "sources": [], "images": image_results, "provider": None, "file": file_result, "files": file_results, "codes": code_results, "suggestions": []}
+        yield {"type": "final", "answer": _friendly_failure_message(), "segments": build_answer_segments(_friendly_failure_message()), "sources": [], "images": image_results, "provider": None, "file": file_result, "files": file_results, "codes": code_results, "suggestions": []}
         return
 
     # NEW — pull any <think>...</think> block Qwen returned inline out of
@@ -832,15 +836,23 @@ def _ask_gpt2_core(
         # genuinely won't comply, and an unbounded retry loop isn't the
         # right trade for one extra round trip.
 
+    # NEW — dedicated "think" event type instead of piggybacking on
+    # "status" (icon=="thinking" string-matching was the only way a
+    # frontend could tell a reasoning step apart from a tool-progress
+    # message before). "think_end" fires once, right after the last step,
+    # as an explicit boundary the frontend can key off to close the
+    # Thought sheet and start rendering the real answer — no more
+    # inferring the boundary from whatever event happens to show up next.
     if model_thinking:
         for i, step in enumerate(_split_into_steps(model_thinking), start=1):
             step_icon, step_clean = _extract_step_icon(step)
             yield {
-                "type": "status",
-                "text": _derive_step_label(step_clean, i),
-                "detail": step_clean,
-                "icon": step_icon
+                "type": "think",
+                "step": i,
+                "icon": step_icon,
+                "text": step_clean,
             }
+        yield {"type": "think_end"}
 
     # ── TOOL LOOP — the AI decided it wants to call one of TOOL_REGISTRY's
     # real functions for itself. Detected from whatever it just echoed
@@ -984,18 +996,19 @@ def _ask_gpt2_core(
                     TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=MAX_ANSWER_TOKENS,
                 )
                 if answer is None:
-                    yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None, "file": file_result, "files": file_results, "codes": code_results, "suggestions": []}
+                    yield {"type": "final", "answer": _friendly_failure_message(), "segments": build_answer_segments(_friendly_failure_message()), "sources": sources, "images": image_results, "provider": None, "file": file_result, "files": file_results, "codes": code_results, "suggestions": []}
                     return
                 answer, model_thinking = _split_thinking(answer)
                 if model_thinking:
                     for i, step in enumerate(_split_into_steps(model_thinking), start=1):
                         step_icon, step_clean = _extract_step_icon(step)
                         yield {
-                            "type": "status",
-                            "text": _derive_step_label(step_clean, i),
-                            "detail": step_clean,
+                            "type": "think",
+                            "step": i,
                             "icon": step_icon,
+                            "text": step_clean,
                         }
+                    yield {"type": "think_end"}
                 search_text = (model_thinking or "") + "\n" + (answer or "")
                 continue
 
@@ -1226,7 +1239,15 @@ def _ask_gpt2_core(
                 success = bool(gen_event and gen_event.get("success"))
                 tool_result = json.dumps(gen_event, default=str) if gen_event else "Tool produced no output."
                 if success:
-                    image_results = gen_event.get("images", [])
+                    # Tag every image as AI-GENERATED (vs. web-searched) so the frontend can
+                    # show the "OOOR Sonnic 5gen" chip on it. Lives on the image dict itself
+                    # (not a separate SSE event) so it survives history persistence: the
+                    # frontend stores `images` per message and re-renders them on reload.
+                    image_results = [
+                        {**img, "generated": True, "model": GENERATED_IMAGE_MODEL_NAME}
+                        if isinstance(img, dict) else img
+                        for img in gen_event.get("images", [])
+                    ]
                     session_context["image_results"] = image_results
         elif call_data["tool"] == "run_code":
             # Same reason as generate_image just above: run_code is a
@@ -1384,7 +1405,7 @@ def _ask_gpt2_core(
             TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=MAX_ANSWER_TOKENS,
         )
         if answer is None:
-            yield {"type": "final", "answer": _friendly_failure_message(), "sources": sources, "images": image_results, "provider": None, "file": file_result, "files": file_results, "codes": code_results, "suggestions": []}
+            yield {"type": "final", "answer": _friendly_failure_message(), "segments": build_answer_segments(_friendly_failure_message()), "sources": sources, "images": image_results, "provider": None, "file": file_result, "files": file_results, "codes": code_results, "suggestions": []}
             return
 
         answer, model_thinking = _split_thinking(answer)
@@ -1392,11 +1413,12 @@ def _ask_gpt2_core(
             for i, step in enumerate(_split_into_steps(model_thinking), start=1):
                 step_icon, step_clean = _extract_step_icon(step)
                 yield {
-                    "type": "status",
-                    "text": _derive_step_label(step_clean, i),
-                    "detail": step_clean,
+                    "type": "think",
+                    "step": i,
                     "icon": step_icon,
+                    "text": step_clean,
                 }
+            yield {"type": "think_end"}
         search_text = (model_thinking or "") + "\n" + (answer or "")
 
     # ── Safety net: classifier said "no search needed", but the model
@@ -1450,14 +1472,17 @@ def _ask_gpt2_core(
                     for i, step in enumerate(_split_into_steps(retry_thinking), start=1):
                         step_icon, step_clean = _extract_step_icon(step)
                         yield {
-                            "type": "status",
-                            "text": _derive_step_label(step_clean, i),
-                            "detail": step_clean,
-                            "icon": step_icon
+                            "type": "think",
+                            "step": i,
+                            "icon": step_icon,
+                            "text": step_clean,
                         }
+                    yield {"type": "think_end"}
                 retry_answer_clean, retry_suggestions = extract_suggestions(strip_tool_markers(retry_answer))
-                yield {"type": "final", "answer": retry_answer_clean, "sources": fallback_sources, "images": image_results, "provider": retry_provider, "file": file_result, "files": file_results, "codes": code_results, "suggestions": retry_suggestions}
+                retry_segments = build_answer_segments(retry_answer_clean)
+                yield {"type": "final", "answer": retry_answer_clean, "segments": retry_segments, "sources": fallback_sources, "images": image_results, "provider": retry_provider, "file": file_result, "files": file_results, "codes": code_results, "suggestions": retry_suggestions}
                 return
 
     final_answer_clean, final_suggestions = extract_suggestions(strip_tool_markers(answer))
-    yield {"type": "final", "answer": final_answer_clean, "sources": sources, "images": image_results, "provider": provider, "file": file_result, "files": file_results, "codes": code_results, "suggestions": final_suggestions}
+    final_segments = build_answer_segments(final_answer_clean)
+    yield {"type": "final", "answer": final_answer_clean, "segments": final_segments, "sources": sources, "images": image_results, "provider": provider, "file": file_result, "files": file_results, "codes": code_results, "suggestions": final_suggestions}
