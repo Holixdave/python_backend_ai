@@ -400,16 +400,17 @@ def ask_gpt2(
     file_names: Optional[list] = None,
     userid: Optional[str] = None,
     extra_system_prompt: Optional[str] = None,
+    copilot_mode: bool = False,
 ) -> dict:
     """
     Non-streaming entry point — unchanged signature/behaviour for existing
     callers (main.py's /ai-query and /generate-question); the new
-    extra_system_prompt kwarg is optional and defaults to None everywhere,
-    so nothing about existing callers changes. Internally just drains
-    _ask_gpt2_core() and keeps the final result.
+    extra_system_prompt/copilot_mode kwargs are optional and default to
+    None/False everywhere, so nothing about existing callers changes.
+    Internally just drains _ask_gpt2_core() and keeps the final result.
     """
     final = None
-    for event in _ask_gpt2_core(prompt, history=history, image_urls=image_urls, file_urls=file_urls, file_names=file_names, userid=userid, extra_system_prompt=extra_system_prompt):
+    for event in _ask_gpt2_core(prompt, history=history, image_urls=image_urls, file_urls=file_urls, file_names=file_names, userid=userid, extra_system_prompt=extra_system_prompt, copilot_mode=copilot_mode):
         if event["type"] == "final":
             final = event
     return {
@@ -430,14 +431,16 @@ def ask_gpt2_stream(
     file_names: Optional[list] = None,
     userid: Optional[str] = None,
     extra_system_prompt: Optional[str] = None,
+    copilot_mode: bool = False,
 ):
     """
     Streaming entry point for the /ai-query-stream SSE endpoint. Yields the
     exact same real progress events _ask_gpt2_core() produces — nothing
-    synthetic. main.py wraps these as SSE frames. extra_system_prompt is
-    optional and defaults to None, so existing callers are unaffected.
+    synthetic. main.py wraps these as SSE frames. extra_system_prompt and
+    copilot_mode are optional and default to None/False, so existing
+    callers are unaffected.
     """
-    yield from _ask_gpt2_core(prompt, history=history, image_urls=image_urls, file_urls=file_urls, file_names=file_names, userid=userid, extra_system_prompt=extra_system_prompt)
+    yield from _ask_gpt2_core(prompt, history=history, image_urls=image_urls, file_urls=file_urls, file_names=file_names, userid=userid, extra_system_prompt=extra_system_prompt, copilot_mode=copilot_mode)
 
 
 def _sources_from_tool_result(tool_name: str, tool_result: str, ai_args: dict) -> list:
@@ -511,6 +514,7 @@ def _ask_gpt2_core(
     file_names: Optional[list] = None,
     userid: Optional[str] = None,
     extra_system_prompt: Optional[str] = None,
+    copilot_mode: bool = False,
 ):
     """
     Shared generator. extra_system_prompt (optional, default None) lets a
@@ -522,6 +526,21 @@ def _ask_gpt2_core(
     reply in. It's appended to current_identity right before the final
     message list is built (see below) so it's the most recent — highest
     salience — system content, after this backend's own tool-use hints.
+
+    copilot_mode (optional, default False): for requests coming through an
+    IDE agent (Cline, Continue) that has ITS OWN tool-call convention and
+    its own access to the real project files. Two things go wrong without
+    this: (1) this backend's TOOL_USE_HINT gives the model a second,
+    competing text convention for tools like run_code/list_user_docs,
+    which only ever run in this backend's own sandbox — NOT the user's
+    actual repo — so the model "investigates" using fake tools and
+    confabulates answers about files it never actually saw; (2) the
+    classifier's "complex" routing sends the request through a separate,
+    weaker reasoning-model path that isn't reliable for coding questions.
+    copilot_mode=True skips TOOL_USE_HINT and this backend's own tool-call
+    loop entirely (so the model has no competing convention and just
+    follows the CLIENT's tool instructions from extra_system_prompt
+    instead), and forces normal (non-"complex") routing.
 
     Yields:
       {"type": "status", "text": str}                                  -- real progress, as it happens
@@ -583,6 +602,13 @@ def _ask_gpt2_core(
     # ── Normal text flow ─────────────────────────────────────────────────
     yield {"type": "status", "text": "Reading your question...", "detail": None, "icon": "thinking"}
     intent = classify_intent(prompt, history=history)
+
+    if copilot_mode and intent["complex"]:
+        # See copilot_mode docstring above: don't route coding questions
+        # from an IDE agent through the separate "complex/thinking" model
+        # path — force the normal path instead.
+        print(f"[COPILOT] overriding complex=True -> False for this request")
+        intent["complex"] = False
 
     # FIXED (see header notes 6): the classifier only ever sees text, so it
     # has no way of knowing an image was already uploaded and analysed
@@ -760,7 +786,8 @@ def _ask_gpt2_core(
     # it "remembered" needing to follow. Putting REASONING_STEP_HINT last
     # instead means it's the most recent instruction in context right
     # before the model starts writing its response.
-    current_identity += TOOL_USE_HINT
+    if not copilot_mode:
+        current_identity += TOOL_USE_HINT
     current_identity += SUGGESTION_HINT
     current_identity += INLINE_VISUAL_HINT
     current_identity += NOTE_CALLOUT_HINT
@@ -914,7 +941,7 @@ def _ask_gpt2_core(
     # which way the model requested them closes that off entirely.
     NEEDS_SOURCE_ROUNDTRIP = {"build_file", "analyze_image"}
 
-    while tool_round < MAX_TOOL_ROUNDS:
+    while (not copilot_mode) and tool_round < MAX_TOOL_ROUNDS:
         # Some models don't reliably follow the intended 2-step protocol
         # (REQUEST tool name -> we show real source -> model sends CALL with
         # real args) and jump straight to a full <<TOOL_CALL>> on the first

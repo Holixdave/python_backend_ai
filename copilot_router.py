@@ -173,7 +173,7 @@ async def chat_completions(
 
     # ---- Non-streaming: one request, one JSON response -------------------
     if not request.stream:
-        result = ask_gpt2(prompt, history=chat_history, userid=userid, extra_system_prompt=client_system_prompt)
+        result = ask_gpt2(prompt, history=chat_history, userid=userid, extra_system_prompt=client_system_prompt, copilot_mode=True)
         memory_reply = _build_memory_reply(result["answer"], result.get("sources"), result.get("images"))
         remember_turn(db, userid, prompt, memory_reply)
         return {
@@ -197,7 +197,7 @@ async def chat_completions(
         final_answer = ""
         final_sources = []
         final_images = []
-        for event in ask_gpt2_stream(prompt, history=chat_history, userid=userid, extra_system_prompt=client_system_prompt):
+        for event in ask_gpt2_stream(prompt, history=chat_history, userid=userid, extra_system_prompt=client_system_prompt, copilot_mode=True):
             if INCLUDE_STATUS_IN_STREAM and event["type"] == "status" and event.get("text"):
                 yield _sse_chunk(completion_id, request.model, {"content": f"\n> {event['text']}\n"})
             elif event["type"] == "final":
