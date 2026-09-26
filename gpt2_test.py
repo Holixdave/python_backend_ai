@@ -399,14 +399,17 @@ def ask_gpt2(
     file_urls: Optional[list] = None,
     file_names: Optional[list] = None,
     userid: Optional[str] = None,
+    extra_system_prompt: Optional[str] = None,
 ) -> dict:
     """
     Non-streaming entry point — unchanged signature/behaviour for existing
-    callers (main.py's /ai-query and /generate-question). Internally just
-    drains _ask_gpt2_core() and keeps the final result.
+    callers (main.py's /ai-query and /generate-question); the new
+    extra_system_prompt kwarg is optional and defaults to None everywhere,
+    so nothing about existing callers changes. Internally just drains
+    _ask_gpt2_core() and keeps the final result.
     """
     final = None
-    for event in _ask_gpt2_core(prompt, history=history, image_urls=image_urls, file_urls=file_urls, file_names=file_names, userid=userid):
+    for event in _ask_gpt2_core(prompt, history=history, image_urls=image_urls, file_urls=file_urls, file_names=file_names, userid=userid, extra_system_prompt=extra_system_prompt):
         if event["type"] == "final":
             final = event
     return {
@@ -426,13 +429,15 @@ def ask_gpt2_stream(
     file_urls: Optional[list] = None,
     file_names: Optional[list] = None,
     userid: Optional[str] = None,
+    extra_system_prompt: Optional[str] = None,
 ):
     """
     Streaming entry point for the /ai-query-stream SSE endpoint. Yields the
     exact same real progress events _ask_gpt2_core() produces — nothing
-    synthetic. main.py wraps these as SSE frames.
+    synthetic. main.py wraps these as SSE frames. extra_system_prompt is
+    optional and defaults to None, so existing callers are unaffected.
     """
-    yield from _ask_gpt2_core(prompt, history=history, image_urls=image_urls, file_urls=file_urls, file_names=file_names, userid=userid)
+    yield from _ask_gpt2_core(prompt, history=history, image_urls=image_urls, file_urls=file_urls, file_names=file_names, userid=userid, extra_system_prompt=extra_system_prompt)
 
 
 def _sources_from_tool_result(tool_name: str, tool_result: str, ai_args: dict) -> list:
@@ -505,9 +510,20 @@ def _ask_gpt2_core(
     file_urls: Optional[list] = None,
     file_names: Optional[list] = None,
     userid: Optional[str] = None,
+    extra_system_prompt: Optional[str] = None,
 ):
     """
-    Shared generator. Yields:
+    Shared generator. extra_system_prompt (optional, default None) lets a
+    caller hand in a CLIENT'S OWN system prompt — e.g. an IDE agent like
+    Cline sends tool-call-format instructions ("respond using
+    <write_to_file> tags...") as its system message. Without this, that
+    instruction set would be silently dropped, and the client's diff/apply
+    UI would never fire because the model was never told the format to
+    reply in. It's appended to current_identity right before the final
+    message list is built (see below) so it's the most recent — highest
+    salience — system content, after this backend's own tool-use hints.
+
+    Yields:
       {"type": "status", "text": str}                                  -- real progress, as it happens
       {"type": "final", "answer": str, "sources": list, "provider": str|None}  -- exactly once, last
     """
@@ -758,6 +774,19 @@ def _ask_gpt2_core(
         # instead of generic/dated guesses — this is the actual fix for
         # "the AI doesn't know web design well."
         current_identity += "\n\n" + DESIGN_GUIDELINES
+
+    if extra_system_prompt:
+        # Client-supplied system prompt (e.g. Cline's tool-format
+        # instructions) — appended last so it's the freshest instruction
+        # the model sees, right before it starts generating. Anything this
+        # backend's own hints above say still applies; this just adds the
+        # client's own required response format on top.
+        current_identity += (
+            "\n\n[The client application you're responding through also "
+            "requires the following, from its own system prompt — follow "
+            "it for how to format actions/edits in your reply:]\n\n"
+            + extra_system_prompt
+        )
 
     messages = [{"role": "system", "content": current_identity}]
     messages.extend(lean_history)
