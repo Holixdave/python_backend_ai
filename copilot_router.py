@@ -1,19 +1,20 @@
 # copilot_router.py
 """
-OpenAI-compatible /v1/chat/completions endpoint so this backend can be
-plugged into VS Code extensions (Continue, Cline, etc.) as a custom
-"OpenAI Compatible" provider.
+OpenAI-compatible endpoints so this backend can be plugged into VS Code
+extensions (Continue, Cline, etc.) as a custom "OpenAI Compatible" provider.
 
 Design notes:
-- This endpoint does NOT use the backend's DB-backed memory
-  (memory_service.build_memory / remember_turn). Continue/Cline already
-  resend the full conversation in `messages` on every request, so we just
-  forward that straight into ask_gpt2 / ask_gpt2_stream as `history`.
-  Nothing from VS Code chats is persisted server-side.
-- Any "system" role messages sent by the extension are dropped. This
-  backend builds its own system prompt internally (see `current_identity`
-  in gpt2_test.py) — passing a second, competing system prompt through
-  would just confuse the model.
+- GET /v1/models (and /models) returns a fake fixed list so clients that
+  probe it before allowing chat don't 404 — see FAKE_MODELS below.
+- POST /v1/chat/completions (and /chat/completions) uses this backend's own
+  DB-backed memory per userid (build_memory/remember_turn), the same as
+  /ai-query — it does NOT replay the client's resent `messages` history,
+  only the latest user message. See _resolve_userid for how userid is
+  determined from a header, body field, or the Authorization bearer token.
+- Any "system" messages the client sends (e.g. Cline's tool-call-format
+  instructions) are forwarded into ask_gpt2/ask_gpt2_stream via
+  extra_system_prompt, appended after this backend's own system prompt —
+  see _client_system_prompt and gpt2_test.py's _ask_gpt2_core.
 - Streaming is NOT real token-by-token generation. ask_gpt2_stream()
   yields backend "status" events (e.g. "Searching web...") followed by a
   single "final" event containing the whole answer. To stay compatible
@@ -38,6 +39,26 @@ from database import get_db
 from memory_service import build_memory, remember_turn
 
 router = APIRouter()
+
+# Some OpenAI-compatible clients (Cline included) call GET /v1/models before
+# letting you chat — either to populate a model dropdown or just to sanity-
+# check the connection. Real model IDs don't matter here since this backend
+# ignores whatever `model` string is sent anyway; we just need SOMETHING in
+# the list so that probe request succeeds instead of 404ing.
+FAKE_MODELS = ["utme26-ai"]
+
+
+@router.get("/v1/models")
+@router.get("/models")
+async def list_models():
+    now = int(time.time())
+    return {
+        "object": "list",
+        "data": [
+            {"id": m, "object": "model", "created": now, "owned_by": "you"}
+            for m in FAKE_MODELS
+        ],
+    }
 
 # Flip to False if you'd rather stream stay silent until the final answer.
 INCLUDE_STATUS_IN_STREAM = True
