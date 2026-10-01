@@ -259,6 +259,7 @@ VISION_PROVIDERS = [
 # that file's header for the full map of where every prompt block now lives.
 # ---------------------------------------------------------------------------
 from prompts import ZINDRYX_INFO, MOJIZELA_INFO, IMAGE_GEN_AWARENESS
+from prompts import ooor_version_note, image_tier_note, NO_WEB_SEARCH_NOTE
 
 # ---------------------------------------------------------------------------
 # REAL SERVER-SIDE DATE/TIME — computed fresh on every call. This is the
@@ -286,6 +287,24 @@ def _current_datetime_line() -> str:
 # NEUTRAL_SYSTEM_PROMPT (identity/tone/formatting/code/math rules) moved to
 # prompts.py — see that file's header for the full map.
 from prompts import NEUTRAL_SYSTEM_PROMPT
+
+# How many of the user's saved files get listed into context when they ask
+# about their files. Newest first. The model opens one with read_user_doc.
+USER_DOCS_LIST_LIMIT = 25
+
+# Questions about the assistant/app itself are answered from OOOR_IDENTITY
+# (prompts.py) — never searched. Deterministic backstop for the classifier.
+_SELF_QUESTION_MARKERS = (
+    "ooor", "zindryx", "hxf software", "hxf softwares",
+    "who built you", "who made you", "who created you", "who owns you",
+    "what model are you", "which model are you", "are you gpt",
+    "are you chatgpt", "are you gemini", "are you claude",
+)
+
+
+def _is_self_question(text: str) -> bool:
+    t = (text or "").lower()
+    return any(m in t for m in _SELF_QUESTION_MARKERS)
 
 
 # ---------------------------------------------------------------------------
@@ -353,8 +372,9 @@ from gpt2_functions import (
     save_uploaded_files_as_docs,
     DESIGN_GUIDELINES,
     generate_image,       # NEW — was only reachable via the generic
-    check_image_quota,    # execute_tool() path, which swallowed its
+                           # execute_tool() path, which swallowed its
                            # status events. Special-cased below instead.
+    is_user_premium,      # tier lookup (isPremium in Firestore) — never gates free users
 )
 from gpt2_sandbox import run_code  # same reason as generate_image above — special-cased below too
 
@@ -624,6 +644,11 @@ def _ask_gpt2_core(
         if valid_image_urls else ""
     )
 
+    if intent["search_type"] == "web" and _is_self_question(prompt):
+        print("[INTENT] self-question about OOOR/Zindryx -> forcing search_type=none")
+        intent["search_type"] = "none"
+        intent["search_query"] = ""
+
     print(f"[INTENT] search_type={intent['search_type']} complex={intent['complex']} topic={intent['topic']} "
           f"design={intent.get('needs_design_guidance')} query={intent.get('search_query')!r}")
 
@@ -652,6 +677,12 @@ def _ask_gpt2_core(
         }
         current_identity = f"{NEUTRAL_SYSTEM_PROMPT}\n\n{IMAGE_GEN_AWARENESS}{already_has_image_note}\n\n{_current_datetime_line()}\n\nCURRENT CONTEXT: {MOJIZELA_INFO}"
 
+    # Tier (isPremium in Firestore) -> version + image-generation awareness.
+    # Free users are never blocked from image generation; this only tells the
+    # model which tier it is talking to.
+    user_is_premium = is_user_premium(userid)
+    current_identity += ooor_version_note(user_is_premium) + image_tier_note(user_is_premium)
+
     # ── Inject user docs or web search results if needed ──────────────────
     sources = []
     user_docs = []
@@ -668,31 +699,47 @@ def _ask_gpt2_core(
             yield {
                 "type": "status",
                 "text": "Checking your saved files...",
-                "detail": f'Searching for: "{intent["search_query"]}"',
+                "detail": "Looking through your saved files",
                 "icon": "docs"
             }
             try:
                 manager = UserDocManager(userid)
-                user_docs = manager.search_by_hint(intent["search_query"], limit=5)
+                all_docs = manager.list_all_docs()
+                all_docs.sort(key=lambda d: str(d.get("date", "")), reverse=True)
+                user_docs = all_docs[:USER_DOCS_LIST_LIMIT]
                 if user_docs:
                     yield {
                         "type": "status",
                         "text": f"Found {len(user_docs)} file(s) in your docs",
-                        "detail": " • ".join([d.get("hint", d.get("filename", ""))[:30] for d in user_docs[:3]]),
+                        "detail": " • ".join([(d.get("hint") or d.get("filename") or "")[:30] for d in user_docs[:3]]),
                         "icon": "docs"
                     }
                     # Inject user docs into context
-                    docs_context = "USER'S SAVED FILES (from their document storage):\n"
+                    shown = len(user_docs)
+                    total = len(all_docs)
+                    docs_context = (
+                        "USER'S SAVED FILES (newest first"
+                        + (f", showing {shown} of {total}" if total > shown else "")
+                        + "). This is only a menu of names — pick whichever file(s) "
+                        "match what the user means, and open one with read_user_doc "
+                        "using its doc_id. If none fit, say so plainly.\n"
+                    )
                     for doc in user_docs:
-                        hint = doc.get("hint", doc.get("filename", ""))
-                        tags = ", ".join(doc.get("tags", []))
-                        docs_context += f"- {hint} (tags: {tags})\n"
+                        doc_id = doc.get("id") or doc.get("filename") or ""
+                        hint = doc.get("hint") or doc.get("filename") or ""
+                        tags = ", ".join(doc.get("tags") or [])
+                        docs_context += (
+                            f"- doc_id: {doc_id} | {hint}"
+                            + (f" | tags: {tags}" if tags else "")
+                            + (f" | saved: {doc.get('date')}" if doc.get("date") else "")
+                            + "\n"
+                        )
                     current_identity += f"\n\n{docs_context}"
                 else:
                     yield {
                         "type": "status",
-                        "text": "No matching files found",
-                        "detail": "Falling back to knowledge base answer",
+                        "text": "No saved files found",
+                        "detail": "Answering from what I already know",
                         "icon": "warning"
                     }
             except Exception as e:
@@ -736,9 +783,17 @@ def _ask_gpt2_core(
     elif intent["search_type"] == "web":
         clean_query = intent["search_query"] or build_search_query(prompt)
         print(f"[SEARCH] query={clean_query!r}")
+        # Model-classified searches show the real query; keyword-fallback
+        # searches (classifier failed) show a generic label, because the
+        # keyword-stripped text can look like junk to the user.
+        status_text = (
+            "Searched online for details"
+            if intent.get("source") == "keyword"
+            else f'Searched for "{clean_query}"'
+        )
         yield {
             "type": "status",
-            "text": f'Searched for "{clean_query}"',
+            "text": status_text,
             "detail": None,
             "icon": "search"
         }
@@ -763,6 +818,9 @@ def _ask_gpt2_core(
         # if web_results is empty (every search engine failed), we simply
         # don't mention search at all — the model answers from its own
         # knowledge instead of relaying a search-failed error to the user.
+
+    elif intent["search_type"] == "none":
+        current_identity += NO_WEB_SEARCH_NOTE
 
     # ── Build messages ──────────────────────────────────────────────────
     lean_history, history_truncated = get_lean_history(history)
@@ -1276,35 +1334,31 @@ def _ask_gpt2_core(
             # Special-cased here exactly like create_image/remove_background
             # so status events actually get yielded through to the SSE
             # stream as they happen.
-            quota = check_image_quota(session_context.get("userid"))
-            if not quota["allowed"]:
-                success, tool_result = False, quota["message"]
-            else:
-                gen_event = None
-                for event in generate_image(
-                    prompt=call_data["args"].get("prompt") or "",
-                    width=call_data["args"].get("width") or 1024,
-                    height=call_data["args"].get("height") or 1024,
-                    userid=session_context["userid"],
-                ):
-                    if event.get("type") == "image_result":
-                        gen_event = event
-                    else:
-                        event["tool"] = "generate_image"
-                        yield event
-                success = bool(gen_event and gen_event.get("success"))
-                tool_result = json.dumps(gen_event, default=str) if gen_event else "Tool produced no output."
-                if success:
-                    # Tag every image as AI-GENERATED (vs. web-searched) so the frontend can
-                    # show the "OOOR Sonnic 5gen" chip on it. Lives on the image dict itself
-                    # (not a separate SSE event) so it survives history persistence: the
-                    # frontend stores `images` per message and re-renders them on reload.
-                    image_results = [
-                        {**img, "generated": True, "model": GENERATED_IMAGE_MODEL_NAME}
-                        if isinstance(img, dict) else img
-                        for img in gen_event.get("images", [])
-                    ]
-                    session_context["image_results"] = image_results
+            gen_event = None
+            for event in generate_image(
+                prompt=call_data["args"].get("prompt") or "",
+                width=call_data["args"].get("width") or 1024,
+                height=call_data["args"].get("height") or 1024,
+                userid=session_context["userid"],
+            ):
+                if event.get("type") == "image_result":
+                    gen_event = event
+                else:
+                    event["tool"] = "generate_image"
+                    yield event
+            success = bool(gen_event and gen_event.get("success"))
+            tool_result = json.dumps(gen_event, default=str) if gen_event else "Tool produced no output."
+            if success:
+                # Tag every image as AI-GENERATED (vs. web-searched) so the frontend can
+                # show the "OOOR Sonnic 5gen" chip on it. Lives on the image dict itself
+                # (not a separate SSE event) so it survives history persistence: the
+                # frontend stores `images` per message and re-renders them on reload.
+                image_results = [
+                    {**img, "generated": True, "model": GENERATED_IMAGE_MODEL_NAME}
+                    if isinstance(img, dict) else img
+                    for img in gen_event.get("images", [])
+                ]
+                session_context["image_results"] = image_results
         elif call_data["tool"] == "run_code":
             # Same reason as generate_image just above: run_code is a
             # generator yielding real "status" events (icon:"sandbox") as
@@ -1481,12 +1535,12 @@ def _ask_gpt2_core(
     # itself came back unsure. Rather than let a guess through, run one
     # search now and re-ask with real web context. Sources always get
     # attached when this fires. (Skip if user_docs search was already done.)
-    if intent["search_type"] == "none" and not sources and web_search_enabled and _looks_unsure(answer):
+    if intent["search_type"] == "none" and not sources and web_search_enabled and _looks_unsure(answer) and not _is_self_question(prompt):
         clean_query = build_search_query(prompt)
         yield {
             "type": "status",
             "text": "Not fully sure — double-checking online...",
-            "detail": f'The first draft wasn\'t confident, so searching for: "{clean_query}"',
+            "detail": "The first draft wasn't confident, so checking online for details.",
             "icon": "search"
         }
         web_results, fallback_sources = search_web(clean_query)

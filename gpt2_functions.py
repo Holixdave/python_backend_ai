@@ -47,11 +47,13 @@ from firebase_admin import firestore
 # ---------------------------------------------------------------------------
 # WEB SEARCH — multi-engine fallback chain (ddgs -> Brave -> Tavily)
 # ---------------------------------------------------------------------------
+# Only used by the keyword FALLBACK (when the intent classifier call fails).
+# Trimmed: "show me", "get me", "today", "current", "2025/2026", "result",
+# "website" fired on ordinary chat/code/design requests and caused junk searches.
 SEARCH_TRIGGER_KEYWORDS = [
     "search", "find", "look up", "look for", "link", "download",
-    "latest", "recent", "news", "where can i", "netnaija", "website",
-    "what is the price of", "current", "today", "2025", "2026",
-    "who won", "result", "show me", "get me",
+    "latest", "recent", "news", "where can i", "netnaija",
+    "what is the price of", "who won",
 ]
 
 def needs_web_search(prompt: str) -> bool:
@@ -748,7 +750,7 @@ BFL_API_KEY = os.getenv("BFL_API_KEY")            # Black Forest Labs — Flux
 IDEOGRAM_API_KEY = os.getenv("IDEOGRAM_API_KEY")
 RECRAFT_API_KEY = os.getenv("RECRAFT_API_KEY")
 
-FREE_IMAGE_LIMIT = 3  # per free (non-premium) account, per UTC day
+# Free accounts get UNLIMITED image generation (Pollinations) — no quota, no counter.
 
 
 def _dims_to_aspect(width: int, height: int) -> str:
@@ -943,72 +945,25 @@ def _host_image_bytes(image_bytes: bytes, ext: str = "png") -> Optional[str]:
         return None
 
 
-def check_image_quota(userid: Optional[str]) -> dict:
+def is_user_premium(userid: Optional[str]) -> bool:
     """
-    Gate checked in gpt2_tools.py's execute_tool BEFORE generate_image is
-    even called — mirrors the WEB_TOOLS/is_web_search_enabled pattern.
-    Reads the same users/{uid} Firestore doc the Flutter PaymentService
-    already writes isPremium to.
+    Single source of truth for the tier. Reads isPremium from the same
+    users/{uid} Firestore doc the Flutter PaymentService writes — never from
+    the request body, so a client can't fake it. Never raises; any failure
+    or missing userid counts as free.
 
-    Premium -> always allowed, no counting.
-    Free/no account -> FREE_IMAGE_LIMIT per UTC calendar day.
-
-    Never raises and never blocks on a Firestore hiccup (fails OPEN) — a
-    transient read error shouldn't be the reason a real user gets refused
-    an image; the generation call still needs a working provider to
-    succeed regardless.
+    Free users are NOT gated: generate_image always runs for them (via
+    Pollinations). This flag only decides WHICH generator runs and which
+    version/tier notes the model is shown.
     """
-    from datetime import datetime, timezone
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
     if not userid:
-        return {"allowed": True, "is_premium": False}
-
+        return False
     try:
-        ref = firestore.client().collection("users").document(userid)
-        data = ref.get().to_dict() or {}
-        if bool(data.get("isPremium", False)):
-            return {"allowed": True, "is_premium": True}
-
-        count = data.get("imageGenCount", 0)
-        if data.get("imageGenResetDate") != today:
-            count = 0  # first check of a new UTC day — quota renewed
-
-        if count >= FREE_IMAGE_LIMIT:
-            return {
-                "allowed": False,
-                "is_premium": False,
-                "message": (
-                    f"This free account has already used its {FREE_IMAGE_LIMIT} "
-                    "image generations for today — generate_image was blocked "
-                    "before it ran. Tell the user plainly and kindly that "
-                    f"they've hit today's free limit ({FREE_IMAGE_LIMIT}/day), "
-                    "it resets tomorrow, and upgrading to Pro gives unlimited "
-                    "image generation. Do not call generate_image again this turn."
-                ),
-            }
-        return {"allowed": True, "is_premium": False}
+        doc = firestore.client().collection("users").document(userid).get()
+        return bool((doc.to_dict() or {}).get("isPremium", False))
     except Exception as e:
-        print(f"[IMAGE_QUOTA] check failed for userid={userid!r}: {e}")
-        return {"allowed": True, "is_premium": False}
-
-
-def increment_image_count(userid: Optional[str]) -> None:
-    """Bumps today's free-tier counter. Call ONLY after a successful
-    generation for a non-premium account — premium is never counted."""
-    if not userid:
-        return
-    from datetime import datetime, timezone
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    try:
-        ref = firestore.client().collection("users").document(userid)
-        data = ref.get().to_dict() or {}
-        count = data.get("imageGenCount", 0)
-        if data.get("imageGenResetDate") != today:
-            count = 0
-        ref.set({"imageGenCount": count + 1, "imageGenResetDate": today}, merge=True)
-    except Exception as e:
-        print(f"[IMAGE_QUOTA] increment failed for userid={userid!r}: {e}")
+        print(f"[PREMIUM] check failed for userid={userid!r}: {e}")
+        return False
 
 
 def generate_image(prompt: str, width: int = 1024, height: int = 1024, userid: Optional[str] = None):
@@ -1027,14 +982,14 @@ def generate_image(prompt: str, width: int = 1024, height: int = 1024, userid: O
     Two completely separate paths, chosen by the account's isPremium flag
     on its Firestore user doc (userid is auto-injected — see
     SESSION_INJECTED_PARAMS in gpt2_tools.py, quota is already checked
-    there before this function is even called):
+    there):
 
     - Premium: walks _build_image_provider_chain(prompt) — Flux, Stability,
       Ideogram, Recraft, in an order picked for this specific prompt,
       skipping any provider whose env key isn't set, falling through to
       the next enabled one on any failure.
-    - Free / no userid: always Pollinations — free, no key, no cost, not a
-      "worse paid provider", just a separate always-available path.
+    - Free / no userid: always Pollinations — free, unlimited, never gated.
+      Standard quality; Premium gets the clean paid providers above.
     """
     import urllib.parse
     if not prompt:
@@ -1064,13 +1019,7 @@ def generate_image(prompt: str, width: int = 1024, height: int = 1024, userid: O
     # immediately instead of waiting on dead air.
     yield {"type": "status", "text": "Generating image...", "detail": prompt[:60], "icon": "image"}
 
-    is_premium = False
-    if userid:
-        try:
-            doc = firestore.client().collection("users").document(userid).get()
-            is_premium = bool((doc.to_dict() or {}).get("isPremium", False))
-        except Exception as e:
-            print(f"[IMAGE_GEN] premium check failed for userid={userid!r}: {e}")
+    is_premium = is_user_premium(userid)
 
     if is_premium:
         aspect_ratio = _dims_to_aspect(width, height)
@@ -1102,8 +1051,6 @@ def generate_image(prompt: str, width: int = 1024, height: int = 1024, userid: O
         f"https://image.pollinations.ai/prompt/{encoded}"
         f"?width={width}&height={height}&seed={seed}&nologo=true"
     )
-    if userid and not is_premium:
-        increment_image_count(userid)
     yield {
         "type": "image_result",
         "success": True,
@@ -1530,6 +1477,7 @@ def _fallback_intent(prompt: str) -> dict:
         "complex": any(k in t for k in CODING_KEYWORDS),
         "topic": topic,
         "needs_design_guidance": needs_design_guidance(prompt),
+        "source": "keyword",
     }
 
 
@@ -1606,6 +1554,7 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
                 "complex": bool(data.get("complex", True)),
                 "topic": topic,
                 "needs_design_guidance": needs_design_guidance(prompt),
+                "source": "model",
             }
         print(f"[INTENT] classifier HTTP {resp.status_code}, falling back to keywords")
         
