@@ -22,12 +22,14 @@ from memory_service import build_memory, remember_turn
 import firebase_config  # noqa: F401 (must init before firestore_repository is used)
 from tts_router import router as tts_router
 from copilot_router import router as copilot_router  # NEW: /v1/chat/completions for VS Code (Continue/Cline)
+from ai_jobs import router as ai_jobs_router  # NEW: /ai-job — replies written to Firestore, survive app close
 app = FastAPI(
     title="UTME26 AI Backend",
     description="Brilliant AI Study Assistant"
 )
 app.include_router(tts_router)
 app.include_router(copilot_router)
+app.include_router(ai_jobs_router)
 # Creates the chat_history table on startup if it doesn't exist yet —
 # same as the working app's main.py does with Base.metadata.create_all.
 Base.metadata.create_all(bind=engine)
@@ -296,11 +298,15 @@ async def ask_ai_stream(request: QuestionRequest, db: Session = Depends(get_db))
         for event in ask_gpt2_stream(user_question, history=chat_history, image_urls=image_urls if image_urls else None, file_urls=request.fileUrls or None, file_names=request.fileNames or None, userid=request.userid):
             if event["type"] == "status":
                 yield f"data: {json.dumps({'type': 'status', 'text': event['text'], 'detail': event.get('detail'), 'icon': event.get('icon'), 'tool': event.get('tool')})}\n\n"
+            elif event["type"] == "think":
+                yield f"data: {json.dumps({'type': 'think', 'step': event.get('step'), 'text': event.get('text'), 'icon': event.get('icon')})}\n\n"
+            elif event["type"] == "think_end":
+                yield f"data: {json.dumps({'type': 'think_end'})}\n\n"
             elif event["type"] == "final":
                 final_answer = event["answer"]
                 final_sources = event.get("sources", [])
                 final_images = event.get("images", [])
-                yield f"data: {json.dumps({'type': 'final', 'answer': event['answer'], 'sources': event.get('sources', []), 'images': event.get('images', []), 'file': event.get('file'), 'files': event.get('files', []), 'codes': event.get('codes', [])})}\n\n"
+                yield f"data: {json.dumps({'type': 'final', 'answer': event['answer'], 'segments': event.get('segments', []), 'suggestions': event.get('suggestions', []), 'sources': event.get('sources', []), 'images': event.get('images', []), 'file': event.get('file'), 'files': event.get('files', []), 'codes': event.get('codes', [])})}\n\n"
 
         # NEW: persist the completed turn once the stream is done — the
         # "final" event above always carries the full answer text plus
