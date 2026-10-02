@@ -945,6 +945,23 @@ def _host_image_bytes(image_bytes: bytes, ext: str = "png") -> Optional[str]:
         return None
 
 
+def premium_from_user_doc(data: dict) -> bool:
+    """isPremium AND not past premiumExpiry (null expiry = lifetime). The app
+    only flips isPremium=false when it next launches, so the server checks the
+    expiry itself."""
+    if not data.get("isPremium", False):
+        return False
+    expiry = data.get("premiumExpiry")
+    if expiry is not None:
+        try:
+            from datetime import datetime, timezone
+            if expiry < datetime.now(timezone.utc):
+                return False
+        except Exception:
+            pass
+    return True
+
+
 def is_user_premium(userid: Optional[str]) -> bool:
     """
     Single source of truth for the tier. Reads isPremium from the same
@@ -959,8 +976,8 @@ def is_user_premium(userid: Optional[str]) -> bool:
     if not userid:
         return False
     try:
-        doc = firestore.client().collection("users").document(userid).get()
-        return bool((doc.to_dict() or {}).get("isPremium", False))
+        data = firestore.client().collection("users").document(userid).get().to_dict() or {}
+        return premium_from_user_doc(data)
     except Exception as e:
         print(f"[PREMIUM] check failed for userid={userid!r}: {e}")
         return False
@@ -1835,15 +1852,22 @@ def _call_provider_chain_full(providers: list, messages: list, temperature: floa
     print(f"[FILEBUILD] all providers exhausted — {last_error}")
     return None, None, None
 
+FRIENDLY_FAILURE_MESSAGES = (
+    "The server is currently overloaded. Please try your request again in a moment.",
+    "We are performing routine maintenance to improve performance. OOOR will be back in a bit.",
+    "High traffic alert. The server queue is completely full right now. Please give it a minute and try again.",
+)
+
+
 def _friendly_failure_message() -> str:
     """Returns a randomized, dynamic server overload or maintenance message."""
-    messages = [
-        "The server is currently overloaded. Please try your request again in a moment.",
-        "We are performing routine maintenance to improve performance. OOOR will be back in a bit.",
-        "High traffic alert. The server queue is completely full right now. Please give it a minute and try again.",
-    ]
-    
-    return random.choice(messages)
+    return random.choice(FRIENDLY_FAILURE_MESSAGES)
+
+
+def is_friendly_failure(text: Optional[str]) -> bool:
+    """True when `text` is one of the canned 'server busy' replies (so jobs
+    can mark the turn as failed and skip charging for it)."""
+    return (text or "").strip() in FRIENDLY_FAILURE_MESSAGES
 
 
 # ---------------------------------------------------------------------------
