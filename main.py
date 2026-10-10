@@ -297,7 +297,9 @@ async def ask_ai_stream(request: QuestionRequest, db: Session = Depends(get_db))
         final_images = []
         for event in ask_gpt2_stream(user_question, history=chat_history, image_urls=image_urls if image_urls else None, file_urls=request.fileUrls or None, file_names=request.fileNames or None, userid=request.userid):
             if event["type"] == "status":
-                yield f"data: {json.dumps({'type': 'status', 'text': event['text'], 'detail': event.get('detail'), 'icon': event.get('icon'), 'tool': event.get('tool')})}\n\n"
+                # 'args' and 'call' are the structured tool-call fields (new, additive):
+                # args = {"query": "..."} as JSON, call = "search_web(query='...')" as code.
+                yield f"data: {json.dumps({'type': 'status', 'text': event['text'], 'detail': event.get('detail'), 'icon': event.get('icon'), 'tool': event.get('tool'), 'args': event.get('args'), 'call': event.get('call')}, default=str)}\n\n"
             elif event["type"] == "think":
                 yield f"data: {json.dumps({'type': 'think', 'step': event.get('step'), 'text': event.get('text'), 'icon': event.get('icon')})}\n\n"
             elif event["type"] == "think_end":

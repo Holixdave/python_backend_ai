@@ -26,6 +26,7 @@
 # execution without owning a Docker host at all.
 # ─────────────────────────────────────────────────────────────────────────────
 
+import mimetypes
 import os
 import re
 import shutil
@@ -45,6 +46,17 @@ MAX_CODE_CHARS = 20_000
 MAX_OUTPUT_CHARS = 8_000          # per stream (stdout/stderr), truncated past this
 MAX_MEMORY_BYTES = 256 * 1024 * 1024   # 256 MB, subprocess mode only
 MAX_PROCS = 32                          # fork-bomb guard, subprocess mode only
+
+# ---------------------------------------------------------------------------
+# OUTPUT FILES - anything the code writes into ./outputs/ (wav, mp3, png,
+# pdf, zip, csv...) is uploaded to Supabase after the run and returned as
+# public URLs on the code_result event. Without this, files the code made
+# were deleted along with the temp dir and the user never saw them.
+# ---------------------------------------------------------------------------
+OUTPUT_SUBDIR = "outputs"
+MAX_OUTPUT_FILES = 5
+MAX_OUTPUT_FILE_BYTES = 10 * 1024 * 1024   # matches the RLIMIT_FSIZE write cap
+_SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]")
 
 # ---------------------------------------------------------------------------
 # PACKAGE INSTALL — a persistent, SHARED target directory every run_code
@@ -285,6 +297,9 @@ def _run_docker(runner: dict, code_path: str, timeout_s: int, packages_dir: Opti
         "--pids-limit", str(MAX_PROCS),
         "--user", "nobody",
         "-v", f"{os.path.dirname(code_path)}:/code:ro",
+        # Writable outputs folder nested inside the read-only /code mount,
+        # so docker-mode runs can also produce files.
+        "-v", f"{os.path.join(os.path.dirname(code_path), OUTPUT_SUBDIR)}:/code/{OUTPUT_SUBDIR}:rw",
     ]
     if packages_dir and os.path.isdir(packages_dir):
         # Same shared install dir subprocess mode uses — mounted read-only
@@ -316,6 +331,47 @@ def _run_docker(runner: dict, code_path: str, timeout_s: int, packages_dir: Opti
         }
     except Exception as e:
         return {"ok": False, "skip_reason": f"docker run failed: {e}"}
+
+
+def _collect_and_upload_outputs(run_dir: str, userid: Optional[str]) -> list:
+    """
+    Uploads every regular file the code left in <run_dir>/outputs/ to
+    Supabase and returns [{"filename", "url", "size"}]. Never raises -
+    a failed upload just means that file is skipped (logged). Runs in
+    the BACKEND process, so the sandboxed code never sees Supabase keys.
+    """
+    # Lazy import: avoids any circular import at module load time.
+    from gpt2_functions import _upload_bytes_to_supabase
+
+    out_dir = os.path.join(run_dir, OUTPUT_SUBDIR)
+    if not os.path.isdir(out_dir):
+        return []
+
+    results = []
+    for name in sorted(os.listdir(out_dir))[:MAX_OUTPUT_FILES]:
+        path = os.path.join(out_dir, name)
+        if os.path.islink(path) or not os.path.isfile(path):
+            continue   # skip symlinks (could point at host files) and subfolders
+        size = os.path.getsize(path)
+        if size == 0 or size > MAX_OUTPUT_FILE_BYTES:
+            print(f"[SANDBOX] skipping output {name!r}: size {size} out of range")
+            continue
+        safe_name = _SAFE_FILENAME_RE.sub("_", os.path.basename(name))[:80]
+        # Short random prefix: the upload path is deterministic + upserts,
+        # so two runs both writing "tone.wav" would otherwise overwrite
+        # each other's file.
+        stored_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
+        content_type = mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except Exception as e:
+            print(f"[SANDBOX] couldn't read output {name!r}: {e}")
+            continue
+        url = _upload_bytes_to_supabase(userid or "anonymous", stored_name, data, content_type)
+        if url:
+            results.append({"filename": safe_name, "url": url, "size": size})
+    return results
 
 
 def _build_sandbox_chain(prefer_isolation: bool) -> list:
@@ -427,6 +483,12 @@ def run_code(code: str, language: str = "python", timeout_s: int = DEFAULT_TIMEO
         with open(code_path, "w") as f:
             f.write(code)
 
+        # Pre-create the outputs folder (world-writable so the docker
+        # 'nobody' user can write to it too).
+        out_dir = os.path.join(run_dir, OUTPUT_SUBDIR)
+        os.makedirs(out_dir, exist_ok=True)
+        os.chmod(out_dir, 0o777)
+
         chain = _build_sandbox_chain(prefer_isolation)
         for link in chain:
             yield {"type": "status", "text": f"Executing via {link['name']}...", "detail": None, "icon": "sandbox"}
@@ -434,6 +496,10 @@ def run_code(code: str, language: str = "python", timeout_s: int = DEFAULT_TIMEO
             if outcome.get("ok"):
                 print(f"[SANDBOX] ran {lang} via {link['name']} — exit={outcome.get('exit_code')}, "
                       f"timed_out={outcome.get('timed_out')}, userid={userid!r}")
+                output_files = []
+                if outcome.get("exit_code") == 0 and not outcome.get("timed_out"):
+                    yield {"type": "status", "text": "Uploading generated files...", "detail": None, "icon": "upload"}
+                    output_files = _collect_and_upload_outputs(run_dir, userid)
                 yield {
                     "type": "code_result",
                     "success": (outcome.get("exit_code") == 0) and not outcome.get("timed_out"),
@@ -444,6 +510,7 @@ def run_code(code: str, language: str = "python", timeout_s: int = DEFAULT_TIMEO
                     "exit_code": outcome.get("exit_code"),
                     "timed_out": outcome.get("timed_out", False),
                     "duration_s": outcome.get("duration_s"),
+                    "files": output_files,   # [{"filename","url","size"}] - empty if nothing was written to ./outputs/
                 }
                 return
             print(f"[SANDBOX] {link['name']} unavailable for {lang} ({outcome.get('skip_reason')}), trying next engine")

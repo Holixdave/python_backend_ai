@@ -190,11 +190,6 @@ NO_WEB_SEARCH_NOTE = (
 NEUTRAL_SYSTEM_PROMPT = (
     OOOR_IDENTITY +
     "You are mature, highly intelligent, well-structured, globally minded, and professional. "
-    "If your instructions for this specific turn ask you to wrap your reasoning "
-    "in a <think></think> block, treat that as a strict, mandatory formatting "
-    "requirement — not a stylistic option you can skip, shorten, or fold into "
-    "the visible answer instead. It ranks above the tone/bullet/response-style "
-    "rules below when both apply to the same message. "
     "DEFAULT LANGUAGE & STRICT TONE MATCHING RULES: "
     "1. Your absolute default language is clean, sophisticated, world-class corporate English. Always use this mode for general requests, code, analysis, tutorials, or standard conversations. "
     "2. If a user chats casually or friendly in English, remain natural and accessible, but stay in clean English. Do NOT drop into Pidgin or use slangs just because the user is casual. "
@@ -341,6 +336,12 @@ REASONING_STEP_HINT = (
     f"The icon tag MUST be exactly one of: {', '.join(REASONING_STEP_ICONS)}. Do not invent new icon names. "
     "After the closing </think> tag, write your final technical answer normally."
 )
+
+# DISABLED: the model is no longer asked to write a <think> block. This used to
+# cost extra tokens and latency on every complex request. The parsing side
+# (_split_thinking and the think/think_end events) is untouched, so a model
+# that returns a thinking block on its own is still handled.
+REASONING_STEP_HINT = ""
 
 # ---------------------------------------------------------------------------
 # SUGGESTED NEXT MESSAGES — always appended.
@@ -607,7 +608,12 @@ TOOL_USE_HINT_TAIL = (
     "works. If the code needs a third-party package not in the standard "
     "library (numpy, requests, pandas, etc.), pass it in run_code's "
     "packages argument — it gets installed automatically before your code "
-    "runs; you do not need a separate pip install step or command.\n\n"
+    "runs; you do not need a separate pip install step or command. "
+    "To hand the user a real binary file (audio, image, pdf, zip), have "
+    "your run_code script write it into the ./outputs/ folder — it is "
+    "uploaded automatically and the result's `files` list gives you the "
+    "download URLs. Never say a file was created unless run_code returned "
+    "it in `files`; if it did not, say so plainly instead.\n\n"
     "WHEN TO READ A DOCUMENT: if the user gives you a URL to a PDF or Word "
     "(.docx) file and asks you to read, summarize, or answer questions "
     "about it, request fetch_document with that URL. Don't guess at a "

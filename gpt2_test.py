@@ -381,6 +381,81 @@ from gpt2_sandbox import run_code  # same reason as generate_image above — spe
 # Shown by the frontend as a chip on every image the model GENERATES (not searched).
 GENERATED_IMAGE_MODEL_NAME = "OOOR Sonnic 5gen"
 
+
+def _format_tool_call_display(tool: str, args: dict) -> str:
+    """
+    Renders a tool call the way an agent/code editor shows one: a fenced
+    python call, one argument per line, long values shortened. Display
+    only - the real args dict is untouched and still what gets executed.
+    The frontend already renders fenced python in a status event's
+    "detail" (the old "Reviewing X's code" event used the same fence), so
+    no frontend change is needed.
+    """
+    lines = []
+    for key, value in (args or {}).items():
+        note = ""
+        if isinstance(value, str):
+            if len(value) > 80 or "\n" in value:
+                first_line = value.split("\n", 1)[0][:60]
+                shown = repr(first_line)
+                note = f"  # ...{len(value)} chars total"
+            else:
+                shown = repr(value)
+        else:
+            shown = repr(value)   # python-style: None / True / [..] not null / true
+            if len(shown) > 100:
+                shown = shown[:97] + "..."
+        lines.append(f"    {key}={shown},{note}")
+    body = "\n".join(lines)
+    call = f"{tool}(\n{body}\n)" if lines else f"{tool}()"
+    return f"```python\n{call}\n```"
+
+
+def _tool_call_code(tool: str, args: dict) -> str:
+    """The same call as _format_tool_call_display, as plain code with no ``` fence."""
+    shown = _format_tool_call_display(tool, args)
+    return shown.removeprefix("```python\n").removesuffix("\n```")
+
+
+def _args_preview(args: dict) -> dict:
+    """
+    JSON-safe copy of a tool call's args for the frontend: long strings are
+    cut to 200 chars (a build_file call would otherwise ship the whole file
+    in every status event). Display only - never used to run the tool.
+    """
+    safe = {}
+    for key, value in (args or {}).items():
+        if isinstance(value, str) and len(value) > 200:
+            value = value[:200] + f"... ({len(value)} chars total)"
+        try:
+            json.dumps(value)
+        except Exception:
+            value = repr(value)[:200]
+        safe[str(key)] = value
+    return safe
+
+
+def _tool_call_event(tool: str, args: dict, text: str = None, icon: str = "tool") -> dict:
+    """
+    One status event for a tool call, carrying the call as STRUCTURED data
+    instead of only a pre-baked string:
+      tool  - the function name              (e.g. "search_web")
+      args  - the arguments, as a JSON object (e.g. {"query": "..."})
+      call  - the call as plain python code    (e.g. "search_web(query='...')")
+    "text" and "detail" are still sent exactly as before, so a frontend that
+    doesn't know the new fields yet keeps working; a frontend that does can
+    render tool/args/call however it wants (code block, collapsible, etc.).
+    """
+    return {
+        "type": "status",
+        "text": text or f"Calling {tool}...",
+        "detail": _format_tool_call_display(tool, args),
+        "icon": icon,
+        "tool": tool,
+        "args": _args_preview(args),
+        "call": _tool_call_code(tool, args),
+    }
+
 # ---------------------------------------------------------------------------
 # TOOL LOOP — gpt2_tools.py. Lets the AI request one of the functions above
 # for itself mid-answer by echoing a <<TOOL_REQUEST>> block, instead of us
@@ -791,12 +866,13 @@ def _ask_gpt2_core(
             if intent.get("source") == "keyword"
             else f'Searched for "{clean_query}"'
         )
-        yield {
-            "type": "status",
-            "text": status_text,
-            "detail": None,
-            "icon": "search"
-        }
+        # Same structured call data as a model-requested tool call: the
+        # frontend gets tool/args/call here too, so every search renders the
+        # same code-style way. "text" keeps the readable label as before;
+        # "detail" stays None here (the code lives in "call").
+        search_event = _tool_call_event("search_web", {"query": clean_query}, text=status_text, icon="search")
+        search_event["detail"] = None
+        yield search_event
         web_results, sources = search_web(clean_query)
         if web_results:
             titles = [s.get("title", "").strip() for s in sources if s.get("title")]
@@ -849,8 +925,7 @@ def _ask_gpt2_core(
     current_identity += SUGGESTION_HINT
     current_identity += INLINE_VISUAL_HINT
     current_identity += NOTE_CALLOUT_HINT
-    if intent["complex"]:
-        current_identity += REASONING_STEP_HINT
+    # (No longer appending REASONING_STEP_HINT - the model is not asked to think out loud.)
     if intent.get("needs_design_guidance"):
         # NEW — auto-injected whenever needs_design_guidance() (deterministic
         # keyword check in gpt2_functions.py) flags this as a webpage/UI
@@ -886,7 +961,7 @@ def _ask_gpt2_core(
     # announces the stage honestly, with nothing invented.
     yield {
         "type": "status",
-        "text": "Thinking it through..." if intent["complex"] else "Writing answer...",
+        "text": "Writing answer...",
         "detail": None,
         "icon": "thinking"
     }
@@ -896,7 +971,7 @@ def _ask_gpt2_core(
         messages,
         temperature=0.2 if intent["complex"] else 0.6,
         max_tokens=MAX_ANSWER_TOKENS,
-        reasoning_effort="default" if intent["complex"] else "none",
+        reasoning_effort="none",
     )
 
     if answer is None:
@@ -909,46 +984,10 @@ def _ask_gpt2_core(
     # into the answer bubble as one giant blob.
     answer, model_thinking = _split_thinking(answer)
 
-    # COMPLIANCE RETRY — a real, code-level safety net, not another prompt
-    # rewrite. Only the primary provider (Qwen 3.6) has native reasoning
-    # support (supports_reasoning_effort=True); the 3 fallback providers
-    # rely purely on the soft <think> instruction in the prompt with
-    # nothing backing it up model-side. If the chain fell through to one
-    # of those and it just skipped <think> entirely — dumping its
-    # reasoning straight into the visible answer instead — retry ONCE with
-    # an explicit callout of what it just did wrong. This mirrors the same
-    # recovery pattern already used for invalid tool calls elsewhere in
-    # this function, rather than silently accepting a blank Thought
-    # Process every time a fallback model answers a complex request.
-    if intent["complex"] and not model_thinking:
-        messages.append({"role": "assistant", "content": answer})
-        messages.append({
-            "role": "user",
-            "content": (
-                "[BACKEND NOTE — not from the user]: You just answered "
-                "without ever using a <think></think> block — the "
-                "reasoning requirement from earlier in this conversation "
-                "still applies. Rewrite your answer now: put your actual "
-                "step-by-step reasoning inside <think></think> tags first "
-                "(using the [icon] **Label:** format), THEN write your "
-                "real final answer after the closing tag. Don't skip this, "
-                "and don't acknowledge or respond to this note itself in "
-                "your reply — it isn't something the user said."
-            ),
-        })
-        compliance_answer, compliance_provider = _call_provider_chain(
-            TEXT_PROVIDERS, messages, temperature=0.3, max_tokens=MAX_ANSWER_TOKENS, reasoning_effort="default",
-        )
-        if compliance_answer is not None:
-            compliance_answer, compliance_thinking = _split_thinking(compliance_answer)
-            if compliance_thinking:
-                # Compliance recovered — use the retried, properly-tagged
-                # version instead of the original non-compliant one.
-                answer, model_thinking, provider = compliance_answer, compliance_thinking, compliance_provider
-        # If the retry ALSO comes back without a <think> block, we just
-        # move on with whatever answer is on hand — this particular model
-        # genuinely won't comply, and an unbounded retry loop isn't the
-        # right trade for one extra round trip.
+    # (Removed the compliance retry: it re-called the model and asked it to rewrite its
+    # whole answer inside <think> tags whenever it skipped them. That doubled latency and
+    # tokens for nothing the user wanted. If a model returns a <think> block anyway, the
+    # _split_thinking parsing above still pulls it out of the answer.)
 
     # NEW — dedicated "think" event type instead of piggybacking on
     # "status" (icon=="thinking" string-matching was the only way a
@@ -1020,12 +1059,9 @@ def _ask_gpt2_core(
             direct_call = None
         tool_round += 1
 
-        yield {
-            "type": "status",
-            "text": f"Reaching for {requested_tool}...",
-            "detail": search_text.strip(),
-            "icon": "tool",
-        }
+        # (Removed the "Reaching for {tool}..." status here: it dumped the
+        # model's raw echoed text into the sheet. The single "Calling
+        # {tool}" event below now carries the real call as code instead.)
 
         if direct_call:
             # Model already supplied real args in one shot — no need to
@@ -1065,12 +1101,9 @@ def _ask_gpt2_core(
                 ),
             })
 
-            yield {
-                "type": "status",
-                "text": f"Reviewing {requested_tool}'s code...",
-                "detail": f"```python\n{tool_source}\n```{auto_supplied_note}",
-                "icon": "tool",
-            }
+            # (Removed the "Reviewing {tool}'s code..." status: it showed the
+            # tool's internal source to the user. The model still gets the
+            # source in `messages` above - only the display is gone.)
             call_answer, _ = _call_provider_chain(
                 TEXT_PROVIDERS, messages, temperature=0.0, max_tokens=MAX_ANSWER_TOKENS,
             )
@@ -1126,12 +1159,7 @@ def _ask_gpt2_core(
                 search_text = (model_thinking or "") + "\n" + (answer or "")
                 continue
 
-        yield {
-            "type": "status",
-            "text": f"Calling {call_data['tool']}...",
-            "detail": json.dumps(call_data["args"]),
-            "icon": "tool",
-        }
+        yield _tool_call_event(call_data["tool"], call_data["args"])
 
         # SPECIAL-CASED DISPATCH — build_file and redisplay_file need more
         # than execute_tool's generic "drain silently, stringify" handling:
@@ -1388,6 +1416,18 @@ def _ask_gpt2_core(
                 # is still a real result the user should see, not silently
                 # dropped the way a failed build_file is.
                 code_results.append(code_event)
+                # Files the code wrote to ./outputs/ were already uploaded
+                # by run_code - surface them as normal file cards, same
+                # shape build_file/build_zip_file use.
+                for out_f in (code_event.get("files") or []):
+                    produced = {
+                        "type": "file_result",
+                        "success": True,
+                        "url": out_f["url"],
+                        "filename": out_f["filename"],
+                    }
+                    file_results.append(produced)
+                    file_result = produced
         else:
             success, tool_result = execute_tool(call_data["tool"], call_data["args"], session_context)
             if success and call_data["tool"] in ("search_images", "redisplay_images"):
