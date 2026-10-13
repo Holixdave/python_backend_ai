@@ -306,6 +306,12 @@ async def ask_ai_stream(request: QuestionRequest, db: Session = Depends(get_db))
                 yield f"data: {json.dumps({'type': 'think', 'step': event.get('step'), 'text': event.get('text'), 'icon': event.get('icon')})}\n\n"
             elif event["type"] == "think_end":
                 yield f"data: {json.dumps({'type': 'think_end'})}\n\n"
+            elif event["type"] == "ask_user":
+                # The AI asked a multiple-choice question: forward it and stop (no final).
+                # Remember the question so the next turn (the user's tapped answer) has context.
+                yield f"data: {json.dumps({k: v for k, v in event.items()}, default=str)}\n\n"
+                remember_turn(db, request.userid, user_question, event.get("question", ""))
+                return
             elif event["type"] == "final":
                 final_answer = event["answer"]
                 final_sources = event.get("sources", [])

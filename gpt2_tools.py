@@ -39,6 +39,87 @@ def see_tool_arg(tool_name: str) -> str:
         return f"No tool named '{tool_name}'. Available tools: {', '.join(TOOL_REGISTRY.keys())}"
     return get_tool_source(tool_name)
 
+
+def normalize_ask_user(args: dict) -> Optional[dict]:
+    """
+    Validates/cleans the arguments of an ask_user tool call into the exact
+    payload the app's bottom sheet expects. Returns None if the call is not
+    usable (no question, or fewer than 2 usable options) so the caller can
+    hand an error back to the model instead of showing a broken sheet.
+    """
+    import uuid
+    if not isinstance(args, dict):
+        return None
+    question = str(args.get("question") or "").strip()
+    raw_options = args.get("options")
+    if not question or not isinstance(raw_options, list):
+        return None
+
+    options, seen, seen_labels = [], set(), set()
+    for i, raw in enumerate(raw_options):
+        if isinstance(raw, dict):
+            label = str(raw.get("label") or "").strip()
+            desc = str(raw.get("description") or "").strip() or None
+            oid = str(raw.get("id") or "").strip()
+        else:
+            label, desc, oid = str(raw or "").strip(), None, ""
+        if not label:
+            continue
+        oid = oid or f"opt{i + 1}"
+        if oid in seen or label.lower() in seen_labels:
+            continue
+        seen_labels.add(label.lower())
+        seen.add(oid)
+        options.append({"id": oid, "label": label[:80], "description": desc[:160] if desc else None})
+        if len(options) == 6:  # the sheet is meant for quick taps, not a menu
+            break
+    if len(options) < 2:
+        return None
+
+    return {
+        "question_id": uuid.uuid4().hex[:16],
+        "question": question[:300],
+        "options": options,
+        "allow_multiple": bool(args.get("allow_multiple", False)),
+        "allow_other": bool(args.get("allow_other", True)),
+    }
+
+
+def ask_user(question: str, options: list, allow_multiple: bool = False, allow_other: bool = True):
+    """
+    Ask the user ONE quick multiple-choice question in a bottom sheet in
+    their app, instead of guessing. The turn STOPS here: the sheet opens,
+    the user taps an answer, and their answer comes back as their next
+    message — so write NOTHING else in the same reply.
+
+    Use it only when a wrong guess would waste the user's time and the
+    request genuinely can't be answered well without knowing their choice
+    (which subject/topic/level, which of several meanings, which file
+    format/style before you build something big). Do NOT use it for things
+    you can reasonably assume, for simple factual questions, or twice in a
+    row — if the user already answered, just proceed.
+
+    Args:
+        question: the question, one short sentence (no markdown).
+        options: 2-6 choices. Each is either a plain string, or
+            {"label": "Short label", "description": "optional hint"}.
+        allow_multiple: True if the user may pick more than one option.
+        allow_other: True (default) lets the user type their own answer.
+
+    Example:
+    <<TOOL_CALL>>{"tool": "ask_user", "args": {"question": "Which subject should the quiz cover?", "options": [{"label": "Mathematics"}, {"label": "Physics", "description": "Mechanics and waves"}, "Chemistry"], "allow_multiple": false, "allow_other": true}}<<END_TOOL_CALL>>
+    """
+    # Normally never reached: gpt2_test.py intercepts a valid ask_user call and
+    # ends the turn with an ask_user event. This only runs when the call was
+    # invalid, so the model gets a clear reason and can fix it or just answer.
+    payload = normalize_ask_user({"question": question, "options": options,
+                                  "allow_multiple": allow_multiple, "allow_other": allow_other})
+    if payload is None:
+        return {"error": "ask_user needs a non-empty question and 2-6 non-empty options. "
+                         "Fix the call, or skip the question and answer with your best assumption."}
+    return {"asked": True}
+
+
 from gpt2_functions import (
     search_web,
     search_images,
@@ -127,6 +208,7 @@ TOOL_REGISTRY = {
     "edit_doc_line": edit_doc_line,
     "update_user_doc": update_user_doc,
     "run_code": run_code,
+    "ask_user": ask_user,
 }
 # Short, hand-written purpose lines for the initial manifest only — this is
 # deliberately NOT the full docs. Once the AI picks one, it gets the real
@@ -160,6 +242,7 @@ TOOL_DESCRIPTIONS = {
     "redisplay_images": "Re-render a gallery of images already found earlier in this conversation, without searching again.",
     "generate_image": "Generate a brand-new AI image from a text description and show it in a real gallery, same as search_images.",
     "run_code": "Actually execute code you wrote (python/javascript/bash) in a sandbox and get back real stdout/stderr/exit_code — use this whenever the user asks you to run/execute/test code, not just to verify build_file's output. Supports an optional packages list (python only) to auto-install third-party imports like numpy/requests before running — no separate pip install step needed. To produce a real file (audio, image, pdf, zip, csv, etc.), write it into the ./outputs/ folder from your code, e.g. open('outputs/tone.wav','wb'); every file saved there is uploaded automatically and returned as a download URL in the result's `files` list. Share those URLs with the user and never claim a file exists unless it is listed there.",
+    "ask_user": "Ask the user ONE quick multiple-choice question in a bottom sheet in their app (2-6 options, optional 'Other' box). Use it when the request is genuinely ambiguous and a wrong guess would waste their time. The turn stops when you call it and their tap comes back as their next message — so write nothing else in that reply.",
     "list_user_docs": "List all files the user has saved/uploaded (filename, hint, tags) — use this to find the right doc_id when the user says 'my file' without naming it.",
     "read_user_doc": "Read a specific saved file's full content by its doc_id (filename).",
     "read_doc_lines": "Read a specific line range from a saved file, with the total line count — use before editing a specific line.",

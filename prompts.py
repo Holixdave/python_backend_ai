@@ -515,6 +515,16 @@ NOTE_CALLOUT_HINT = (
 # gpt2_test.py builds: "\n\n" + build_tool_manifest() + TOOL_USE_HINT_TAIL
 # ---------------------------------------------------------------------------
 TOOL_USE_HINT_TAIL = (
+    "WHEN TO ASK THE USER A QUESTION: you have an ask_user tool that opens a "
+    "quick multiple-choice bottom sheet in the user's app. Call it INSTEAD of "
+    "guessing when the request is genuinely ambiguous and a wrong guess would "
+    "waste their time — e.g. 'give me a quiz' with no subject, 'explain this' "
+    "when it could mean several topics, or 'build me a website' with no idea "
+    "what kind or style. Give 2-6 short options. When you call it, call it "
+    "ALONE: write no answer text in that reply, because the turn stops there and "
+    "their tap comes back as their next message. Do NOT use it for things you "
+    "can reasonably assume, for plain factual questions, or when they just "
+    "answered a question of yours — then proceed with the answer.\n\n"
     "TIP — if you're not fully sure of a tool's exact argument names before "
     "calling it (especially one you haven't used yet this conversation), you "
     "may first request see_tool_arg with {\"tool_name\": \"<name>\"} to see "

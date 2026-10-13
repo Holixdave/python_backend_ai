@@ -321,6 +321,7 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
 
     db = SessionLocal()
     final = None
+    question = None
     memory_reply = None
     contextual = _contextual_query(req, query)
     model_query = (ADVANCED_TAG + contextual) if premium else contextual
@@ -364,6 +365,9 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
                     push_steps()
                 elif etype == "final":
                     final = event
+                elif etype == "ask_user":
+                    question = event
+                    break
 
         if state["cancel"]:
             print(f"[AI-JOB] {req.aiMessageId} cancelled by user")
@@ -371,6 +375,23 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
                 ref.delete()
             except Exception as e:
                 print(f"[AI-JOB] cancel delete failed: {e}")
+            return
+
+        # The AI chose to ask the user a multiple-choice question instead of answering.
+        # Write it onto the reply doc as status "asking"; the app opens the bottom sheet,
+        # removes this doc, and sends the tapped answer as the next message. Nothing is
+        # charged for a question (only real answers are billed).
+        if question is not None:
+            q = {
+                "question_id": question.get("question_id"),
+                "question": question.get("question"),
+                "options": question.get("options") or [],
+                "allow_multiple": bool(question.get("allow_multiple")),
+                "allow_other": bool(question.get("allow_other", True)),
+            }
+            ref.set(_clean({"status": "asking", "question": q, "text": "", "updatedAt": _now_ms()}), merge=True)
+            remember_turn(db, uid, contextual, q["question"] or "")
+            print(f"[AI-JOB] asking {req.aiMessageId}: {q['question']!r}")
             return
 
         if final is None or is_friendly_failure(final.get("answer")):

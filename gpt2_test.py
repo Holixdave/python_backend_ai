@@ -469,6 +469,7 @@ from gpt2_tools import (
     get_tool_source,
     parse_tool_call,
     execute_tool,
+    normalize_ask_user,
     strip_tool_markers,
     extract_suggestions,
     build_answer_segments,
@@ -1158,6 +1159,18 @@ def _ask_gpt2_core(
                     yield {"type": "think_end"}
                 search_text = (model_thinking or "") + "\n" + (answer or "")
                 continue
+
+        # ASK-THE-USER — the model chose to ask a multiple-choice question instead
+        # of guessing. Valid call => END the turn right here with an `ask_user`
+        # event (no final answer): the app opens its bottom sheet and the tapped
+        # answer comes back as the next message. An invalid call falls through to
+        # the normal dispatch below, where ask_user() returns an error string
+        # that goes back to the model so it can fix the call or just answer.
+        if call_data["tool"] == "ask_user":
+            ask_payload = normalize_ask_user(call_data["args"])
+            if ask_payload:
+                yield {"type": "ask_user", **ask_payload}
+                return
 
         yield _tool_call_event(call_data["tool"], call_data["args"])
 
