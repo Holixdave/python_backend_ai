@@ -1,3 +1,6 @@
+# @hint: "gpt2_tools.py"
+# @tags: user-upload
+# @date: 2026-10-15T11:53:05.806603
 #!/usr/bin/env python3
 # gpt2_tools.py — function manifest + echo-trigger loop
 # ─────────────────────────────────────────────────────────────────────────────
@@ -241,6 +244,11 @@ TOOL_REGISTRY = {
     "workspace_export_doc": workspace_export_doc,
     "result_more": result_more,
 }
+
+
+def result_more():
+    """Placeholder for result_more tool."""
+    return {}
 # Short, hand-written purpose lines for the initial manifest only — this is
 # deliberately NOT the full docs. Once the AI picks one, it gets the real
 # source instead of trusting this one-liner for anything beyond "should I
