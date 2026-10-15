@@ -242,13 +242,7 @@ TOOL_REGISTRY = {
     "workspace_run": workspace_run,
     "workspace_import_doc": workspace_import_doc,
     "workspace_export_doc": workspace_export_doc,
-    "result_more": result_more,
 }
-
-
-def result_more():
-    """Placeholder for result_more tool."""
-    return {}
 # Short, hand-written purpose lines for the initial manifest only — this is
 # deliberately NOT the full docs. Once the AI picks one, it gets the real
 # source instead of trusting this one-liner for anything beyond "should I
@@ -644,6 +638,11 @@ def result_more(userid: str, result_id: str, offset: int = 0) -> dict:
         out["next_offset"] = nxt
         out["note"] = f'More remains: call result_more again with offset {nxt}.'
     return out
+
+
+# Registered here, after the real definition above (registering it inside the
+# TOOL_REGISTRY literal earlier in the file raised NameError at import time).
+TOOL_REGISTRY["result_more"] = result_more
 
 
 def compact_tool_history(messages: list, keep_full: int = 3, old_chars: int = 500) -> None:
