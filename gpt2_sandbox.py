@@ -48,13 +48,12 @@ MAX_MEMORY_BYTES = 256 * 1024 * 1024   # 256 MB, subprocess mode only
 MAX_PROCS = 32                          # fork-bomb guard, subprocess mode only
 
 # ---------------------------------------------------------------------------
-# OUTPUT FILES - anything the code writes into ./outputs/ (wav, mp3, png,
-# pdf, zip, csv...) is uploaded to Supabase after the run and returned as
-# public URLs on the code_result event. Without this, files the code made
-# were deleted along with the temp dir and the user never saw them.
+# OUTPUT FILES - anything the code writes into ./outputs/ is copied into the
+# user's workspace (outputs/<name>) after the run. It is NOT delivered
+# automatically: the model calls output_files to choose what the user gets.
 # ---------------------------------------------------------------------------
 OUTPUT_SUBDIR = "outputs"
-MAX_OUTPUT_FILES = 5
+MAX_OUTPUT_FILES = 20
 MAX_OUTPUT_FILE_BYTES = 10 * 1024 * 1024   # matches the RLIMIT_FSIZE write cap
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]")
 
@@ -333,15 +332,14 @@ def _run_docker(runner: dict, code_path: str, timeout_s: int, packages_dir: Opti
         return {"ok": False, "skip_reason": f"docker run failed: {e}"}
 
 
-def _collect_and_upload_outputs(run_dir: str, userid: Optional[str]) -> list:
+def _collect_outputs_into_workspace(run_dir: str, userid: Optional[str]) -> list:
     """
-    Uploads every regular file the code left in <run_dir>/outputs/ to
-    Supabase and returns [{"filename", "url", "size"}]. Never raises -
-    a failed upload just means that file is skipped (logged). Runs in
-    the BACKEND process, so the sandboxed code never sees Supabase keys.
+    Copies every regular file the code left in <run_dir>/outputs/ into the
+    user's WORKSPACE (under outputs/) and returns [{"path","size"}]. It does
+    NOT upload or show anything to the user — the model decides what gets
+    delivered by calling output_files with these paths. Never raises.
     """
-    # Lazy import: avoids any circular import at module load time.
-    from gpt2_functions import _upload_bytes_to_supabase
+    from gpt2_workspace import workspace_write_bytes  # lazy: no import cycle
 
     out_dir = os.path.join(run_dir, OUTPUT_SUBDIR)
     if not os.path.isdir(out_dir):
@@ -357,20 +355,14 @@ def _collect_and_upload_outputs(run_dir: str, userid: Optional[str]) -> list:
             print(f"[SANDBOX] skipping output {name!r}: size {size} out of range")
             continue
         safe_name = _SAFE_FILENAME_RE.sub("_", os.path.basename(name))[:80]
-        # Short random prefix: the upload path is deterministic + upserts,
-        # so two runs both writing "tone.wav" would otherwise overwrite
-        # each other's file.
-        stored_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
-        content_type = mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
         try:
             with open(path, "rb") as f:
                 data = f.read()
+            saved = workspace_write_bytes(userid, f"{OUTPUT_SUBDIR}/{safe_name}", data)
+            if saved.get("success"):
+                results.append({"path": saved["path"], "size": size})
         except Exception as e:
-            print(f"[SANDBOX] couldn't read output {name!r}: {e}")
-            continue
-        url = _upload_bytes_to_supabase(userid or "anonymous", stored_name, data, content_type)
-        if url:
-            results.append({"filename": safe_name, "url": url, "size": size})
+            print(f"[SANDBOX] couldn't save output {name!r}: {e}")
     return results
 
 
@@ -498,8 +490,7 @@ def run_code(code: str, language: str = "python", timeout_s: int = DEFAULT_TIMEO
                       f"timed_out={outcome.get('timed_out')}, userid={userid!r}")
                 output_files = []
                 if outcome.get("exit_code") == 0 and not outcome.get("timed_out"):
-                    yield {"type": "status", "text": "Uploading generated files...", "detail": None, "icon": "upload"}
-                    output_files = _collect_and_upload_outputs(run_dir, userid)
+                    output_files = _collect_outputs_into_workspace(run_dir, userid)
                 yield {
                     "type": "code_result",
                     "success": (outcome.get("exit_code") == 0) and not outcome.get("timed_out"),
@@ -510,7 +501,10 @@ def run_code(code: str, language: str = "python", timeout_s: int = DEFAULT_TIMEO
                     "exit_code": outcome.get("exit_code"),
                     "timed_out": outcome.get("timed_out", False),
                     "duration_s": outcome.get("duration_s"),
-                    "files": output_files,   # [{"filename","url","size"}] - empty if nothing was written to ./outputs/
+                    "files": [],   # nothing is auto-delivered any more — see saved_to_workspace + output_files
+                    "saved_to_workspace": output_files,   # [{"path","size"}] files the code wrote to ./outputs/
+                    "next_step": ("These files are saved in your workspace but NOT yet shown to the user. "
+                                  "Call output_files with the paths you want them to get.") if output_files else None,
                 }
                 return
             print(f"[SANDBOX] {link['name']} unavailable for {lang} ({outcome.get('skip_reason')}), trying next engine")

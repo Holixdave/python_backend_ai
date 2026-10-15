@@ -349,6 +349,7 @@ from prompts import REASONING_STEP_ICONS, REASONING_STEP_HINT
 from gpt2_functions import (
     search_web,
     build_search_query,
+    is_meaningful_query,
     classify_intent,
     get_lean_history,
     _split_thinking,
@@ -480,9 +481,9 @@ from gpt2_tools import (
 # around the dynamic manifest) moved to prompts.py. The manifest itself is
 # still generated at import time here since build_tool_manifest() is a
 # real function call, not static text.
-from prompts import SUGGESTION_HINT, TOOL_USE_HINT_TAIL, MEMORY_TRUNCATED_NOTE, INLINE_VISUAL_HINT, NOTE_CALLOUT_HINT
+from prompts import SEARCH_DISCIPLINE_HINT, OUTPUT_FILES_HINT, SUGGESTION_HINT, TOOL_USE_HINT_TAIL, MEMORY_TRUNCATED_NOTE, INLINE_VISUAL_HINT, NOTE_CALLOUT_HINT
 
-TOOL_USE_HINT = "\n\n" + build_tool_manifest() + TOOL_USE_HINT_TAIL
+TOOL_USE_HINT = "\n\n" + build_tool_manifest() + TOOL_USE_HINT_TAIL + SEARCH_DISCIPLINE_HINT + OUTPUT_FILES_HINT
 
 
 # ---------------------------------------------------------------------------
@@ -855,6 +856,13 @@ def _ask_gpt2_core(
             "actually about searching, just answer normally — no need to "
             "mention the setting at all."
         )
+
+    elif intent["search_type"] == "web" and not is_meaningful_query(intent["search_query"] or build_search_query(prompt), prompt):
+        # Nothing concrete to look up (statement / filler / vague follow-up):
+        # skip the automatic search entirely and just answer.
+        print(f"[SEARCH] skipped — no meaningful query (got {intent['search_query']!r})")
+        intent["search_type"] = "none"
+        current_identity += NO_WEB_SEARCH_NOTE
 
     elif intent["search_type"] == "web":
         clean_query = intent["search_query"] or build_search_query(prompt)
@@ -1471,6 +1479,25 @@ def _ask_gpt2_core(
                         file_result = parsed
                 except Exception:
                     pass
+            elif success and call_data["tool"] == "output_files":
+                # The model chose these files. Images -> the image gallery
+                # (shown ABOVE the reply); everything else -> file cards.
+                try:
+                    parsed = json.loads(tool_result)
+                    for f in (parsed.get("files") or []):
+                        if f.get("kind") == "image":
+                            image_results = list(image_results) + [{
+                                "image": f["url"], "thumbnail": f["url"],
+                                "title": f.get("filename", ""), "source": "",
+                            }]
+                            session_context["image_results"] = image_results
+                        else:
+                            produced = {"type": "file_result", "success": True,
+                                        "url": f["url"], "filename": f["filename"]}
+                            file_results.append(produced)
+                            file_result = produced
+                except Exception as e:
+                    print(f"[OUTPUT_FILES] couldn't route result: {e}")
             elif success and call_data["tool"] in ("search_web", "search_github", "fetch_github_file", "fetch_document", "fetch_webpage"):
                 # FIXED — same class of bug as image_results above: these
                 # tools return real source data, but that data only ever
@@ -1588,7 +1615,7 @@ def _ask_gpt2_core(
     # itself came back unsure. Rather than let a guess through, run one
     # search now and re-ask with real web context. Sources always get
     # attached when this fires. (Skip if user_docs search was already done.)
-    if intent["search_type"] == "none" and not sources and web_search_enabled and _looks_unsure(answer) and not _is_self_question(prompt):
+    if intent["search_type"] == "none" and not sources and web_search_enabled and _looks_unsure(answer) and not _is_self_question(prompt) and is_meaningful_query(build_search_query(prompt), prompt):
         clean_query = build_search_query(prompt)
         yield {
             "type": "status",

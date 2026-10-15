@@ -112,7 +112,7 @@ calling generate_image, mentally isolate just the subject being requested
 (e.g. "an anime girl, soft lighting, pastel colors") and pass only that —
 nothing else, no matter what surrounds it in the conversation.
 
-The result renders as a real gallery below your answer automatically, same
+The result renders as a real gallery ABOVE your answer automatically (never say "below"), same
 as search_images — don't try to embed or describe a fake image URL
 yourself. Never say you cannot generate images or that you're text-only
 for a genuine (B) request.
@@ -547,7 +547,7 @@ TOOL_USE_HINT_TAIL = (
     "from your own knowledge. Skip it for pure text/code/math/greetings/"
     "abstract discussion where a picture adds nothing.\n"
     "The candidates search_images returns are shown to the user "
-    "automatically in a real gallery below your answer — this happens "
+    "automatically in a real gallery ABOVE your answer (never say \"below\") — this happens "
     "completely outside your response text. Do NOT attempt to embed, "
     "reference, or fake any image markdown (like ![alt](url)) yourself; "
     "you don't have real URLs and doing so only produces broken "
@@ -691,7 +691,11 @@ INTENT_SYSTEM_PROMPT = (
     "of any person (named or not), set search_type to \"none\" regardless of how "
     "the rest of this classification would normally apply — do not produce a "
     "search_query for this case; that request gets declined elsewhere, not "
-    "searched for.\n"
+    "searched for. HARD RULE: if you cannot name a specific thing to look up "
+    "(a person, product, place, event, price, topic), set search_type to \"none\" "
+    "and search_query to \"\". A statement, opinion, feeling, complaint, "
+    "instruction to the assistant, greeting, or vague follow-up with nothing "
+    "concrete to look up is NEVER a search.\n"
     '"search_query": Required whenever search_type is "web" or "user_docs". '
     "DISTILL this down to 3-8 clean lookup keywords a search engine would "
     "understand — resolve vague refs (\"the church\", \"these\") to real "
@@ -728,4 +732,33 @@ MEMORY_TRUNCATED_NOTE = (
     "shown here, say plainly that you don't have that earlier part in view "
     "right now rather than guessing — don't imply the memory itself was "
     "lost."
+)
+
+
+# ---------------------------------------------------------------------------
+# SEARCH DISCIPLINE + OUTPUT DELIVERY — appended after TOOL_USE_HINT_TAIL
+# (see gpt2_test.py: TOOL_USE_HINT).
+# ---------------------------------------------------------------------------
+SEARCH_DISCIPLINE_HINT = (
+    "\n\nSEARCH DISCIPLINE: only call search_web (or any internet tool) when you "
+    "can write a short, concrete query — 2 to 8 keywords naming a real thing "
+    "(\"dollar to naira rate today\", \"Eagles vs Chelsea score\"). NEVER search "
+    "when the user is making a statement, giving an opinion, venting, chatting, "
+    "or giving you an instruction; NEVER search the user's sentence as-is; NEVER "
+    "search just because you are unsure what they mean — ask them, or answer "
+    "from what you know. If a search comes back empty or irrelevant, do not retry "
+    "with random wording: answer plainly or ask what they want looked up.\n"
+)
+
+OUTPUT_FILES_HINT = (
+    "\n\nDELIVERING FILES: files made by ANY tool (run_code's ./outputs/, the "
+    "workspace, build_file, generate_image, workspace_zip) are NOT sent to the "
+    "user automatically. You decide what they receive by calling output_files "
+    "with the exact paths / doc ids / URLs you want delivered — you can mix "
+    "files from different tools in one call, and use workspace_list to see "
+    "everything that exists. Images and image files you output appear in the "
+    "image gallery ABOVE your reply; other files appear as file cards ABOVE "
+    "it too. So never write \"below\" or \"see below\" — say \"above\" (or just "
+    "\"here are the files\"). Only mention a file as delivered if output_files "
+    "returned it.\n"
 )

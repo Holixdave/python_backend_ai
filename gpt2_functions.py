@@ -51,26 +51,86 @@ from firebase_admin import firestore
 # Trimmed: "show me", "get me", "today", "current", "2025/2026", "result",
 # "website" fired on ordinary chat/code/design requests and caused junk searches.
 SEARCH_TRIGGER_KEYWORDS = [
-    "search", "find", "look up", "look for", "link", "download",
-    "latest", "recent", "news", "where can i", "netnaija",
+    "search", "look up", "look for",
+    "latest", "news", "where can i", "netnaija",
     "what is the price of", "who won",
 ]
+# REMOVED "find", "link", "download", "recent": they fire on ordinary code/chat
+# ("find the bug", "download button", "recent changes") and caused junk searches.
+
+# Words that carry no search value. If nothing is left after removing these,
+# there is nothing to look up — searching anyway is what produced rubbish.
+_QUERY_STOPWORDS = {
+    "the", "and", "for", "are", "was", "were", "you", "your", "yours", "can", "could", "would",
+    "should", "will", "just", "that", "this", "these", "those", "with", "have", "has", "had",
+    "not", "but", "its", "it's", "what", "who", "how", "why", "when", "where", "which", "there",
+    "their", "them", "then", "than", "too", "very", "also", "about", "some", "any", "all",
+    "from", "into", "out", "get", "got", "let", "lets", "need", "want", "like", "know", "think",
+    "say", "said", "tell", "make", "made", "does", "did", "dont", "doesnt", "cant", "okay", "ok",
+    "yes", "yeah", "thanks", "thank", "hello", "hey", "hii", "hmm", "well", "really", "thing",
+    "things", "stuff", "something", "anything", "everything", "again", "more", "now", "one",
+    "model", "ai", "bot", "search", "searching", "look", "find", "info", "information",
+}
+_STATEMENT_STARTS = ("i ", "i'm ", "im ", "i've ", "i'd ", "we ", "you ", "my ", "your ", "it ", "that ", "this ", "he ", "she ", "they ",
+                     "can you ", "can u ", "could you ", "would you ", "will you ", "do you ", "are you ",
+                     "explain ", "tell me ", "why do", "why does", "why is", "how do you")
+
+
+def is_meaningful_query(query: str, original_prompt: Optional[str] = None) -> bool:
+    """
+    True only if `query` looks like something a search engine can answer: a
+    short noun-phrase with at least one real content word. False for empty
+    strings, pure filler, long sentences, statements/opinions addressed to
+    the assistant ("i think you are wrong"), or a verbatim copy of a long
+    user message. Deterministic on purpose — this is the last gate before
+    the web gets hit, so it must never depend on another model call.
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return False
+    tokens = re.findall(r"[a-z0-9\u00c0-\u024f']+", q)
+    if not tokens or len(tokens) > 10:
+        return False
+    content = [t for t in tokens if t not in _QUERY_STOPWORDS and len(t) > 2]
+    if not content:
+        return False
+    if len(tokens) > 4 and len(content) / len(tokens) < 0.4:
+        return False                       # mostly filler words = a sentence, not a query
+    if q.startswith(_STATEMENT_STARTS) and len(tokens) > 3:
+        return False                       # "i think...", "you are...", "my code..." = statement
+    if original_prompt:
+        op = original_prompt.strip().lower()
+        if q == op and len(tokens) > 6:
+            return False                   # the user's sentence pasted back as a query
+    return True
+
 
 def needs_web_search(prompt: str) -> bool:
     t = prompt.lower()
-    return any(k in t for k in SEARCH_TRIGGER_KEYWORDS)
+    if not any(k in t for k in SEARCH_TRIGGER_KEYWORDS):
+        return False
+    return is_meaningful_query(build_search_query(prompt), prompt)
+
+
+_QUERY_FILLER_PHRASES = [
+    "can you find me", "can u find me", "can you get me", "can i get", "can you get", "can you find", "can u find", "find me",
+    "search for", "search", "look for", "look up", "get me", "show me", "i want",
+    "please", "dude", "man", "kindly", "help me",
+    "abeg", "biko", "pls", "plz", "sha", "na so", "una",
+]
+# Longest first so "search for" is removed before "search".
+_FILLER_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(p) for p in sorted(_QUERY_FILLER_PHRASES, key=len, reverse=True)) + r")\b"
+)
+
 
 def build_search_query(prompt: str) -> str:
-    replacements = [
-        "can i get", "can you get", "can you find", "find me",
-        "search for", "look for", "get me", "show me", "i want",
-        "please", "dude", "man", "kindly", "help me",
-        "abeg", "biko", "pls", "plz", "sha", "na so", "una",
-    ]
-    q = prompt.lower()
-    for r in replacements:
-        q = q.replace(r, "")
-    return q.strip()
+    # BUG FIXED: this used plain str.replace(), so "man" was cut out of
+    # "human", "manage", "woman", "Manchester" and "una"/"sha" out of
+    # "tuna"/"shake" — producing rubbish queries like "hu", "age", "chester".
+    # Now whole words only.
+    q = _FILLER_RE.sub(" ", (prompt or "").lower())
+    return re.sub(r"\s+", " ", q).strip(" ,.!?-")
 
 
 def _search_ddgs(query: str, max_results: int):
@@ -1256,6 +1316,9 @@ def search_web(query: str, max_results: int = 20):
     On total failure, returns ("", []) silently — no raw error text gets
     injected into the model's context or shown to the user.
     """
+    if not is_meaningful_query(query):
+        print(f"[SEARCH] refused meaningless query {query!r}")
+        return "", []
     print(f"[SEARCH TRIGGERED] Query: {query}")
 
     query_words = set(re.findall(r"[a-z0-9]+", query.lower()))
@@ -1367,6 +1430,20 @@ def save_uploaded_files_as_docs(userid: Optional[str], file_urls: list, file_nam
     names = list(file_names or [])
     for i, url in enumerate(file_urls or []):
         filename = names[i] if i < len(names) and names[i] else f"upload_{i+1}.txt"
+        # .zip attachments are binary: never read them as text. Save into
+        # the user's workspace + unzip, and hand the AI the file tree so it
+        # can workspace_list / workspace_grep / workspace_read from there.
+        if filename.lower().endswith(".zip") or url.lower().split("?")[0].endswith(".zip"):
+            from gpt2_workspace import workspace_ingest_zip_url
+            z = workspace_ingest_zip_url(userid, url, filename)
+            if z.get("success"):
+                note = (f"[ZIP unpacked into the workspace at '{z['extracted_to']}' "
+                        f"({z['files']} files). File tree:\n{z.get('tree','')}\n"
+                        "Use workspace_list / workspace_grep / workspace_read to explore it.]")
+            else:
+                note = f"[Couldn't open this zip: {z.get('error')}]"
+            results.append({"filename": filename, "content": note, "saved": z.get("success", False)})
+            continue
         content = fetch_raw_file_content(url)
         saved = False
         if userid and content and not content.startswith("[Couldn't load this file"):
@@ -1550,9 +1627,13 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
                 search_type = "none"
 
             search_query = (data.get("search_query") or "").strip()
-            if search_type in ("web", "user_docs") and not search_query:
-                # classifier said yes but forgot the query — fall back to prompt
-                search_query = build_search_query(prompt) if search_type == "web" else prompt
+            if search_type == "web" and not search_query:
+                # classifier said "web" but couldn't name anything to look up.
+                # OLD behaviour: search the user's own sentence (= rubbish).
+                # NEW: no concrete query means no search.
+                search_type = "none"
+            elif search_type == "user_docs" and not search_query:
+                search_query = prompt
 
             # Safety net: if the classifier still just echoed the raw prompt
             # back, or handed back something way longer than a real search
@@ -1564,6 +1645,11 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
                 is_too_long = len(search_query.split()) > 12
                 if is_verbatim_echo or is_too_long:
                     search_query = build_search_query(search_query)
+                # Final gate: whatever the classifier gave us, it must be a real
+                # lookup phrase. Statements, filler and sentences become "none".
+                if not is_meaningful_query(search_query, prompt):
+                    print(f"[INTENT] dropping meaningless search query {search_query!r} -> none")
+                    search_type, search_query = "none", ""
             
             return {
                 "search_type": search_type,

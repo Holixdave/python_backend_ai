@@ -10,10 +10,10 @@ def tool(name: str = None, description: str = "", params: dict = None):
         {"url": {"type": "string", "description": "...", "required": True}}
     """
     def decorator(fn: Callable) -> Callable:
-        tool_name = name or fn.name
+        tool_name = name or fn.__name__
         _TOOLS[tool_name] = {
             "name": tool_name,
-            "description": description or (fn.doc or "").strip().split("\n")[0],
+            "description": description or (fn.__doc__ or "").strip().split("\n")[0],
             "params": params or {},
             "fn": fn,
         }

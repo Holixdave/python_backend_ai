@@ -153,6 +153,17 @@ from gpt2_functions import (
     update_user_doc,
 )
 from gpt2_sandbox import run_code
+from gpt2_output import output_files
+from gpt2_workspace import (
+    workspace_list,
+    workspace_read,
+    workspace_write,
+    workspace_delete,
+    workspace_grep,
+    workspace_unzip,
+    workspace_github_clone,
+    workspace_zip,
+)
 
 # Tools that reach out to the internet on the user's behalf. Every one of
 # these is gated by the user's own web_search toggle (see
@@ -168,6 +179,7 @@ WEB_TOOLS = {
     "fetch_github_file",
     "fetch_document",
     "remove_background",
+    "workspace_github_clone",
 }
 
 # ---------------------------------------------------------------------------
@@ -209,6 +221,16 @@ TOOL_REGISTRY = {
     "update_user_doc": update_user_doc,
     "run_code": run_code,
     "ask_user": ask_user,
+    # Persistent per-user workspace (gpt2_workspace.py)
+    "workspace_list": workspace_list,
+    "workspace_read": workspace_read,
+    "workspace_write": workspace_write,
+    "workspace_delete": workspace_delete,
+    "workspace_grep": workspace_grep,
+    "workspace_unzip": workspace_unzip,
+    "workspace_github_clone": workspace_github_clone,
+    "workspace_zip": workspace_zip,
+    "output_files": output_files,
 }
 # Short, hand-written purpose lines for the initial manifest only — this is
 # deliberately NOT the full docs. Once the AI picks one, it gets the real
@@ -241,13 +263,22 @@ TOOL_DESCRIPTIONS = {
     "schedule_reminder": "Schedule a push-notification reminder for the user at a specific future time.",
     "redisplay_images": "Re-render a gallery of images already found earlier in this conversation, without searching again.",
     "generate_image": "Generate a brand-new AI image from a text description and show it in a real gallery, same as search_images.",
-    "run_code": "Actually execute code you wrote (python/javascript/bash) in a sandbox and get back real stdout/stderr/exit_code — use this whenever the user asks you to run/execute/test code, not just to verify build_file's output. Supports an optional packages list (python only) to auto-install third-party imports like numpy/requests before running — no separate pip install step needed. To produce a real file (audio, image, pdf, zip, csv, etc.), write it into the ./outputs/ folder from your code, e.g. open('outputs/tone.wav','wb'); every file saved there is uploaded automatically and returned as a download URL in the result's `files` list. Share those URLs with the user and never claim a file exists unless it is listed there.",
+    "run_code": "Actually execute code you wrote (python/javascript/bash) in a sandbox and get back real stdout/stderr/exit_code — use this whenever the user asks you to run/execute/test code, not just to verify build_file's output. Supports an optional packages list (python only) to auto-install third-party imports like numpy/requests before running — no separate pip install step needed. To produce a real file (audio, image, pdf, zip, csv, etc.), write it into the ./outputs/ folder from your code, e.g. open('outputs/tone.wav','wb'); every file saved there lands in your workspace under outputs/ and is listed in `saved_to_workspace` — it is NOT shown to the user until you call output_files with those paths. Never claim the user has a file unless output_files returned it.",
     "ask_user": "Ask the user ONE quick multiple-choice question in a bottom sheet in their app (2-6 options, optional 'Other' box). Use it when the request is genuinely ambiguous and a wrong guess would waste their time. The turn stops when you call it and their tap comes back as their next message — so write nothing else in that reply.",
     "list_user_docs": "List all files the user has saved/uploaded (filename, hint, tags) — use this to find the right doc_id when the user says 'my file' without naming it.",
     "read_user_doc": "Read a specific saved file's full content by its doc_id (filename).",
     "read_doc_lines": "Read a specific line range from a saved file, with the total line count — use before editing a specific line.",
     "edit_doc_line": "Replace one specific line (by line number) in a saved file and re-save it.",
     "update_user_doc": "Overwrite a whole saved file with new content, or create a new saved file.",
+    "workspace_github_clone": "Download a WHOLE GitHub repo (owner/name or URL, optional ref/branch) into your workspace — no truncation. Use this instead of fetch_github_file whenever you need more than one small file. Then explore it with workspace_list / workspace_grep / workspace_read.",
+    "workspace_list": "Show the workspace file tree (or one folder in it) with file sizes. Start here after a clone/unzip to see what exists.",
+    "workspace_grep": "Regex-search all text files in the workspace (or a folder) and get file:line matches. Use it to FIND code in a big repo, then workspace_read that range.",
+    "workspace_read": "Read a workspace text file by line range (start_line/end_line) with total_lines — read big files in pieces; the result says which start_line to continue from.",
+    "workspace_write": "Create or overwrite a text file in the workspace (path + COMPLETE content).",
+    "workspace_delete": "Delete a file or folder from the workspace.",
+    "workspace_unzip": "Open a .zip that is in the workspace and extract it into a folder. (A .zip the user attaches is already saved and unzipped for you — just workspace_list it.)",
+    "output_files": "DELIVER files to the user — nothing from run_code or the workspace is sent automatically, you choose. files = list of workspace paths (\"outputs/chart.png\"), saved-doc ids ({\"doc_id\": \"x.html\"}) or URLs (from generate_image/earlier uploads), mixed freely from ANY tool. Images show in the image gallery ABOVE your reply, other files as file cards. Only claim files that come back in the result.",
+    "workspace_zip": "Pack a workspace folder (or everything) into ONE .zip and get a download URL (then pass that URL to output_files to show it).",
 }
 
 # Params that should NEVER come from the AI's own JSON — they belong to the
@@ -623,7 +654,7 @@ def execute_tool(tool_name: str, ai_args: dict, session_context: dict):
         # over ~10 candidates, throws inside that parse, gets silently
         # swallowed by its try/except, and the gallery just never renders
         # even though the search itself succeeded. This was a live bug.
-        if tool_name in ("fetch_github_file", "search_images"):
+        if tool_name in ("fetch_github_file", "search_images", "workspace_read", "workspace_list", "workspace_grep"):
             return True, json.dumps(result, default=str)[:20000]
         return True, json.dumps(result, default=str)[:4000]
 
