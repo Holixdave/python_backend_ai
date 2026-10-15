@@ -1,0 +1,12 @@
+[
+  {"prompt": "dude can u find the current dollar to naira rate abeg", "search_type": "web"},
+  {"prompt": "who won the match last night", "search_type": "web"},
+  {"prompt": "i think you are wrong", "search_type": "none"},
+  {"prompt": "ok thanks", "search_type": "none"},
+  {"prompt": "you keep searching rubbish man", "search_type": "none"},
+  {"prompt": "fix the bug in my python function", "search_type": "none"},
+  {"prompt": "what is today's date", "search_type": "none"},
+  {"prompt": "who built OOOR", "search_type": "none"},
+  {"prompt": "check my files for the jamb notes", "search_type": "user_docs"},
+  {"prompt": "what's the price of a PS5 in Nigeria", "search_type": "web"}
+]
