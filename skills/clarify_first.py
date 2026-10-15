@@ -22,12 +22,21 @@ _HAS_DETAILS = re.compile(
     re.I,
 )
 
-PRE = (
+PRE_MULTI = (
     "CLARIFY FIRST: the user's request is a short, vague build request. Do NOT build "
-    "anything yet and do NOT write files or code. Call the ask_user tool now with 1-3 "
-    "short multiple-choice questions (main purpose, must-have features, style/colours), "
-    "2-4 options each. Build only after they answer."
+    "anything yet and do NOT write files or code. Call ask_user ONCE with "
+    "questions=[...] — 2 or 3 short questions (main purpose, must-have features, "
+    "style/colours), each with 2-4 options. Build only after they answer."
 )
+PRE_SINGLE = (
+    "CLARIFY FIRST: the user's request is a short, vague build request. Do NOT build "
+    "anything yet and do NOT write files or code. The app's sheet shows ONE question at a "
+    "time, so call ask_user with the single most important question (usually the main "
+    "purpose), 2-4 options. After they answer, if one more essential detail is still "
+    "missing (features or style) ask that ONE next question; never more than 3 questions "
+    "in total, then build."
+)
+PRE = PRE_SINGLE  # kept for backwards compatibility
 
 
 def pre(ctx):
@@ -35,5 +44,7 @@ def pre(ctx):
     if not text or len(text.split()) > 12:
         return ""
     if _BUILD.search(text) and not _HAS_DETAILS.search(text):
-        return PRE
+        import os  # same switch as gpt2_tools.ask_user_multi_enabled(); read directly to avoid importing the heavy tools module
+        multi = os.environ.get("ASK_USER_MULTI", "0").strip().lower() in ("1", "true", "yes", "on")
+        return PRE_MULTI if multi else PRE_SINGLE
     return ""

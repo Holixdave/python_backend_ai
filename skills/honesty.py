@@ -14,7 +14,8 @@ PRIORITY = 10
 
 # Tools that really change/produce files or run code, grouped by what they prove.
 WRITE_TOOLS = {
-    "workspace_write", "workspace_edit", "workspace_delete", "workspace_unzip",
+    "workspace_write", "workspace_edit", "workspace_edit_by_intent", "workspace_delete", "workspace_unzip",
+    "delete_user_doc",
     "workspace_zip", "workspace_github_clone", "workspace_export_doc",
     "update_user_doc", "edit_file", "edit_file_by_intent", "edit_doc_line",
     "build_file", "output_files", "generate_image",
@@ -34,8 +35,7 @@ CLAIMS = {
         re.I),
     # "I ran / I tested / tests passed / test suite ran"
     "run": re.compile(
-        r"\bI(?:'ve|\s+have)?\s+(?:just\s+|now\s+|successfully\s+)*(?:ran|run|executed|tested|verified)\b"
-        r"|\b(?:tests?|test suite)\s+(?:all\s+)?(?:passed|pass|are passing|is passing|ran|completed)\b",
+        r"\bI(?:'ve|\s+have)?\s+(?:just\s+|now\s+|successfully\s+)*(?:ran|run|executed|tested|verified)\b",
         re.I),
     # "download it above / in the file card above / see the file above"
     "deliver": re.compile(
@@ -46,7 +46,8 @@ CLAIMS = {
     "verified": re.compile(
         r"\b(?:(?:is|are|now|it's|it is)\s+(?:now\s+)?(?:fully\s+)?"
         r"(?:ready (?:to|for) (?:deploy|deployment|production)|production[- ]ready)|"
-        r"officially resolved|fully (?:functional|migrated)|all (?:tests )?(?:pass|passing|passed))\b",
+        r"officially resolved|fully (?:functional|migrated)|all (?:tests )?(?:pass|passing|passed)|"
+        r"(?:tests?|test suite)\s+(?:all\s+)?(?:passed|pass|are passing|is passing))\b",
         re.I),
 }
 
@@ -75,17 +76,20 @@ def pre(ctx):
 
 def _evidence(kind, ctx):
     ok = set(ctx.get("tools_ok") or [])
+    called = set(ctx.get("tools_called") or [])
     files = bool(ctx.get("file_results"))
     images = bool(ctx.get("image_results"))
-    code = bool(ctx.get("code_results"))
+    codes = ctx.get("code_results") or []
     if kind == "write":
         return files or images or bool(ok & WRITE_TOOLS)
     if kind == "run":
-        return code or bool(ok & RUN_TOOLS)
+        # "I ran it" is true even if the run failed — an attempt is enough.
+        return bool(codes) or bool(called & RUN_TOOLS)
     if kind == "deliver":
         return files or images or bool(ok & DELIVER_TOOLS)
     if kind == "verified":
-        return code or bool(ok & RUN_TOOLS)
+        # "tests passed / ready to deploy" needs a run that really succeeded.
+        return any(isinstance(c, dict) and c.get("success") for c in codes) or bool(ok & RUN_TOOLS)
     return True
 
 
