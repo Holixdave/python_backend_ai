@@ -43,13 +43,19 @@ def see_tool_arg(tool_name: str) -> str:
     return get_tool_source(tool_name)
 
 
-def normalize_ask_user(args: dict) -> Optional[dict]:
-    """
-    Validates/cleans the arguments of an ask_user tool call into the exact
-    payload the app's bottom sheet expects. Returns None if the call is not
-    usable (no question, or fewer than 2 usable options) so the caller can
-    hand an error back to the model instead of showing a broken sheet.
-    """
+MAX_ASK_QUESTIONS = 3
+
+
+def ask_user_multi_enabled() -> bool:
+    """True once the app's bottom sheet can show several questions with a Next
+    button (set ASK_USER_MULTI=1 on the server then). Until then only ONE
+    question is sent per sheet — extra questions are asked one at a time."""
+    import os
+    return os.environ.get("ASK_USER_MULTI", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _normalize_one_question(args: dict) -> Optional[dict]:
+    """One question + its 2-6 options, or None if unusable."""
     import uuid
     if not isinstance(args, dict):
         return None
@@ -88,19 +94,64 @@ def normalize_ask_user(args: dict) -> Optional[dict]:
     }
 
 
-def ask_user(question: str, options: list, allow_multiple: bool = False, allow_other: bool = True):
+def normalize_ask_user(args: dict) -> Optional[dict]:
     """
-    Ask the user ONE quick multiple-choice question in a bottom sheet in
+    Validates/cleans the arguments of an ask_user tool call into the exact
+    payload the app's bottom sheet expects. Returns None if the call is not
+    usable (no question, or fewer than 2 usable options) so the caller can
+    hand an error back to the model instead of showing a broken sheet.
+
+    SINGLE question (always works): {question, options, allow_multiple, allow_other}
+      -> payload {question_id, question, options, allow_multiple, allow_other}.
+
+    SEVERAL questions: pass "questions": [ {question, options, ...}, ... ] (max 3).
+      -> the same top-level fields as the FIRST question (so an app that only
+         knows the single-question sheet still works and shows question 1),
+         plus "questions": [all cleaned questions] and "total": n.
+      The extra questions are only sent when ask_user_multi_enabled() is True;
+      otherwise only the first is sent and the model asks the next one after
+      the user answers.
+    """
+    if not isinstance(args, dict):
+        return None
+
+    raw_qs = args.get("questions")
+    if isinstance(raw_qs, list) and raw_qs:
+        cleaned = [q for q in (_normalize_one_question(r) for r in raw_qs[:MAX_ASK_QUESTIONS]) if q]
+        if not cleaned:
+            return None
+        if not ask_user_multi_enabled():
+            cleaned = cleaned[:1]
+        payload = dict(cleaned[0])
+        if len(cleaned) > 1:
+            payload["questions"] = cleaned
+            payload["total"] = len(cleaned)
+        return payload
+
+    return _normalize_one_question(args)
+
+
+def ask_user(question: str = "", options: Optional[list] = None, allow_multiple: bool = False,
+             allow_other: bool = True, questions: Optional[list] = None):
+    """
+    Ask the user a quick multiple-choice question in a bottom sheet in
     their app, instead of guessing. The turn STOPS here: the sheet opens,
     the user taps an answer, and their answer comes back as their next
     message — so write NOTHING else in the same reply.
+
+    One question: pass question + options. Several related questions in one
+    sheet (the user answers each, then taps Next): pass questions=[{question,
+    options, allow_multiple, allow_other}, ...] (max 3). If the app's sheet
+    does not support several yet, only the FIRST is shown — so put the most
+    important one first, and ask the next one after they answer.
 
     Use it only when a wrong guess would waste the user's time and the
     request genuinely can't be answered well without knowing their choice
     (which subject/topic/level, which of several meanings, which file
     format/style before you build something big). Do NOT use it for things
-    you can reasonably assume, for simple factual questions, or twice in a
-    row — if the user already answered, just proceed.
+    you can reasonably assume or for simple factual questions. Don't ask again
+    once the user has answered unless one essential detail is still missing
+    (never more than 3 questions in total for one request) — otherwise proceed.
 
     Args:
         question: the question, one short sentence (no markdown).
@@ -116,14 +167,17 @@ def ask_user(question: str, options: list, allow_multiple: bool = False, allow_o
     # ends the turn with an ask_user event. This only runs when the call was
     # invalid, so the model gets a clear reason and can fix it or just answer.
     payload = normalize_ask_user({"question": question, "options": options,
-                                  "allow_multiple": allow_multiple, "allow_other": allow_other})
+                                  "allow_multiple": allow_multiple, "allow_other": allow_other,
+                                  "questions": questions})
     if payload is None:
-        return {"error": "ask_user needs a non-empty question and 2-6 non-empty options. "
+        return {"error": "ask_user needs a non-empty question and 2-6 non-empty options "
+                         "(or a questions list where each has both). "
                          "Fix the call, or skip the question and answer with your best assumption."}
     return {"asked": True}
 
 
 from gpt2_functions import (
+    delete_user_doc,
     search_web,
     search_images,
     _fetch_og_image,
@@ -168,6 +222,7 @@ from gpt2_workspace import (
     workspace_github_clone,
     workspace_zip,
     workspace_edit,
+    workspace_edit_by_intent,
     workspace_import_doc,
     workspace_export_doc,
 )
@@ -226,6 +281,7 @@ TOOL_REGISTRY = {
     "read_doc_lines": read_doc_lines,
     "edit_doc_line": edit_doc_line,
     "update_user_doc": update_user_doc,
+    "delete_user_doc": delete_user_doc,
     "run_code": run_code,
     "ask_user": ask_user,
     # Persistent per-user workspace (gpt2_workspace.py)
@@ -239,6 +295,7 @@ TOOL_REGISTRY = {
     "workspace_zip": workspace_zip,
     "output_files": output_files,
     "workspace_edit": workspace_edit,
+    "workspace_edit_by_intent": workspace_edit_by_intent,
     "workspace_run": workspace_run,
     "workspace_import_doc": workspace_import_doc,
     "workspace_export_doc": workspace_export_doc,
@@ -274,13 +331,14 @@ TOOL_DESCRIPTIONS = {
     "schedule_reminder": "Schedule a push-notification reminder for the user at a specific future time.",
     "redisplay_images": "Re-render a gallery of images already found earlier in this conversation, without searching again.",
     "generate_image": "Generate a brand-new AI image from a text description and show it in a real gallery, same as search_images.",
-    "run_code": "Actually execute code you wrote (python/javascript/bash) in a sandbox and get back real stdout/stderr/exit_code — use this whenever the user asks you to run/execute/test code, not just to verify build_file's output. Supports an optional packages list (python only) to auto-install third-party imports like numpy/requests before running — no separate pip install step needed. To produce a real file (audio, image, pdf, zip, csv, etc.), write it into the ./outputs/ folder from your code, e.g. open('outputs/tone.wav','wb'); every file saved there lands in your workspace under outputs/ and is listed in `saved_to_workspace` — it is NOT shown to the user until you call output_files with those paths. Never claim the user has a file unless output_files returned it.",
-    "ask_user": "Ask the user ONE quick multiple-choice question in a bottom sheet in their app (2-6 options, optional 'Other' box). Use it when the request is genuinely ambiguous and a wrong guess would waste their time. The turn stops when you call it and their tap comes back as their next message — so write nothing else in that reply.",
+    "run_code": "Actually execute code you wrote (python/javascript/bash) in a sandbox and get back real stdout/stderr/exit_code — use this whenever the user asks you to run/execute/test code, not just to verify build_file's output. Supports an optional packages list (python only) to auto-install third-party imports like numpy/requests before running — no separate pip install step needed. To READ files the user already has, pass input_files=[workspace paths/folders or saved-doc ids] — they are copied into ./inputs/ for that run (open('inputs/data.csv')); without it the code starts in an EMPTY folder and cannot see any workspace or saved file. For a whole project with its own files/tests use workspace_run. To produce a real file (audio, image, pdf, zip, csv, etc.), write it into the ./outputs/ folder from your code, e.g. open('outputs/tone.wav','wb'); every file saved there lands in your workspace under outputs/ and is listed in `saved_to_workspace` — it is NOT shown to the user until you call output_files with those paths. Never claim the user has a file unless output_files returned it.",
+    "ask_user": "Ask the user a quick multiple-choice question in a bottom sheet in their app (2-6 options, optional 'Other' box). Pass questions=[...] (max 3) to ask several related questions in one sheet; if the app can only show one, only the first appears, so put the most important first and ask the next after they answer. Use it when the request is genuinely ambiguous and a wrong guess would waste their time. The turn stops when you call it and their answer comes back as their next message — so write nothing else in that reply.",
     "list_user_docs": "List all files the user has saved/uploaded (filename, hint, tags) — use this to find the right doc_id when the user says 'my file' without naming it.",
     "read_user_doc": "Read a specific saved file's full content by its doc_id (filename).",
     "read_doc_lines": "Read a specific line range from a saved file, with the total line count — use before editing a specific line.",
     "edit_doc_line": "Replace one specific line (by line number) in a saved file and re-save it.",
     "update_user_doc": "Overwrite a whole saved file with new content, or create a new saved file.",
+    "delete_user_doc": "Permanently DELETE one saved doc by its exact doc_id. Only when the user clearly asks to delete/remove that file — it can't be undone (confirm with ask_user if it is unclear which file). Only claim it was deleted if the result says success. Workspace files are deleted with workspace_delete instead.",
     "workspace_github_clone": "Download a WHOLE GitHub repo (owner/name or URL, optional ref/branch) into your workspace — no truncation. Use this instead of fetch_github_file whenever you need more than one small file. Then explore it with workspace_list / workspace_grep / workspace_read.",
     "workspace_list": "Show the workspace file tree (or one folder in it) with file sizes. Start here after a clone/unzip to see what exists.",
     "workspace_grep": "Regex-search all text files in the workspace (or a folder) and get file:line matches. Use it to FIND code in a big repo, then workspace_read that range.",
@@ -290,6 +348,7 @@ TOOL_DESCRIPTIONS = {
     "workspace_unzip": "Open a .zip that is in the workspace and extract it into a folder. (A .zip the user attaches is already saved and unzipped for you — just workspace_list it.)",
     "output_files": "DELIVER files to the user — nothing from run_code or the workspace is sent automatically, you choose. files = list of workspace paths (\"outputs/chart.png\"), saved-doc ids ({\"doc_id\": \"x.html\"}) or URLs (from generate_image/earlier uploads), mixed freely from ANY tool. Images show in the image gallery ABOVE your reply, other files as file cards. Only claim files that come back in the result.",
     "workspace_edit": "Change PART of a workspace file by exact find/replace (find_text must match once, or replace_all=true) — never retype a whole file for a small change. On a miss it tells you which line to re-read.",
+    "workspace_edit_by_intent": "Edit ONE workspace file by describing the change in plain English — e.g. \"make the header text bigger\". You do NOT need the exact current text; a separate step reads the real file and works out the precise edit (retrying itself if not unique). Use this instead of workspace_edit when you can't see the file's exact wording. Files over ~60,000 characters: workspace_read + workspace_edit instead.",
     "workspace_run": "Run a shell command INSIDE a workspace project (e.g. \"pytest -q\", \"python app.py\", \"ls\") and get real stdout/stderr/exit_code. Runs on a copy of `cwd`; files it creates/changes are copied back and listed. Optional packages=[...] pip installs first. 60s default, 180s max. Use this (not run_code) whenever the code needs the workspace's files.",
     "workspace_import_doc": "Copy a saved doc (from build_file / uploads / list_user_docs) into the workspace so you can workspace_edit or workspace_run it.",
     "workspace_export_doc": "Save a workspace text file into the saved-docs store so list_user_docs / edit_file / edit_doc_line can see it.",

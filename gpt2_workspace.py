@@ -656,6 +656,97 @@ def workspace_edit(userid: str, path: str, find_text: str, replace_text: str, re
             "first_change_at_line": first_line}
 
 
+# ── edit by plain-English intent ─────────────────────────────────────────────
+MAX_INTENT_EDIT_CHARS = 60_000   # bigger files: use workspace_read + workspace_edit instead
+
+
+def workspace_edit_by_intent(userid: str, path: str, instruction: str) -> dict:
+    """
+    Edit ONE workspace text file by describing the change in plain English,
+    e.g. "change the submit button color to blue" — you do NOT need the exact
+    current text. A separate step reads the real file, works out the precise
+    unique find/replace (retrying itself up to 3 times if the first guess
+    isn't unique), then applies it with workspace_edit. Prefer this over
+    workspace_edit when you can't see the file's exact wording. For files
+    over ~60,000 characters, workspace_read the part you need and use
+    workspace_edit with the exact text instead.
+    """
+    if not path or not str(path).strip():
+        return {"success": False, "error": "no path given"}
+    if not instruction or not str(instruction).strip():
+        return {"success": False, "error": "no instruction given"}
+    if not _rate_ok(userid, "intent_edit", 60):
+        return {"success": False, "error": "Edit limit reached (60 per hour) — try again later."}
+    try:
+        full = _safe_path(userid, path)
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    if not os.path.isfile(full):
+        return {"success": False, "error": f"'{path}' is not a file in the workspace. "
+                                           "If it is a saved doc, workspace_import_doc it first, or use edit_file_by_intent."}
+    try:
+        with open(full, "r", encoding="utf-8") as f:
+            content = f.read()
+    except UnicodeDecodeError:
+        return {"success": False, "error": "File isn't valid UTF-8 text."}
+    if not content.strip():
+        return {"success": False, "error": "file is empty, nothing to edit"}
+    if len(content) > MAX_INTENT_EDIT_CHARS:
+        return {"success": False, "error": f"File is {len(content)} characters (limit {MAX_INTENT_EDIT_CHARS}). "
+                                           "Use workspace_read for the part you need, then workspace_edit."}
+
+    try:  # lazy: gpt2_functions pulls in Firebase/provider keys
+        from gpt2_functions import (
+            _call_provider_chain_full, TEXT_PROVIDERS, _edit_executor_system_prompt,
+            _FENCE_RE, EDIT_EXECUTOR_MAX_ATTEMPTS,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"editor model not available: {e}"}
+
+    messages = [
+        {"role": "system", "content": _edit_executor_system_prompt()},
+        {"role": "user", "content": f"FILE CONTENT ({path}):\n\n{content}\n\nINSTRUCTION: {str(instruction).strip()}"},
+    ]
+    feedback = None
+    for attempt in range(1, EDIT_EXECUTOR_MAX_ATTEMPTS + 1):
+        if feedback:
+            messages.append({"role": "user", "content": feedback})
+        raw, _provider, _finish = _call_provider_chain_full(TEXT_PROVIDERS, messages, temperature=0.1, max_tokens=4000)
+        if raw is None:
+            return {"success": False, "error": "editor model unavailable — try again shortly"}
+        messages.append({"role": "assistant", "content": raw})
+        try:
+            import json as _json
+            parsed = _json.loads(_FENCE_RE.sub("", raw).strip())
+            find_text = parsed.get("find", "") or ""
+            replace_text = parsed.get("replace", "") or ""
+        except Exception:
+            feedback = ('That was not valid JSON. Respond with ONLY the JSON object '
+                        '{"find": "...", "replace": "..."}, nothing else — no explanation, no markdown fences.')
+            continue
+        if not find_text:
+            feedback = '"find" was empty. It must be a real, non-empty snippet copied exactly from the FILE CONTENT above.'
+            continue
+        n = content.count(find_text)
+        if n == 0:
+            feedback = ("That exact text was not found in the file — copy the snippet character-for-character "
+                        "from the FILE CONTENT above (whitespace, quotes, indentation) and try again.")
+            continue
+        if n > 1:
+            feedback = (f"That text matched {n} places in the file — it must match exactly once. Include a bit "
+                        "more surrounding context (the line above or below) so it is unique, then try again.")
+            continue
+        result = workspace_edit(userid, path, find_text, replace_text)
+        if result.get("success"):
+            result["attempts"] = attempt
+            result["instruction"] = str(instruction).strip()[:120]
+        return result
+
+    return {"success": False,
+            "error": f"Couldn't land a unique edit after {EDIT_EXECUTOR_MAX_ATTEMPTS} attempts — "
+                     "give a more specific instruction, or use workspace_read + workspace_edit with exact text."}
+
+
 # ── bridge to the saved-docs store ───────────────────────────────────────────
 def workspace_import_doc(userid: str, doc_id: str, path: Optional[str] = None) -> dict:
     """Copy a saved doc (build_file / upload / list_user_docs) into the workspace so

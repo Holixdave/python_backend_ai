@@ -58,6 +58,19 @@ MAX_OUTPUT_FILE_BYTES = 10 * 1024 * 1024   # matches the RLIMIT_FSIZE write cap
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]")
 
 # ---------------------------------------------------------------------------
+# INPUT FILES - run_code used to run in an EMPTY folder, so code could not
+# read anything the user already has. Now the model can pass input_files=[...]
+# (workspace paths/folders OR saved-doc ids) and they are COPIED into
+# ./inputs/ before the code starts. Copy-in only: the real files are never
+# touched by the run. Anything the code wants to keep goes in ./outputs/.
+# ---------------------------------------------------------------------------
+INPUT_SUBDIR = "inputs"
+MAX_INPUT_REFS = 20
+MAX_INPUT_FILES = 60
+MAX_INPUT_TOTAL_BYTES = 25 * 1024 * 1024
+_INPUT_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".idea", ".dart_tool", "build", "dist"}
+
+# ---------------------------------------------------------------------------
 # PACKAGE INSTALL — a persistent, SHARED target directory every run_code
 # call points PYTHONPATH at, rather than a fresh venv/site-packages per
 # call. This is the actual fix for "it fails multiple times installing,
@@ -302,6 +315,7 @@ def _run_docker(runner: dict, code_path: str, timeout_s: int, packages_dir: Opti
         "--memory", f"{MAX_MEMORY_BYTES}",
         "--pids-limit", str(MAX_PROCS),
         "--user", "nobody",
+        "-w", "/code",                       # relative paths (./inputs, ./outputs) resolve inside the mount
         "-v", f"{os.path.dirname(code_path)}:/code:ro",
         # Writable outputs folder nested inside the read-only /code mount,
         # so docker-mode runs can also produce files.
@@ -373,6 +387,108 @@ def _collect_outputs_into_workspace(run_dir: str, userid: Optional[str]) -> list
     return results
 
 
+def _stage_inputs(run_dir: str, userid: Optional[str], refs: list):
+    """
+    Copies each ref into <run_dir>/inputs/ and returns (staged, missing).
+    A ref is a workspace file path, a workspace folder, or a saved-doc id
+    (looked up in that order). staged = [{"path","source","size"}] where
+    path is what the code should open (e.g. "inputs/data/sales.csv").
+    Never raises: problems are reported in `missing` with a reason.
+    """
+    from gpt2_workspace import _safe_path  # lazy: no import cycle
+
+    in_dir = os.path.join(run_dir, INPUT_SUBDIR)
+    os.makedirs(in_dir, exist_ok=True)
+    in_real = os.path.realpath(in_dir)
+    staged, missing = [], []
+    state = {"files": 0, "bytes": 0}
+
+    def _room(size: int) -> bool:
+        return state["files"] < MAX_INPUT_FILES and state["bytes"] + size <= MAX_INPUT_TOTAL_BYTES
+
+    def _dest_for(rel: str) -> Optional[str]:
+        rel = rel.replace("\\", "/").lstrip("/")
+        dest = os.path.realpath(os.path.join(in_real, rel))
+        return dest if dest.startswith(in_real + os.sep) else None
+
+    def _copy_file(src: str, rel: str, source: str, ref: str) -> None:
+        size = os.path.getsize(src)
+        dest = _dest_for(rel)
+        if dest is None:
+            missing.append(f"{ref} (unsafe path)")
+            return
+        if not _room(size):
+            missing.append(f"{rel} (over the input size/count limit)")
+            return
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copyfile(src, dest)
+        state["files"] += 1
+        state["bytes"] += size
+        staged.append({"path": f"{INPUT_SUBDIR}/{rel.replace(os.sep, '/')}", "source": source, "size": size})
+
+    for raw in (refs or [])[:MAX_INPUT_REFS]:
+        ref = str(raw or "").strip()
+        if not ref:
+            continue
+        try:
+            full = _safe_path(userid, ref)
+        except Exception:
+            missing.append(f"{ref} (outside the workspace)")
+            continue
+        try:
+            if os.path.isfile(full):
+                _copy_file(full, ref.replace("\\", "/").lstrip("/"), "workspace", ref)
+            elif os.path.isdir(full):
+                base = ref.replace("\\", "/").strip("/")
+                found = 0
+                for dp, dn, fn in os.walk(full):
+                    dn[:] = [d for d in dn if d not in _INPUT_SKIP_DIRS and not os.path.islink(os.path.join(dp, d))]
+                    for name in sorted(fn):
+                        fp = os.path.join(dp, name)
+                        if os.path.islink(fp):
+                            continue
+                        sub = os.path.relpath(fp, full)
+                        _copy_file(fp, f"{base}/{sub}" if base else sub, "workspace", ref)
+                        found += 1
+                if not found:
+                    missing.append(f"{ref} (folder is empty)")
+            else:
+                from user_doc_manager import UserDocManager  # lazy
+                doc = UserDocManager(userid).get_doc(ref) if userid else None
+                if not doc:
+                    missing.append(f"{ref} (not found in workspace or saved docs)")
+                    continue
+                data = (doc.get("content") or "").encode("utf-8")
+                name = _SAFE_FILENAME_RE.sub("_", os.path.basename(ref))[:80] or "doc.txt"
+                dest = _dest_for(name)
+                if dest is None or not _room(len(data)):
+                    missing.append(f"{ref} (over the input size/count limit)")
+                    continue
+                with open(dest, "wb") as f:
+                    f.write(data)
+                state["files"] += 1
+                state["bytes"] += len(data)
+                staged.append({"path": f"{INPUT_SUBDIR}/{name}", "source": "saved_doc", "size": len(data)})
+        except Exception as e:
+            missing.append(f"{ref} ({str(e)[:80]})")
+
+    # readable by the sandbox user ('nobody' when the server runs as root)
+    try:
+        is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+        for dp, dn, fn in os.walk(in_dir):
+            os.chmod(dp, 0o755)
+            if is_root:
+                os.chown(dp, 65534, 65534)
+            for name in fn:
+                fp = os.path.join(dp, name)
+                os.chmod(fp, 0o644)
+                if is_root:
+                    os.chown(fp, 65534, 65534)
+    except Exception as e:
+        print(f"[SANDBOX] couldn't set input permissions: {e}")
+    return staged, missing
+
+
 def _build_sandbox_chain(prefer_isolation: bool) -> list:
     # Mirrors _build_image_provider_chain's shape in gpt2_functions.py:
     # an ordered list this function just walks, falling through on any
@@ -386,7 +502,7 @@ def _build_sandbox_chain(prefer_isolation: bool) -> list:
 
 def run_code(code: str, language: str = "python", timeout_s: int = DEFAULT_TIMEOUT_S,
              prefer_isolation: bool = False, userid: Optional[str] = None,
-             packages: Optional[list] = None):
+             packages: Optional[list] = None, input_files: Optional[list] = None):
     """
     Executes AI-written code for real and returns actual stdout/stderr/
     exit_code — so the AI can verify code works instead of just asserting
@@ -409,6 +525,16 @@ def run_code(code: str, language: str = "python", timeout_s: int = DEFAULT_TIMEO
     6 packages per call; invalid-looking names (anything that isn't a
     plain package name — no flags, paths, or shell syntax) are rejected
     before anything runs.
+
+    input_files: optional list of files your code needs to READ — workspace
+    paths ("data/sales.csv"), workspace folders ("my_project"), or saved-doc
+    ids ("notes.md"). They are copied (read-only in effect, the originals are
+    never changed) into ./inputs/ before your code starts, so open them as
+    "inputs/data/sales.csv" / "inputs/notes.md". The result lists what was
+    staged under "inputs" and anything not found under "inputs_missing".
+    To keep files your code makes, write them to ./outputs/ (saved into the
+    workspace under outputs/). For a whole project with its own tests use
+    workspace_run instead.
 
     Engine chain: tries subprocess first (fast, resource-limited, scrubbed
     env, no inherited secrets), falls through to Docker (real isolation —
@@ -482,6 +608,21 @@ def run_code(code: str, language: str = "python", timeout_s: int = DEFAULT_TIMEO
         with open(code_path, "w") as f:
             f.write(code)
 
+        staged_inputs, missing_inputs = [], []
+        if input_files:
+            yield {"type": "status", "text": "Loading your files into the sandbox...",
+                   "detail": f"{len(input_files)} file(s)/folder(s)", "icon": "sandbox"}
+            staged_inputs, missing_inputs = _stage_inputs(run_dir, userid, list(input_files))
+            if not staged_inputs:
+                yield {
+                    "type": "code_result", "success": False, "engine": None,
+                    "language": lang, "stdout": "", "stderr": "", "exit_code": None,
+                    "inputs": [], "inputs_missing": missing_inputs,
+                    "error": "None of the input_files could be loaded, so the code was NOT run: "
+                             + "; ".join(missing_inputs[:5]),
+                }
+                return
+
         # Pre-create the outputs folder (world-writable so the docker
         # 'nobody' user can write to it too).
         out_dir = os.path.join(run_dir, OUTPUT_SUBDIR)
@@ -514,6 +655,8 @@ def run_code(code: str, language: str = "python", timeout_s: int = DEFAULT_TIMEO
                     "exit_code": outcome.get("exit_code"),
                     "timed_out": outcome.get("timed_out", False),
                     "duration_s": outcome.get("duration_s"),
+                    "inputs": staged_inputs,               # files copied into ./inputs/ for this run
+                    "inputs_missing": missing_inputs,      # refs that could not be loaded (with reason)
                     "files": [],   # nothing is auto-delivered any more — see saved_to_workspace + output_files
                     "saved_to_workspace": output_files,   # [{"path","size"}] files the code wrote to ./outputs/
                     "next_step": ("These files are saved in your workspace but NOT yet shown to the user. "

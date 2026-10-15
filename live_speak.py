@@ -66,6 +66,8 @@ _TOOL_PHRASES = {
     "edit_file_by_intent": "I'm making that edit now.",
     "edit_doc_line": "I'm making that edit now.",
     "update_user_doc": "I'm updating that document.",
+    "delete_user_doc": "I'm deleting that document.",
+    "workspace_edit_by_intent": "I'm making that edit now.",
     "remove_background": "I'm removing the background now.",
     "create_image": "Give me a moment while I create that image.",
     "generate_image": "Give me a moment while I create that image.",

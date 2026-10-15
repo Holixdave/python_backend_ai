@@ -432,6 +432,29 @@ def _args_preview(args: dict) -> dict:
     return safe
 
 
+def _tool_result_ok(tool_result) -> bool:
+    """execute_tool says success=True whenever the function didn't crash, even if
+    it returned {"success": false} / {"error": ...}. For the honesty skill only a
+    result that does not report failure counts as proof the action happened."""
+    try:
+        data = json.loads(tool_result) if isinstance(tool_result, str) else tool_result
+    except Exception:
+        return True
+    if isinstance(data, dict):
+        if data.get("success") is False or data.get("error"):
+            return False
+    return True
+
+
+def _as_list(value):
+    """The model sometimes sends a single string where a list is expected."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
 def _tool_call_event(tool: str, args: dict, text: str = None, icon: str = "tool") -> dict:
     """
     One status event for a tool call, carrying the call as STRUCTURED data
@@ -478,9 +501,9 @@ from gpt2_tools import (
 # around the dynamic manifest) moved to prompts.py. The manifest itself is
 # still generated at import time here since build_tool_manifest() is a
 # real function call, not static text.
-from prompts import SEARCH_DISCIPLINE_HINT, OUTPUT_FILES_HINT, SUGGESTION_HINT, TOOL_USE_HINT_TAIL, MEMORY_TRUNCATED_NOTE, INLINE_VISUAL_HINT, NOTE_CALLOUT_HINT
+from prompts import SEARCH_DISCIPLINE_HINT, FILE_STORES_HINT, OUTPUT_FILES_HINT, SUGGESTION_HINT, TOOL_USE_HINT_TAIL, MEMORY_TRUNCATED_NOTE, INLINE_VISUAL_HINT, NOTE_CALLOUT_HINT
 
-TOOL_USE_HINT = "\n\n" + build_tool_manifest() + TOOL_USE_HINT_TAIL + SEARCH_DISCIPLINE_HINT + OUTPUT_FILES_HINT
+TOOL_USE_HINT = "\n\n" + build_tool_manifest() + TOOL_USE_HINT_TAIL + SEARCH_DISCIPLINE_HINT + FILE_STORES_HINT + OUTPUT_FILES_HINT
 
 
 # ---------------------------------------------------------------------------
@@ -1370,6 +1393,7 @@ def _ask_gpt2_core(
                 code=call_data["args"].get("code") or "",
                 language=call_data["args"].get("language") or "python",
                 packages=call_data["args"].get("packages"),
+                input_files=_as_list(call_data["args"].get("input_files")),
                 userid=session_context["userid"],
             ):
                 if event.get("type") == "code_result":
@@ -1399,7 +1423,7 @@ def _ask_gpt2_core(
                     file_result = produced
         else:
             success, tool_result = execute_tool(call_data["tool"], call_data["args"], session_context)
-            if success:
+            if success and _tool_result_ok(tool_result):
                 tools_ok.append(call_data["tool"])
             if success and call_data["tool"] in ("search_images", "redisplay_images"):
                 # generate_image no longer reaches this branch — it's

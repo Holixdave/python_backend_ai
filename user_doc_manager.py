@@ -40,6 +40,24 @@ class UserDocManager:
         """Create user doc directory if it doesn't exist."""
         self.user_dir.mkdir(parents=True, exist_ok=True)
 
+    def _resolve(self, doc_id: str) -> Optional[Path]:
+        """
+        Safe path for a doc id, or None. A doc id is a bare filename inside the
+        user's doc folder: no folders, no '..', no hidden files (that also
+        protects the .hints.json index). Stops a model- or user-supplied id like
+        "../../other/doc/x" from reaching outside this user's folder.
+        """
+        name = str(doc_id or "").strip()
+        if not name or name != os.path.basename(name) or name.startswith(".") or "\\" in name:
+            return None
+        path = (self.user_dir / name)
+        try:
+            if path.resolve().parent != self.user_dir.resolve():
+                return None
+        except Exception:
+            return None
+        return path
+
     def save_doc(
         self,
         filename: str,
@@ -65,7 +83,9 @@ class UserDocManager:
         if not filename:
             raise ValueError("filename cannot be empty")
 
-        filepath = self.user_dir / filename
+        filepath = self._resolve(filename)
+        if filepath is None:
+            raise ValueError(f"invalid filename {filename!r}: use a plain file name (no folders, no '..', not starting with '.')")
         date_str = datetime.now().isoformat()
 
         # Build hint block to prepend to content (if hint is provided)
@@ -184,8 +204,8 @@ class UserDocManager:
             {"id": "...", "filename": "...", "hint": "...", "content": "...", "size": ...}
             or None if not found
         """
-        filepath = self.user_dir / doc_id
-        if not filepath.exists():
+        filepath = self._resolve(doc_id)
+        if filepath is None or not filepath.exists():
             return None
 
         try:
@@ -237,8 +257,8 @@ class UserDocManager:
         Returns:
             True if deleted, False if not found or error
         """
-        filepath = self.user_dir / doc_id
-        if not filepath.exists():
+        filepath = self._resolve(doc_id)
+        if filepath is None or not filepath.exists():
             return False
 
         try:

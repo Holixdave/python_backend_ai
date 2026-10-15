@@ -2215,6 +2215,34 @@ def edit_file(doc_id: str, find_text: str, replace_text: str, userid: Optional[s
     }
 
 
+def delete_user_doc(userid: str, doc_id: str) -> dict:
+    """
+    Permanently delete ONE saved doc by its exact doc_id (filename). Only call
+    this when the user clearly asked to delete/remove that file — it cannot be
+    undone. Get the exact id from list_user_docs first if unsure. Returns
+    {"success": True, "deleted": doc_id} only if the file was really removed,
+    otherwise {"success": False, "error": "..."}. Does not touch workspace
+    files (use workspace_delete for those).
+    """
+    if not userid:
+        return {"success": False, "error": "no userid on this session"}
+    if not doc_id or not str(doc_id).strip():
+        return {"success": False, "error": "no doc_id given"}
+    doc_id = str(doc_id).strip()
+    try:
+        manager = UserDocManager(userid)
+        if manager.get_doc(doc_id) is None:
+            return {"success": False, "error": f"No saved doc found with id '{doc_id}'. Use list_user_docs for the exact id."}
+        if not manager.delete_doc(doc_id):
+            return {"success": False, "error": f"Couldn't delete '{doc_id}'."}
+        if manager.get_doc(doc_id) is not None:  # verify, don't assume
+            return {"success": False, "error": f"'{doc_id}' is still there after the delete attempt."}
+        return {"success": True, "deleted": doc_id}
+    except Exception as e:
+        print(f"[USER_DOCS] delete failed for userid={userid!r}, doc_id={doc_id!r}: {e}")
+        return {"success": False, "error": f"Failed to delete '{doc_id}': {e}"}
+
+
 EDIT_EXECUTOR_MAX_ATTEMPTS = 3
 
 

@@ -746,6 +746,19 @@ SEARCH_DISCIPLINE_HINT = (
     "with random wording: answer plainly or ask what they want looked up.\n"
 )
 
+FILE_STORES_HINT = (
+    "\n\nWHERE FILES LIVE: two separate places that do NOT sync by themselves. "
+    "(1) WORKSPACE — workspace_* tools and workspace_run; edit with workspace_edit / "
+    "workspace_edit_by_intent; delete with workspace_delete. "
+    "(2) SAVED DOCS — files from build_file/uploads; list_user_docs, read_user_doc, "
+    "edit_file / edit_file_by_intent, delete_user_doc. "
+    "To work on a saved doc in the workspace call workspace_import_doc; to put a "
+    "workspace file into saved docs call workspace_export_doc. run_code starts in an "
+    "EMPTY folder: pass input_files=[workspace paths or saved-doc ids] to let the code "
+    "read them at ./inputs/. Use the tool for the place the file is in — if a tool says "
+    "'not found', check the other place before telling the user it doesn't exist.\n"
+)
+
 OUTPUT_FILES_HINT = (
     "\n\nDELIVERING FILES: files made by ANY tool (run_code's ./outputs/, the "
     "workspace, build_file, generate_image, workspace_zip) are NOT sent to the "
