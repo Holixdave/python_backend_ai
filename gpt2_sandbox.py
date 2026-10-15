@@ -225,6 +225,13 @@ def _resource_limits():
         resource.setrlimit(resource.RLIMIT_NPROC, (MAX_PROCS, MAX_PROCS))
         resource.setrlimit(resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024))  # 10MB file writes max
         os.setsid()  # own process group, so a timeout kill takes any children with it
+        # When the server runs as root (Render's Docker does) the sandboxed code
+        # must NOT: drop to 'nobody' so it can't read workspaces (mode 0700),
+        # app files that aren't world-readable, or other users' data.
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            os.setgroups([])
+            os.setgid(65534)
+            os.setuid(65534)
 
     return _apply
 
@@ -480,6 +487,12 @@ def run_code(code: str, language: str = "python", timeout_s: int = DEFAULT_TIMEO
         out_dir = os.path.join(run_dir, OUTPUT_SUBDIR)
         os.makedirs(out_dir, exist_ok=True)
         os.chmod(out_dir, 0o777)
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            # the child runs as nobody (see _resource_limits) — it must own
+            # its run folder to read main.py and write ./outputs/
+            os.chmod(run_dir, 0o755)
+            os.chown(run_dir, 65534, 65534)
+            os.chown(code_path, 65534, 65534)
 
         chain = _build_sandbox_chain(prefer_isolation)
         for link in chain:

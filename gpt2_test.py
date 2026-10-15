@@ -475,6 +475,7 @@ from gpt2_tools import (
     extract_suggestions,
     build_answer_segments,
     MAX_TOOL_ROUNDS,
+    compact_tool_history,
 )
 
 # SUGGESTION_HINT (static) and TOOL_USE_HINT_TAIL (static wrapper text
@@ -1585,6 +1586,7 @@ def _ask_gpt2_core(
             ),
         })
 
+        compact_tool_history(messages)   # older tool results shrink; newest 3 stay full
         yield {
             "type": "status",
             "text": "Continuing with the answer...",

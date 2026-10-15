@@ -16,3 +16,7 @@ beautifulsoup4
 rembg
 pillow
 elevenlabs
+
+pypdf
+python-docx
+openpyxl

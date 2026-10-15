@@ -154,6 +154,7 @@ from gpt2_functions import (
 )
 from gpt2_sandbox import run_code
 from gpt2_output import output_files
+from gpt2_workspace_run import workspace_run
 from gpt2_workspace import (
     workspace_list,
     workspace_read,
@@ -163,6 +164,9 @@ from gpt2_workspace import (
     workspace_unzip,
     workspace_github_clone,
     workspace_zip,
+    workspace_edit,
+    workspace_import_doc,
+    workspace_export_doc,
 )
 
 # Tools that reach out to the internet on the user's behalf. Every one of
@@ -231,6 +235,11 @@ TOOL_REGISTRY = {
     "workspace_github_clone": workspace_github_clone,
     "workspace_zip": workspace_zip,
     "output_files": output_files,
+    "workspace_edit": workspace_edit,
+    "workspace_run": workspace_run,
+    "workspace_import_doc": workspace_import_doc,
+    "workspace_export_doc": workspace_export_doc,
+    "result_more": result_more,
 }
 # Short, hand-written purpose lines for the initial manifest only — this is
 # deliberately NOT the full docs. Once the AI picks one, it gets the real
@@ -278,6 +287,11 @@ TOOL_DESCRIPTIONS = {
     "workspace_delete": "Delete a file or folder from the workspace.",
     "workspace_unzip": "Open a .zip that is in the workspace and extract it into a folder. (A .zip the user attaches is already saved and unzipped for you — just workspace_list it.)",
     "output_files": "DELIVER files to the user — nothing from run_code or the workspace is sent automatically, you choose. files = list of workspace paths (\"outputs/chart.png\"), saved-doc ids ({\"doc_id\": \"x.html\"}) or URLs (from generate_image/earlier uploads), mixed freely from ANY tool. Images show in the image gallery ABOVE your reply, other files as file cards. Only claim files that come back in the result.",
+    "workspace_edit": "Change PART of a workspace file by exact find/replace (find_text must match once, or replace_all=true) — never retype a whole file for a small change. On a miss it tells you which line to re-read.",
+    "workspace_run": "Run a shell command INSIDE a workspace project (e.g. \"pytest -q\", \"python app.py\", \"ls\") and get real stdout/stderr/exit_code. Runs on a copy of `cwd`; files it creates/changes are copied back and listed. Optional packages=[...] pip installs first. 60s default, 180s max. Use this (not run_code) whenever the code needs the workspace's files.",
+    "workspace_import_doc": "Copy a saved doc (from build_file / uploads / list_user_docs) into the workspace so you can workspace_edit or workspace_run it.",
+    "workspace_export_doc": "Save a workspace text file into the saved-docs store so list_user_docs / edit_file / edit_doc_line can see it.",
+    "result_more": "Get the NEXT part of a tool result that ended with '[truncated ... result_id ...]'. Args: result_id, offset (use the offset the note gives you).",
     "workspace_zip": "Pack a workspace folder (or everything) into ONE .zip and get a download URL (then pass that URL to output_files to show it).",
 }
 
@@ -585,6 +599,62 @@ def parse_tool_call(text: Optional[str]) -> Optional[dict]:
     return {"tool": tool_name, "args": args}
 
 
+# ---------------------------------------------------------------------------
+# PAGED RESULTS — replaces the old hard `[:4000]` cut that dropped the end of
+# every long tool result (logs, search text, pages). Long results are kept
+# server-side; the model gets the first PAGE_CHARS plus an exact note on how to
+# fetch the rest with result_more. Small results pass through untouched.
+# ---------------------------------------------------------------------------
+PAGE_CHARS = 6000
+_RESULT_STORE: dict = {}   # userid -> {result_id: full_text}, newest last, max 10 each
+
+
+def _page_result(userid, tool_name: str, text: str) -> str:
+    if len(text) <= PAGE_CHARS:
+        return text
+    import uuid
+    rid = uuid.uuid4().hex[:8]
+    store = _RESULT_STORE.setdefault(userid or "anonymous", {})
+    store[rid] = text
+    while len(store) > 10:
+        store.pop(next(iter(store)))
+    return (text[:PAGE_CHARS]
+            + f"\n[truncated: {len(text) - PAGE_CHARS} more chars. Call result_more with "
+              f'{{"result_id": "{rid}", "offset": {PAGE_CHARS}}} to read the next part.]')
+
+
+def result_more(userid: str, result_id: str, offset: int = 0) -> dict:
+    """Read the next page of a long earlier tool result (see the '[truncated ...]' note)."""
+    text = (_RESULT_STORE.get(userid or "anonymous") or {}).get(result_id)
+    if text is None:
+        return {"success": False, "error": "Unknown or expired result_id — re-run the original tool."}
+    offset = max(0, int(offset or 0))
+    chunk = text[offset:offset + PAGE_CHARS]
+    nxt = offset + PAGE_CHARS
+    out = {"success": True, "offset": offset, "text": chunk, "total_chars": len(text)}
+    if nxt < len(text):
+        out["next_offset"] = nxt
+        out["note"] = f'More remains: call result_more again with offset {nxt}.'
+    return out
+
+
+def compact_tool_history(messages: list, keep_full: int = 3, old_chars: int = 500) -> None:
+    """
+    Keeps long agent loops from drowning the context window: only the newest
+    `keep_full` tool results stay in full; older ones shrink to a short head +
+    a note. Edits `messages` in place. The model can re-run a tool or use
+    result_more if it needs an older result again.
+    """
+    idxs = [i for i, m in enumerate(messages)
+            if m.get("role") == "user" and isinstance(m.get("content"), str)
+            and m["content"].startswith("Tool result from ")]
+    for i in idxs[:-keep_full] if keep_full else idxs:
+        c = messages[i]["content"]
+        if len(c) > old_chars + 200 and "[older tool result trimmed" not in c:
+            head = c.split("\n\nContinue and give the user", 1)[0][:old_chars]
+            messages[i]["content"] = head + "\n[older tool result trimmed to save space — re-run the tool if you need it again]"
+
+
 def execute_tool(tool_name: str, ai_args: dict, session_context: dict):
     """
     Runs the real function. Session-owned params (prompt/history/userid/
@@ -642,7 +712,7 @@ def execute_tool(tool_name: str, ai_args: dict, session_context: dict):
                 last_event = event
             if last_event is None:
                 return False, "Tool produced no output."
-            return True, json.dumps(last_event, default=str)[:4000]
+            return True, _page_result(session_context.get("userid"), tool_name, json.dumps(last_event, default=str))
 
         result = fn(**final_args)
         # fetch_github_file and search_images both get a much higher cap
@@ -656,7 +726,7 @@ def execute_tool(tool_name: str, ai_args: dict, session_context: dict):
         # even though the search itself succeeded. This was a live bug.
         if tool_name in ("fetch_github_file", "search_images", "workspace_read", "workspace_list", "workspace_grep"):
             return True, json.dumps(result, default=str)[:20000]
-        return True, json.dumps(result, default=str)[:4000]
+        return True, _page_result(session_context.get("userid"), tool_name, json.dumps(result, default=str))
 
     except TypeError as e:
         # Wrong/missing args — surfaced plainly so the AI can retry with a

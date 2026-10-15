@@ -33,7 +33,10 @@ import os
 import re
 import shutil
 import stat
+import threading
+import time
 import zipfile
+from collections import defaultdict, deque
 from typing import Optional
 
 import requests
@@ -50,6 +53,7 @@ MAX_LIST_ENTRIES = 300
 MAX_READ_CHARS = 20_000
 MAX_GREP_RESULTS = 60
 
+MARKER = ".ws_hydrated"   # internal persistence marker, hidden from every listing
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".idea", ".dart_tool", "build", "dist"}
 _BINARY_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip", ".gz", ".db",
                ".sqlite", ".pyc", ".so", ".dll", ".exe", ".woff", ".woff2", ".ttf", ".mp3", ".mp4", ".wav"}
@@ -57,14 +61,56 @@ _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
 # ── paths ────────────────────────────────────────────────────────────────────
-def _user_root(userid: Optional[str]) -> str:
+def _root_path(userid: Optional[str]) -> str:
+    """Where this user's workspace lives (pure: no mkdir, no restore)."""
     raw = userid or "anonymous"
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", raw)[:48]
     # hash suffix so two different ids that sanitize the same never share a folder
     tag = hashlib.sha1(raw.encode()).hexdigest()[:8]
-    root = os.path.join(WORKSPACE_ROOT, f"{safe}-{tag}")
-    os.makedirs(root, exist_ok=True)
-    return os.path.realpath(root)
+    return os.path.realpath(os.path.join(WORKSPACE_ROOT, f"{safe}-{tag}"))
+
+
+def _user_root(userid: Optional[str]) -> str:
+    root = _root_path(userid)
+    # 0700: when the server runs as root, sandboxed code (which runs as
+    # 'nobody') cannot even traverse into any workspace.
+    os.makedirs(WORKSPACE_ROOT, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(WORKSPACE_ROOT, 0o700)
+    except OSError:
+        pass
+    os.makedirs(root, mode=0o700, exist_ok=True)
+    try:
+        from gpt2_workspace_store import hydrate  # restore from Supabase+Firebase after a redeploy
+        hydrate(userid, root)
+    except Exception as e:
+        print(f"[WORKSPACE] hydrate skipped: {e}")
+    return root
+
+
+def _dirty(userid: Optional[str]) -> None:
+    try:
+        from gpt2_workspace_store import mark_dirty
+        mark_dirty(userid)
+    except Exception as e:
+        print(f"[WORKSPACE] persist scheduling failed: {e}")
+
+
+_rate_hits: dict = defaultdict(deque)
+_rate_lock = threading.Lock()
+
+
+def _rate_ok(userid: Optional[str], bucket: str, limit: int, per_s: int = 3600) -> bool:
+    """Simple in-memory per-user limiter so one user can't hammer clone/run."""
+    now = time.time()
+    with _rate_lock:
+        q = _rate_hits[(userid or "anonymous", bucket)]
+        while q and now - q[0] > per_s:
+            q.popleft()
+        if len(q) >= limit:
+            return False
+        q.append(now)
+        return True
 
 
 def _safe_path(userid: Optional[str], rel: str = "") -> str:
@@ -127,7 +173,7 @@ def workspace_list(userid: str, path: str = "", depth: int = 2) -> dict:
             if count >= MAX_LIST_ENTRIES:
                 truncated = True
                 return
-            if e.is_symlink():
+            if e.is_symlink() or e.name == MARKER:
                 continue
             indent = "  " * level
             if e.is_dir():
@@ -144,13 +190,67 @@ def workspace_list(userid: str, path: str = "", depth: int = 2) -> dict:
                 count += 1
 
     walk(base, 0)
-    if not lines:
-        return {"success": True, "path": path or "/", "tree": "(empty)"}
-    out = {"success": True, "path": path or "/", "tree": "\n".join(lines)}
+    out = {"success": True, "path": path or "/", "tree": "\n".join(lines) if lines else "(empty)"}
+    if not path:
+        try:
+            from gpt2_workspace_store import status
+            st = status(userid)
+            if st:
+                out["persistence"] = st
+        except Exception:
+            pass
+        try:
+            from user_doc_manager import UserDocManager
+            docs = [d.get("filename") or d.get("id") for d in UserDocManager(userid).list_all_docs()][:30]
+            if docs:
+                out["saved_docs"] = docs
+                out["saved_docs_note"] = "These live in the saved-docs store, not the workspace. workspace_import_doc copies one in; read_user_doc reads it directly."
+        except Exception:
+            pass
     if truncated:
         out["note"] = (f"Listing capped at {MAX_LIST_ENTRIES} entries — "
                        "pass a deeper `path` to look inside a specific folder.")
     return out
+
+
+# ── document text extraction (pdf / docx / xlsx) ────────────────────────────
+_EXTRACTABLE = {".pdf", ".docx", ".xlsx", ".xlsm"}
+_extract_cache: dict = {}
+
+
+def _extract_document_text(full: str, ext: str) -> str:
+    key = (full, os.path.getmtime(full))
+    if key in _extract_cache:
+        return _extract_cache[key]
+    if ext == ".pdf":
+        from pypdf import PdfReader
+        reader = PdfReader(full)
+        text = "\n".join(f"[page {i}]\n{(pg.extract_text() or '').strip()}" for i, pg in enumerate(reader.pages, 1))
+    elif ext == ".docx":
+        from docx import Document
+        doc = Document(full)
+        parts = [p.text for p in doc.paragraphs]
+        for ti, table in enumerate(doc.tables, 1):
+            parts.append(f"[table {ti}]")
+            for row in table.rows:
+                parts.append("\t".join(c.text.strip() for c in row.cells))
+        text = "\n".join(parts)
+    else:  # xlsx / xlsm
+        from openpyxl import load_workbook
+        wb = load_workbook(full, read_only=True, data_only=True)
+        parts = []
+        for ws in wb.worksheets:
+            parts.append(f"[sheet {ws.title}]")
+            for r, row in enumerate(ws.iter_rows(values_only=True)):
+                if r >= 5000:
+                    parts.append("... (more rows not shown)")
+                    break
+                parts.append("\t".join("" if v is None else str(v) for v in row))
+        text = "\n".join(parts)
+    if len(_extract_cache) > 20:
+        _extract_cache.clear()
+    _extract_cache[key] = text
+    return text
 
 
 # ── read ─────────────────────────────────────────────────────────────────────
@@ -164,11 +264,20 @@ def workspace_read(userid: str, path: str, start_line: int = 1, end_line: Option
     full = _safe_path(userid, path)
     if not os.path.isfile(full):
         return {"success": False, "error": f"'{path}' is not a file in the workspace."}
-    if not _is_probably_text(full):
+    ext = os.path.splitext(full)[1].lower()
+    if ext in _EXTRACTABLE:
+        try:
+            text = _extract_document_text(full, ext)
+        except Exception as e:
+            return {"success": False, "error": f"Couldn't read {ext} file: {e}"}
+        if not text.strip():
+            return {"success": False, "error": "No extractable text (it may be a scanned/image-only file)."}
+        all_lines = text.splitlines()
+    elif not _is_probably_text(full):
         return {"success": False, "error": f"'{path}' looks binary — can't show it as text."}
-
-    with open(full, "r", encoding="utf-8", errors="replace") as f:
-        all_lines = f.read().splitlines()
+    else:
+        with open(full, "r", encoding="utf-8", errors="replace") as f:
+            all_lines = f.read().splitlines()
     total = len(all_lines)
 
     start = max(1, int(start_line or 1))
@@ -210,6 +319,7 @@ def workspace_write(userid: str, path: str, content: str) -> dict:
     os.makedirs(os.path.dirname(full), exist_ok=True)
     with open(full, "wb") as f:
         f.write(data)
+    _dirty(userid)
     return {"success": True, "path": _rel(userid, full), "bytes": len(data)}
 
 
@@ -224,6 +334,7 @@ def workspace_delete(userid: str, path: str) -> dict:
         shutil.rmtree(full)
     else:
         os.remove(full)
+    _dirty(userid)
     return {"success": True, "deleted": path}
 
 
@@ -333,6 +444,7 @@ def _extract_zip_bytes(userid: str, data: bytes, dest: str, strip_top: bool = Fa
                 out.write(chunk)
         written += 1
 
+    _dirty(userid)
     res = {"success": True, "extracted_to": _rel(userid, dest_full) or "/", "files": written, "bytes": total}
     if skipped:
         res["skipped"] = skipped[:20]
@@ -398,6 +510,7 @@ def workspace_write_bytes(userid: str, path: str, data: bytes) -> dict:
     os.makedirs(os.path.dirname(full), exist_ok=True)
     with open(full, "wb") as f:
         f.write(data)
+    _dirty(userid)
     return {"success": True, "path": _rel(userid, full)}
 
 
@@ -419,6 +532,8 @@ def workspace_github_clone(userid: str, repo: str, ref: Optional[str] = None, de
     workspace_list / workspace_grep / workspace_read. Private repos work if
     the server has a GITHUB_TOKEN with access.
     """
+    if not _rate_ok(userid, "clone", 10):
+        return {"success": False, "error": "Clone limit reached (10 per hour) — try again later."}
     slug = _parse_repo(repo)
     if not slug:
         return {"success": False, "error": "repo must look like 'owner/name' or a github.com URL."}
@@ -476,7 +591,7 @@ def workspace_zip(userid: str, path: str = "", zip_name: str = "workspace.zip") 
             dn[:] = [d for d in dn if d not in SKIP_DIRS and not os.path.islink(os.path.join(dp, d))]
             for f in fn:
                 fp = os.path.join(dp, f)
-                if os.path.islink(fp):
+                if os.path.islink(fp) or f == MARKER:
                     continue
                 zf.write(fp, os.path.relpath(fp, base))
                 count += 1
@@ -489,3 +604,84 @@ def workspace_zip(userid: str, path: str = "", zip_name: str = "workspace.zip") 
     if not url:
         return {"success": False, "error": "Upload failed."}
     return {"success": True, "filename": zip_name, "url": url, "files": count, "size": len(data)}
+
+
+# ── surgical edit ────────────────────────────────────────────────────────────
+def workspace_edit(userid: str, path: str, find_text: str, replace_text: str, replace_all: bool = False) -> dict:
+    """
+    Edit part of a workspace text file by exact find/replace — do NOT retype the
+    whole file. find_text must match exactly ONCE (or set replace_all=true).
+    On a miss or multiple matches the error tells you where, so read those
+    lines with workspace_read and retry with a longer, unique find_text.
+    """
+    full = _safe_path(userid, path)
+    if not os.path.isfile(full):
+        return {"success": False, "error": f"'{path}' is not a file in the workspace."}
+    if not find_text:
+        return {"success": False, "error": "find_text can't be empty."}
+    try:
+        with open(full, "r", encoding="utf-8") as f:
+            text = f.read()
+    except UnicodeDecodeError:
+        return {"success": False, "error": "File isn't valid UTF-8 text."}
+
+    n = text.count(find_text)
+    if n == 0:
+        first = next((ln.strip() for ln in find_text.splitlines() if ln.strip()), "")
+        hint = ""
+        if first:
+            for i, ln in enumerate(text.splitlines(), 1):
+                if first in ln:
+                    hint = f" A line containing the first line of your find_text is at line {i} — read it and copy the exact text."
+                    break
+        return {"success": False, "error": "find_text not found (whitespace/indentation must match exactly)." + hint}
+    if n > 1 and not replace_all:
+        lines = []
+        pos = 0
+        for _ in range(min(n, 6)):
+            idx = text.index(find_text, pos)
+            lines.append(text[:idx].count("\n") + 1)
+            pos = idx + max(1, len(find_text))
+        return {"success": False, "error": f"find_text matches {n} places (lines {lines}). Add surrounding lines to make it unique, or pass replace_all=true."}
+
+    first_line = text[:text.index(find_text)].count("\n") + 1
+    new_text = text.replace(find_text, replace_text) if replace_all else text.replace(find_text, replace_text, 1)
+    data = new_text.encode("utf-8")
+    if len(data) > MAX_FILE_BYTES:
+        return {"success": False, "error": "Result would be too large."}
+    with open(full, "wb") as f:
+        f.write(data)
+    _dirty(userid)
+    return {"success": True, "path": _rel(userid, full), "replacements": n if replace_all else 1,
+            "first_change_at_line": first_line}
+
+
+# ── bridge to the saved-docs store ───────────────────────────────────────────
+def workspace_import_doc(userid: str, doc_id: str, path: Optional[str] = None) -> dict:
+    """Copy a saved doc (build_file / upload / list_user_docs) into the workspace so
+    workspace_edit / workspace_run can use it. path defaults to docs/<doc_id>."""
+    try:
+        from user_doc_manager import UserDocManager
+        doc = UserDocManager(userid).get_doc(doc_id)
+    except Exception as e:
+        return {"success": False, "error": f"Couldn't read saved docs: {e}"}
+    if not doc:
+        return {"success": False, "error": f"No saved doc with id '{doc_id}'."}
+    return workspace_write(userid, path or f"docs/{doc_id}", doc.get("content") or "")
+
+
+def workspace_export_doc(userid: str, path: str, doc_id: Optional[str] = None) -> dict:
+    """Save a workspace text file into the saved-docs store (so list_user_docs /
+    edit_file / edit_doc_line can see it). doc_id defaults to the file's name."""
+    full = _safe_path(userid, path)
+    if not os.path.isfile(full) or not _is_probably_text(full):
+        return {"success": False, "error": f"'{path}' isn't a text file in the workspace."}
+    try:
+        from user_doc_manager import UserDocManager
+        with open(full, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        name = doc_id or os.path.basename(full)
+        UserDocManager(userid).save_doc(filename=name, content=content, hint=name, tags=["workspace"])
+        return {"success": True, "doc_id": name}
+    except Exception as e:
+        return {"success": False, "error": f"Couldn't save doc: {e}"}
