@@ -256,9 +256,9 @@ NEUTRAL_SYSTEM_PROMPT = (
     "When solving mathematics, show step-by-step explanations clearly. "
     "Use proper mathematical formatting and spacing. "
     "TEXT FORMATTING RULES: "
-    "1. Always give section titles a real markdown header using ### followed by the bolded title text (e.g. '### **Section Title**') — never just bold the first sentence of a paragraph and call that a header. A true ### header renders larger and bolder than inline ** bolding, and that visual weight is required for every section title. Plain-bolded opening sentences with no ### are a violation of this rule. "
-    "1b. Whenever a response covers a distinct topic or set of points (not a quick one-line answer), open it with a ### header for that topic instead of launching straight into an unheaded paragraph — every section, including the first one, needs its own ### header. "
-    "2. Bold key words and important phrases inside the body text too, not just headers — pick out the 2-4 most important terms per paragraph and wrap them in ** so they visually pop. "
+    "1. SHORT replies (a few sentences, a quick answer, small talk) get NO header and no bold-heavy styling — just the answer. "
+    "Only LONG, multi-section answers get section titles, and each title must be a real markdown header (### followed by the bolded title, e.g. '### **Section Title**') — never just a bolded opening sentence. "
+    "2. In longer answers only, bold the 2-4 most important terms per paragraph. In short replies bold at most one key term. "
     "3. Use inline code formatting (single backticks) around standout technical terms, keywords, or short phrases you want to highlight with a distinct background color. "
     "4. You may use SELECTIVE CAPS on one or two key words for emphasis, but never on full sentences and never more than a couple of times per response. "
     "5. Add a blank line of spacing before each new section/header so sections never look cramped together. "
@@ -672,10 +672,7 @@ INTENT_SYSTEM_PROMPT = (
     "You will be shown the last few turns of a conversation, then the user's "
     "newest message. Reply with ONLY a raw JSON object and nothing else — "
     "no markdown fences, no explanation. Fields:\n"
-    '"search_type": one of "web", "user_docs", or "none". Set to "user_docs" if '
-    "the user is asking about their own saved files, previous conversations, "
-    "documents they shared, or explicitly says \"remember\", \"do you have\", "
-    "\"check my files\", \"from my docs\", \"my previous\", etc. Set to \"web\" "
+    '"search_type": one of "web" or "none". Set to \"web\" '
     "if the user needs current/live/factual info (prices, links, news, recent "
     "events, dates, \"who won\", specific people/businesses/churches you're unsure "
     "about). Set to \"none\" for everything else (greetings, code, analysis, "
@@ -696,7 +693,7 @@ INTENT_SYSTEM_PROMPT = (
     "and search_query to \"\". A statement, opinion, feeling, complaint, "
     "instruction to the assistant, greeting, or vague follow-up with nothing "
     "concrete to look up is NEVER a search.\n"
-    '"search_query": Required whenever search_type is "web" or "user_docs". '
+    '"search_query": Required whenever search_type is "web". '
     "DISTILL this down to 3-8 clean lookup keywords a search engine would "
     "understand — resolve vague refs (\"the church\", \"these\") to real "
     "names/subjects from earlier turns, strip greetings/filler/slang (\"abeg\", "
@@ -705,8 +702,7 @@ INTENT_SYSTEM_PROMPT = (
     "sounding one should still be reduced to its core search terms. Example: "
     "user says \"dude can u find the current dollar to naira rate abeg\" -> "
     "search_query should be \"dollar to naira exchange rate today\", NOT the "
-    "original sentence. For user_docs the backend lists the user's files "
-    "instead of matching keywords, so any short label is fine.\n"
+    "original sentence.\n"
     '"complex": true if the request needs code, math, multi-step reasoning, or a '
     "long detailed answer — false for greetings, small talk, simple one-line "
     "questions.\n"

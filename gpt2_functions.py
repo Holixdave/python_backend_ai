@@ -1473,19 +1473,10 @@ def _fallback_intent(prompt: str) -> dict:
     else:
         topic = "general"
     
-    # Check for user_docs intent (remember, do you have, check my files, etc.)
-    user_docs_keywords = ["remember", "do you have", "check my", "my files", "my previous", "my doc", "from my"]
-    is_user_docs = any(keyword in t for keyword in user_docs_keywords)
-    
-    # Check for web search need
-    is_web = needs_web_search(prompt) and not is_user_docs
-    
-    search_type = "user_docs" if is_user_docs else ("web" if is_web else "none")
-    search_query = ""
-    if is_web:
-        search_query = build_search_query(prompt)
-    elif is_user_docs:
-        search_query = prompt  # use raw prompt as hint for user docs search
+    # Saved-docs auto-search was removed: this classifier only decides web vs none.
+    is_web = needs_web_search(prompt)
+    search_type = "web" if is_web else "none"
+    search_query = build_search_query(prompt) if is_web else ""
 
     return {
         "search_type": search_type,
@@ -1545,7 +1536,7 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
                 topic = "general"
             
             search_type = data.get("search_type", "none")
-            if search_type not in ("web", "user_docs", "none"):
+            if search_type not in ("web", "none"):  # "user_docs" (auto saved-docs search) was removed
                 search_type = "none"
 
             search_query = (data.get("search_query") or "").strip()
@@ -1554,8 +1545,6 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
                 # OLD behaviour: search the user's own sentence (= rubbish).
                 # NEW: no concrete query means no search.
                 search_type = "none"
-            elif search_type == "user_docs" and not search_query:
-                search_query = prompt
 
             # Safety net: if the classifier still just echoed the raw prompt
             # back, or handed back something way longer than a real search

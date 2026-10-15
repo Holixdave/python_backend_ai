@@ -62,7 +62,7 @@ def classify_intent(prompt: str, history: List[Dict] = None) -> Dict:
     CRITICAL: ANY date/timeline question ALWAYS triggers web search.
     
     Returns: {
-        "search_type": "web" | "images" | "user_docs" | "none",
+        "search_type": "web" | "images" | "none",
         "wants_image": bool,
         "complex": bool,
         "search_query": str or None,
@@ -90,7 +90,7 @@ def classify_intent(prompt: str, history: List[Dict] = None) -> Dict:
     system_prompt = """You are a query classifier. Respond ONLY with valid JSON, nothing else.
 Analyze the user's request and return:
 {
-  "search_type": "web" (for current info/facts/news), "images" (for pictures), "user_docs" (for personal data), or "none",
+  "search_type": "web" (for current info/facts/news), "images" (for pictures), or "none",
   "wants_image": true/false (does the user want images shown?),
   "complex": true/false (requires reasoning/multiple steps?),
   "search_query": "optimized search query string" or null

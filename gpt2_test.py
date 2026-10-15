@@ -53,7 +53,6 @@ import json
 import requests
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from user_doc_manager import UserDocManager
 import random
 # ---------------------------------------------------------------------------
 # CONFIG — API keys. Only GROQ_API_KEY is required. Everything else is an
@@ -287,10 +286,7 @@ def _current_datetime_line() -> str:
 # NEUTRAL_SYSTEM_PROMPT (identity/tone/formatting/code/math rules) moved to
 # prompts.py — see that file's header for the full map.
 from prompts import NEUTRAL_SYSTEM_PROMPT
-
-# How many of the user's saved files get listed into context when they ask
-# about their files. Newest first. The model opens one with read_user_doc.
-USER_DOCS_LIST_LIMIT = 25
+import skills  # skills/ folder: pre-answer rules + post-answer checks (honesty, brevity, ...)
 
 # Questions about the assistant/app itself are answered from OOOR_IDENTITY
 # (prompts.py) — never searched. Deterministic backstop for the classifier.
@@ -660,6 +656,8 @@ def _ask_gpt2_core(
     image_results = []  # populated automatically whenever search_images succeeds
     file_results = []  # every successful build_file/redisplay_file call this turn, in order
     file_result = None  # back-compat alias — last file, for the legacy singular "file" field
+    tools_called = []  # every tool name the model asked for this turn (attempted)
+    tools_ok = []  # generic-path tools that returned success this turn (proof for the honesty skill)
     code_results = []  # every run_code call this turn, in order — its own list, not file_results, so the frontend can tell "here's a saved file" apart from "here's a code-run's stdout/stderr"
 
     # NEW: non-image attachments (html/txt/md/etc) — fetch each one's raw
@@ -761,9 +759,21 @@ def _ask_gpt2_core(
     user_is_premium = is_user_premium(userid)
     current_identity += ooor_version_note(user_is_premium) + image_tier_note(user_is_premium)
 
-    # ── Inject user docs or web search results if needed ──────────────────
+    # ── Inject web search results if needed (saved-docs auto-search was removed) ──
     sources = []
-    user_docs = []
+
+    # Skills (skills/ folder): rules injected before the answer, checks run on it after.
+    def _skills_ctx() -> dict:
+        return {
+            "prompt": prompt,
+            "tools_called": tools_called,
+            "tools_ok": tools_ok,
+            "file_results": file_results,
+            "code_results": code_results,
+            "image_results": image_results,
+            "sources": sources,
+        }
+    current_identity += skills.run_pre(_skills_ctx())
 
     # Checked once per turn — same Firestore flag the SmartInputBar toggle
     # writes to (users/{uid}/ai_config/settings.web_search). Used below to
@@ -772,71 +782,7 @@ def _ask_gpt2_core(
     # search_web itself) are gated separately in gpt2_tools.execute_tool.
     web_search_enabled = is_web_search_enabled(userid)
 
-    if intent["search_type"] == "user_docs":
-        if userid:
-            yield {
-                "type": "status",
-                "text": "Checking your saved files...",
-                "detail": "Looking through your saved files",
-                "icon": "docs"
-            }
-            try:
-                manager = UserDocManager(userid)
-                all_docs = manager.list_all_docs()
-                all_docs.sort(key=lambda d: str(d.get("date", "")), reverse=True)
-                user_docs = all_docs[:USER_DOCS_LIST_LIMIT]
-                if user_docs:
-                    yield {
-                        "type": "status",
-                        "text": f"Found {len(user_docs)} file(s) in your docs",
-                        "detail": " • ".join([(d.get("hint") or d.get("filename") or "")[:30] for d in user_docs[:3]]),
-                        "icon": "docs"
-                    }
-                    # Inject user docs into context
-                    shown = len(user_docs)
-                    total = len(all_docs)
-                    docs_context = (
-                        "USER'S SAVED FILES (newest first"
-                        + (f", showing {shown} of {total}" if total > shown else "")
-                        + "). This is only a menu of names — pick whichever file(s) "
-                        "match what the user means, and open one with read_user_doc "
-                        "using its doc_id. If none fit, say so plainly.\n"
-                    )
-                    for doc in user_docs:
-                        doc_id = doc.get("id") or doc.get("filename") or ""
-                        hint = doc.get("hint") or doc.get("filename") or ""
-                        tags = ", ".join(doc.get("tags") or [])
-                        docs_context += (
-                            f"- doc_id: {doc_id} | {hint}"
-                            + (f" | tags: {tags}" if tags else "")
-                            + (f" | saved: {doc.get('date')}" if doc.get("date") else "")
-                            + "\n"
-                        )
-                    current_identity += f"\n\n{docs_context}"
-                else:
-                    yield {
-                        "type": "status",
-                        "text": "No saved files found",
-                        "detail": "Answering from what I already know",
-                        "icon": "warning"
-                    }
-            except Exception as e:
-                print(f"[USER_DOCS] search failed for {userid}: {e}")
-                yield {
-                    "type": "status",
-                    "text": "Couldn't access your files",
-                    "detail": str(e)[:50],
-                    "icon": "warning"
-                }
-        else:
-            yield {
-                "type": "status",
-                "text": "No user ID provided, skipping doc search",
-                "detail": None,
-                "icon": "warning"
-            }
-    
-    elif intent["search_type"] == "web" and not web_search_enabled:
+    if intent["search_type"] == "web" and not web_search_enabled:
         yield {
             "type": "status",
             "text": "Web search is off",
@@ -1181,6 +1127,7 @@ def _ask_gpt2_core(
                 yield {"type": "ask_user", **ask_payload}
                 return
 
+        tools_called.append(call_data["tool"])
         yield _tool_call_event(call_data["tool"], call_data["args"])
 
         # SPECIAL-CASED DISPATCH — build_file and redisplay_file need more
@@ -1452,6 +1399,8 @@ def _ask_gpt2_core(
                     file_result = produced
         else:
             success, tool_result = execute_tool(call_data["tool"], call_data["args"], session_context)
+            if success:
+                tools_ok.append(call_data["tool"])
             if success and call_data["tool"] in ("search_images", "redisplay_images"):
                 # generate_image no longer reaches this branch — it's
                 # special-cased above now so its status events stream live.
@@ -1616,7 +1565,7 @@ def _ask_gpt2_core(
     # ── Safety net: classifier said "no search needed", but the model
     # itself came back unsure. Rather than let a guess through, run one
     # search now and re-ask with real web context. Sources always get
-    # attached when this fires. (Skip if user_docs search was already done.)
+    # attached when this fires. 
     if intent["search_type"] == "none" and not sources and web_search_enabled and _looks_unsure(answer) and not _is_self_question(prompt) and is_meaningful_query(build_search_query(prompt), prompt):
         clean_query = build_search_query(prompt)
         yield {
@@ -1671,10 +1620,12 @@ def _ask_gpt2_core(
                         }
                     yield {"type": "think_end"}
                 retry_answer_clean, retry_suggestions = extract_suggestions(strip_tool_markers(retry_answer))
+                retry_answer_clean = skills.run_post(_skills_ctx(), retry_answer_clean)
                 retry_segments = build_answer_segments(retry_answer_clean)
                 yield {"type": "final", "answer": retry_answer_clean, "segments": retry_segments, "sources": fallback_sources, "images": image_results, "provider": retry_provider, "file": file_result, "files": file_results, "codes": code_results, "suggestions": retry_suggestions}
                 return
 
     final_answer_clean, final_suggestions = extract_suggestions(strip_tool_markers(answer))
+    final_answer_clean = skills.run_post(_skills_ctx(), final_answer_clean)
     final_segments = build_answer_segments(final_answer_clean)
     yield {"type": "final", "answer": final_answer_clean, "segments": final_segments, "sources": sources, "images": image_results, "provider": provider, "file": file_result, "files": file_results, "codes": code_results, "suggestions": final_suggestions}
