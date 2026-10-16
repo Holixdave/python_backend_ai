@@ -564,6 +564,24 @@ def flatten_segments_to_text(segments: list) -> str:
     return "\n\n".join(p for p in parts if p.strip()).strip()
 
 
+# Internal memory notes are appended to the assistant's SAVED history (see
+# main.py _build_memory_reply). The model sees them in its own past messages
+# and imitates the format, echoing a fake note into the visible answer.
+# This strips any such note (well-formed or cut off) before the user sees it.
+_INTERNAL_NOTE_RE = re.compile(
+    r"\s*\[INTERNAL MEMORY NOTE.*?\]\s*(?=\n\n|\Z)", re.DOTALL | re.IGNORECASE
+)
+_INTERNAL_NOTE_OPEN_RE = re.compile(r"\s*\[INTERNAL MEMORY NOTE.*\Z", re.DOTALL | re.IGNORECASE)
+
+
+def strip_internal_notes(text: Optional[str]) -> str:
+    if not text:
+        return text
+    text = _INTERNAL_NOTE_RE.sub("", text)
+    text = _INTERNAL_NOTE_OPEN_RE.sub("", text)  # unterminated / truncated note
+    return text.strip()
+
+
 def strip_tool_markers(text: Optional[str]) -> str:
     """
     Safety net — removes any raw <<TOOL_REQUEST>>/<<TOOL_CALL>> block from
@@ -585,6 +603,7 @@ def strip_tool_markers(text: Optional[str]) -> str:
     text = _TOOL_CALL_RE.sub("", text)
     text = _TOOL_REQUEST_OPEN_RE.sub("", text)
     text = _TOOL_CALL_OPEN_RE.sub("", text)
+    text = strip_internal_notes(text)
     return text.strip()
 
 

@@ -1586,68 +1586,8 @@ def _ask_gpt2_core(
             yield {"type": "think_end"}
         search_text = (model_thinking or "") + "\n" + (answer or "")
 
-    # ── Safety net: classifier said "no search needed", but the model
-    # itself came back unsure. Rather than let a guess through, run one
-    # search now and re-ask with real web context. Sources always get
-    # attached when this fires. 
-    if intent["search_type"] == "none" and not sources and web_search_enabled and _looks_unsure(answer) and not _is_self_question(prompt) and is_meaningful_query(build_search_query(prompt), prompt):
-        clean_query = build_search_query(prompt)
-        yield {
-            "type": "status",
-            "text": "Not fully sure — double-checking online...",
-            "detail": "The first draft wasn't confident, so checking online for details.",
-            "icon": "search"
-        }
-        web_results, fallback_sources = search_web(clean_query)
-        if web_results:
-            titles = [s.get("title", "").strip() for s in fallback_sources if s.get("title")]
-            yield {
-                "type": "status",
-                "text": f"Found {len(fallback_sources)} source(s)",
-                "detail": " • ".join(titles[:5]) if titles else None,
-                "icon": "search"
-            }
-            retry_identity = current_identity + (
-                f"\n\n[BACKEND NOTE — not from the user]: The system distilled the "
-                f"user's message into the search query \"{clean_query}\" and fetched "
-                f"the results below on their behalf. This is reference material, not "
-                f"something the user typed — answer their actual question naturally "
-                f"using it, don't treat this block as their message or refer to the "
-                f"distilled query itself. Always include relevant links when available:\n\n"
-                + web_results
-            )
-            retry_messages = [{"role": "system", "content": retry_identity}]
-            retry_messages.extend(get_lean_history(history)[0])
-            retry_messages.append({"role": "user", "content": prompt.strip()})
-
-            yield {
-                "type": "status",
-                "text": "Rewriting answer with sources...",
-                "detail": "Rewriting the answer now with real search results available.",
-                "icon": "search"
-            }
-            retry_answer, retry_provider = _call_provider_chain(
-                TEXT_PROVIDERS, retry_messages, temperature=0.5, max_tokens=MAX_ANSWER_TOKENS, reasoning_effort="none"
-            )
-            if retry_answer:
-                # NEW — same safety strip, in case a provider ever returns
-                # an inline <think> block here too.
-                retry_answer, retry_thinking = _split_thinking(retry_answer)
-                if retry_thinking:
-                    for i, step in enumerate(_split_into_steps(retry_thinking), start=1):
-                        step_icon, step_clean = _extract_step_icon(step)
-                        yield {
-                            "type": "think",
-                            "step": i,
-                            "icon": step_icon,
-                            "text": step_clean,
-                        }
-                    yield {"type": "think_end"}
-                retry_answer_clean, retry_suggestions = extract_suggestions(strip_tool_markers(retry_answer))
-                retry_answer_clean = skills.run_post(_skills_ctx(), retry_answer_clean)
-                retry_segments = build_answer_segments(retry_answer_clean)
-                yield {"type": "final", "answer": retry_answer_clean, "segments": retry_segments, "sources": fallback_sources, "images": image_results, "provider": retry_provider, "file": file_result, "files": file_results, "codes": code_results, "suggestions": retry_suggestions}
-                return
+    # (Removed the 'unsure -> search again -> rewrite' retry: it cost an extra
+    # model call per message. The answer is returned as-is.)
 
     final_answer_clean, final_suggestions = extract_suggestions(strip_tool_markers(answer))
     final_answer_clean = skills.run_post(_skills_ctx(), final_answer_clean)
