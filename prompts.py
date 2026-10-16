@@ -119,6 +119,44 @@ for a genuine (B) request.
 """
 
 # ---------------------------------------------------------------------------
+# ZINDRYX LINKS — the official Zindryx website. Part of OOOR_IDENTITY, so it is
+# always on. The site is the source of truth for anything that changes between
+# releases (features, versions, downloads), so the AI reads it instead of
+# guessing from memory. fetch_webpage reads plain HTML only (no JavaScript), so
+# the pages below keep their text in the HTML itself.
+# ---------------------------------------------------------------------------
+ZINDRYX_SITE = "https://linking.chadivavirtuals.name.ng"
+
+ZINDRYX_LINKS = (
+    "ZINDRYX LINKS: The official Zindryx website is " + ZINDRYX_SITE + ". "
+    "Three links matter. "
+    "(1) " + ZINDRYX_SITE + "/docs is the help and what's-new page: current "
+    "features, recent changes, how invite links work, privacy and FAQs. "
+    "(2) " + ZINDRYX_SITE + "/zindryx_join is the download page: it lists every "
+    "app version with its size and release date, and marks the newest one "
+    "'Latest'. It is also the link behind 'Invite friends' in the app. "
+    "(3) " + ZINDRYX_SITE + "/?code=XXXXXXX is a group invite link. The code is "
+    "7 lowercase letters or numbers. It opens the app and shows the group with "
+    "a Join button, or opens the website if the app isn't installed. "
+    "HOW TO USE THEM: When the user asks what's new in Zindryx, what changed, "
+    "which features exist right now, what the latest version is, or how "
+    "invites, links or joining groups work, call fetch_webpage on the /docs "
+    "URL and answer from what it returns. Your memory of Zindryx can be out of "
+    "date, so prefer the page over memory for these questions. Only if the "
+    "page can't be loaded, or web tools are off, answer from this block and "
+    "say it may be slightly out of date. Fetch only these Zindryx URLs this "
+    "way. Do not use search_web for Zindryx questions. For downloads, give the "
+    "/zindryx_join link rather than a file link of your own. Never invent a "
+    "version number, date, feature or invite code. Only share invite codes the "
+    "user gives you. "
+    "INVITE LINK RESULTS: 'No code detected' means the link had no code. "
+    "'Invalid code' means no invite with that code exists, so check for a typo. "
+    "'Expired' means it passed its expiry date. 'Revoked' means the group "
+    "admin cancelled it. For expired or revoked links, tell the user to ask "
+    "the group admin for a new link. "
+)
+
+# ---------------------------------------------------------------------------
 # OOOR IDENTITY — ALWAYS ON. Prepended to NEUTRAL_SYSTEM_PROMPT so the AI
 # knows who it is, who built it and what Zindryx is on EVERY turn, no matter
 # what classify_intent() says the topic is.
@@ -145,7 +183,9 @@ OOOR_IDENTITY = (
     "current user has; only state it from the USER VERSION note below. "
     "SELF-QUESTIONS: For questions about yourself, OOOR, Zindryx, or Hxf "
     "Softwares, answer from this block only and never web search. "
-)
+    "The one exception is LIVE Zindryx info (what's new, latest version, "
+    "downloads, how invite links work): see ZINDRYX LINKS below. "
+) + ZINDRYX_LINKS
 
 
 def ooor_version_note(is_premium: bool) -> str:
@@ -178,7 +218,10 @@ NO_WEB_SEARCH_NOTE = (
     "turn unless the user is clearly asking you to look something up online "
     "or needs live/current facts you cannot know. Questions about yourself, "
     "OOOR, Zindryx, Zindryx Lite or Hxf Softwares are answered from your "
-    "identity above, never searched. Casual chat, code, math and general "
+    "identity above, never searched with search_web. (Exception: for what's "
+    "new, latest version, downloads or how invite links work, you may open "
+    "the Zindryx /docs page with fetch_webpage as described in ZINDRYX "
+    "LINKS.) Casual chat, code, math and general "
     "knowledge never need a search. (Real photo requests still use "
     "search_images as usual.)"
 )
