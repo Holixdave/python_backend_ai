@@ -1,4 +1,4 @@
-"""Offline tests: run_code input_files, delete_user_doc, workspace_edit_by_intent,
+"""Offline tests: run_code input_files, workspace uploads/copy, workspace_edit_by_intent,
 multi-question ask_user, honesty evidence. No Firebase/Supabase/network needed.
 Run:  python -m unittest discover -s tests -v"""
 import ast, json, os, re, sys, tempfile, types, unittest
@@ -16,11 +16,9 @@ if "gpt2_functions" not in sys.modules:
 
 import gpt2_workspace as w
 import gpt2_sandbox as sb
-from user_doc_manager import UserDocManager
 import skills.honesty as honesty
 
 w.WORKSPACE_ROOT = os.path.join(TMP, "ws_own")        # this file's own workspace root
-UserDocManager.BASE_DIR = Path(TMP) / "home"          # this file's own saved-docs root
 
 
 def load_from(path, names, ns=None):
@@ -74,13 +72,12 @@ class RunCodeInputs(unittest.TestCase):
         self.assertIn("y.txt", r["stdout"] + "y.txt")  # folder staged
         self.assertEqual(sorted(i["path"] for i in r["inputs"]), ["inputs/proj/sub/y.txt", "inputs/proj/x.py"])
 
-    def test_reads_saved_doc(self):
-        uid = "rc-doc"
-        UserDocManager(uid).save_doc("notes.md", "saved doc text")
-        r = run("print(open('inputs/notes.md').read())", userid=uid, input_files=["notes.md"])
+    def test_reads_uploaded_file(self):
+        uid = "rc-up"
+        w.workspace_save_upload(uid, "notes.md", b"uploaded text")
+        r = run("print(open('inputs/uploads/notes.md').read())", userid=uid, input_files=["uploads/notes.md"])
         self.assertTrue(r["success"], r)
-        self.assertEqual(r["stdout"].strip(), "saved doc text")
-        self.assertEqual(r["inputs"][0]["source"], "saved_doc")
+        self.assertEqual(r["stdout"].strip(), "uploaded text")
 
     def test_missing_input_means_code_is_not_run(self):
         r = run("print('SHOULD NOT RUN')", userid="rc-miss", input_files=["nope.csv"])
@@ -115,49 +112,44 @@ class RunCodeInputs(unittest.TestCase):
         self.assertEqual(raw(uid, "keep.txt"), "original")
 
 
-class DeleteUserDoc(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.delete_user_doc = staticmethod(load_from(
-            "gpt2_functions.py", {"delete_user_doc"},
-            {"UserDocManager": UserDocManager, "Optional": __import__("typing").Optional})["delete_user_doc"])
+class UploadsAndCopy(unittest.TestCase):
+    def test_upload_lands_in_uploads_folder(self):
+        r = w.workspace_save_upload("up-a", "My Notes.md", b"hello")
+        self.assertTrue(r["success"], r)
+        self.assertEqual(r["path"], "uploads/My Notes.md")
+        self.assertIn("My Notes.md", str(w.workspace_list("up-a", "uploads")))
 
-    def test_deletes_for_real(self):
-        m = UserDocManager("del-a")
-        m.save_doc("a.md", "x", hint="A")
-        res = self.delete_user_doc("del-a", "a.md")
-        self.assertEqual(res, {"success": True, "deleted": "a.md"})
-        self.assertIsNone(UserDocManager("del-a").get_doc("a.md"))
-        self.assertNotIn("a.md", json.loads(m.metadata_file.read_text()))
+    def test_same_name_never_overwrites(self):
+        w.workspace_save_upload("up-b", "a.txt", b"one")
+        r = w.workspace_save_upload("up-b", "a.txt", b"two")
+        self.assertEqual(r["path"], "uploads/a_2.txt")
+        self.assertEqual(w.workspace_read_text("up-b", "uploads/a.txt")[0], "one")
 
-    def test_unknown_doc_reports_failure(self):
-        res = self.delete_user_doc("del-b", "ghost.md")
-        self.assertFalse(res["success"])
-        self.assertIn("list_user_docs", res["error"])
+    def test_upload_name_cannot_escape(self):
+        r = w.workspace_save_upload("up-c", "../../evil.txt", b"x")
+        self.assertTrue(r["path"].startswith("uploads/"), r)
+        self.assertNotIn("..", r["path"])
 
-    def test_path_traversal_blocked(self):
-        victim = UserDocManager.BASE_DIR / "other-user" / "doc"
-        victim.mkdir(parents=True, exist_ok=True)
-        (victim / "secret.txt").write_text("keep me")
-        UserDocManager("del-c")
-        res = self.delete_user_doc("del-c", "../../other-user/doc/secret.txt")
-        self.assertFalse(res["success"])
-        self.assertTrue((victim / "secret.txt").exists())
+    def test_copy_upload_into_main_workspace(self):
+        w.workspace_save_upload("up-d", "data.csv", b"a,b")
+        r = w.workspace_copy("up-d", "uploads/data.csv")
+        self.assertTrue(r["success"], r)
+        self.assertEqual(r["to"], "data.csv")
+        self.assertEqual(w.workspace_read_text("up-d", "data.csv")[0], "a,b")
+        self.assertEqual(w.workspace_read_text("up-d", "uploads/data.csv")[0], "a,b")   # original stays
 
-    def test_hidden_index_cannot_be_deleted(self):
-        m = UserDocManager("del-d")
-        m.save_doc("k.md", "x", hint="K")
-        self.assertFalse(self.delete_user_doc("del-d", ".hints.json")["success"])
-        self.assertTrue(m.metadata_file.exists())
+    def test_copy_refuses_to_overwrite_and_to_escape(self):
+        w.workspace_save_upload("up-e", "x.txt", b"1")
+        w.workspace_copy("up-e", "uploads/x.txt")
+        self.assertFalse(w.workspace_copy("up-e", "uploads/x.txt")["success"])
+        self.assertFalse(w.workspace_copy("up-e", "uploads/x.txt", "../../out.txt")["success"])
+        self.assertFalse(w.workspace_copy("up-e", "nope.txt")["success"])
 
-    def test_needs_userid_and_doc_id(self):
-        self.assertFalse(self.delete_user_doc("", "a.md")["success"])
-        self.assertFalse(self.delete_user_doc("u", "  ")["success"])
-
-    def test_save_doc_rejects_escaping_names(self):
-        with self.assertRaises(ValueError):
-            UserDocManager("del-e").save_doc("../evil.txt", "x")
-        UserDocManager("del-e").save_doc("fine.txt", "x")  # normal names still work
+    def test_no_user_doc_store_left(self):
+        for name in ("gpt2_tools.py", "gpt2_functions.py", "main.py", "gpt2_workspace.py"):
+            with open(os.path.join(HERE, name), encoding="utf-8", errors="replace") as f:
+                self.assertNotIn("UserDocManager", f.read(), name)
+        self.assertFalse(os.path.exists(os.path.join(HERE, "user_doc_manager.py")))
 
 
 class WorkspaceEditByIntent(unittest.TestCase):
@@ -247,13 +239,13 @@ class AskUserSheet(unittest.TestCase):
         self.assertEqual(p["question"], "Pick")
         self.assertNotIn("questions", p)
 
-    def test_several_questions_only_first_while_app_cannot_show_them(self):
+    def test_several_questions_only_first_when_turned_off(self):
+        os.environ["ASK_USER_MULTI"] = "0"
         p = self.norm({"questions": self.QS})
         self.assertEqual(p["question"], "What is it for?")
         self.assertNotIn("questions", p)
 
-    def test_several_questions_when_enabled(self):
-        os.environ["ASK_USER_MULTI"] = "1"
+    def test_several_questions_on_by_default(self):
         p = self.norm({"questions": self.QS})
         self.assertEqual(p["total"], 3)                      # capped at 3
         self.assertEqual(len(p["questions"]), 3)
@@ -262,7 +254,6 @@ class AskUserSheet(unittest.TestCase):
         self.assertEqual(len({q["question_id"] for q in p["questions"]}), 3)
 
     def test_bad_questions_dropped_and_all_bad_is_none(self):
-        os.environ["ASK_USER_MULTI"] = "1"
         p = self.norm({"questions": [{"question": "", "options": ["a", "b"]}, self.QS[1]]})
         self.assertEqual(p["question"], "Which style?")
         self.assertNotIn("questions", p)                     # only one usable question left
@@ -276,12 +267,12 @@ class Wiring(unittest.TestCase):
 
     def test_new_tools_registered_and_described(self):
         src = self.read("gpt2_tools.py")
-        for tool in ("delete_user_doc", "workspace_edit_by_intent"):
+        for tool in ("workspace_copy", "workspace_edit_by_intent"):
             self.assertRegex(src, rf'"{tool}": {tool},')            # registry
             self.assertRegex(src, rf'"{tool}": "')                  # manifest description
         self.assertIn("input_files", src)
         speak = self.read("live_speak.py")
-        self.assertIn('"delete_user_doc"', speak)
+        self.assertIn('"workspace_copy"', speak)
 
     def test_run_code_dispatch_forwards_input_files(self):
         self.assertIn("input_files=_as_list(", self.read("gpt2_test.py"))
@@ -319,7 +310,7 @@ class HonestyEvidence(unittest.TestCase):
     def test_delete_claim_needs_a_real_delete(self):
         text = "I deleted the file."
         self.assertIn("Correction", honesty.post(self.ctx(), text))
-        ok = self.ctx(tools_ok=["delete_user_doc"])
+        ok = self.ctx(tools_ok=["workspace_delete"])
         self.assertEqual(honesty.post(ok, text), text)
 
 

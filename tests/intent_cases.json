@@ -7,6 +7,6 @@
   {"prompt": "fix the bug in my python function", "search_type": "none"},
   {"prompt": "what is today's date", "search_type": "none"},
   {"prompt": "who built OOOR", "search_type": "none"},
-  {"prompt": "check my files for the jamb notes", "search_type": "user_docs"},
+  {"prompt": "check my files for the jamb notes", "search_type": "none"},
   {"prompt": "what's the price of a PS5 in Nigeria", "search_type": "web"}
 ]
