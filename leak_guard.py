@@ -96,6 +96,54 @@ _INTERNAL_NAME_RE = re.compile(
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
 
+# Some models type a tool call's arguments as plain text ({"query": "..."}) instead of calling the tool.
+# That JSON is never something the user should read.
+_ARG_KEYS = (
+    "query", "code", "paths", "path", "url", "urls", "prompt", "content", "command", "language", "title",
+    "pattern", "packages", "filename", "src", "dest", "repo", "result_id", "offset", "timeout_s",
+)
+_STRAY_JSON_START = re.compile(r'\{\s*"(?:' + "|".join(_ARG_KEYS) + r')"\s*:')
+
+
+def _balanced_end(text: str, start: int) -> int:
+    """Index just past the '}' that closes the '{' at `start` (string- and escape-aware), or -1."""
+    depth, in_str, esc = 0, False, False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return -1
+
+
+def strip_stray_tool_json(text: str) -> str:
+    """Remove JSON objects that are really tool-call arguments typed as text."""
+    out, pos = [], 0
+    for m in _STRAY_JSON_START.finditer(text):
+        if m.start() < pos:
+            continue
+        end = _balanced_end(text, m.start())
+        if end == -1:
+            continue
+        out.append(text[pos:m.start()])
+        pos = end
+    if not out:
+        return text
+    out.append(text[pos:])
+    return re.sub(r"\n{3,}", "\n\n", "".join(out))
+
 
 def _is_internal(sentence: str) -> bool:
     low = sentence.lower()
@@ -117,6 +165,7 @@ def scrub_internal(text: str) -> str:
 
 def _scrub_prose(text: str) -> str:
     t = THINK_BLOCK_RE.sub("", text)
+    t = strip_stray_tool_json(t)
     t = _BRACKET_DIRECTIVE.sub("", t)
     if not _is_internal(t):
         return t

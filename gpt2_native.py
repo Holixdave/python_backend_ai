@@ -727,7 +727,7 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
     provider_name = None
     forced_final = False
     sticky = None                           # the model that handled the last round — it goes first next round
-    flat_retry = False                      # the plain-text-history retry is used at most once per turn
+    flat_mode = False                       # once a model choked on the tool history, send it as plain text from then on
 
     # Last resort only — every model died mid-answer. Plain words, no server talk, and "continue" really does resume.
     BUSY_NOTE = "I got cut off right here. Send \"continue\" and I'll pick up from this exact point."
@@ -770,7 +770,8 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
         failure = None
         round_providers = ([p for p in providers if p.get("name") == sticky] +
                            [p for p in providers if p.get("name") != sticky]) if sticky else providers
-        for kind, val in stream(round_providers, messages, use_tools, temperature=temperature,
+        send_messages = _flatten_tool_history(messages) if flat_mode else messages
+        for kind, val in stream(round_providers, send_messages, use_tools, temperature=temperature,
                                 max_tokens=max_tokens, reasoning_effort=reasoning_effort):
             if kind == "text":
                 safe = gate.feed(val)
@@ -781,15 +782,11 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
             elif kind == "fail":
                 failure = val
         if done is None:
-            if state["tools_called"] and not flat_retry:
+            if state["tools_called"] and not flat_mode:
                 # Every model refused the follow-up to a tool call. Often that is a model choking on the
-                # tool-call history, not a real outage — retry once with the history as plain text, no tools.
-                flat_retry = True
-                forced_final = True
-                messages[:] = _flatten_tool_history(messages)
-                messages.append({"role": "user", "content":
-                                 "Now reply to the user in plain words using the tool results above. "
-                                 "Do not call any more tools."})
+                # tool-call history, not a real outage. Retry with the history as plain text — and keep the
+                # tools ON, so a multi-step job (search, then images, then code, then a file) can carry on.
+                flat_mode = True
                 print(f"[NATIVE] follow-up after a tool call failed — retrying with plain-text history: {failure}")
                 continue
             yield fail_final(failure or "no answer")
