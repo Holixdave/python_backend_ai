@@ -309,7 +309,7 @@ def stream_chat(providers: list, messages: list, tools: Optional[list], *, tempe
             except Exception as e:
                 last_error = f"{provider['name']}: {e}"
                 if started:                                  # can't un-send what the user already saw
-                    yield ("done", {"content": content, "tool_calls": calls, "provider": provider["name"]})
+                    yield ("done", {"content": content, "tool_calls": calls, "provider": provider["name"], "interrupted": True})
                     return
                 if attempt < max_retries:
                     sleep(retry_delay * attempt)
@@ -526,7 +526,24 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
     provider_name = None
     forced_final = False
 
+    BUSY_NOTE = "The server got overloaded, so I had to stop here. Send \"continue\" and I'll pick up where I left off."
+
     def fail_final(reason):
+        # Words, tool results or images already produced this turn are KEPT — never wipe a good partial answer.
+        kept = [b for b in blocks if not (b["type"] == "text" and not b["text"].strip())]
+        has_content = any(b["type"] in ("text", "images", "file", "code") for b in kept)
+        if has_content:
+            print(f"[NATIVE] giving up (partial kept): {reason}")
+            for b in kept:
+                if b["type"] == "text":
+                    b["text"] = scrub_internal(strip_markers(b["text"]))
+                    b["segments"] = build_segments(b["text"])
+            kept.append({"type": "text", "text": BUSY_NOTE, "segments": build_segments(BUSY_NOTE)})
+            ans = "\n\n".join(b["text"] for b in kept if b["type"] == "text").strip()
+            return {"type": "final", "answer": ans, "blocks": kept, "segments": build_segments(ans),
+                    "sources": state["sources"], "images": state["image_results"],
+                    "files": state["file_results"], "file": (state["file_results"] or [None])[-1],
+                    "codes": state["code_results"], "suggestions": [], "provider": provider_name}
         msg = on_failure() if on_failure else "Something went wrong. Please try again."
         print(f"[NATIVE] giving up: {reason}")
         return {"type": "final", "answer": msg, "blocks": [{"type": "text", "text": msg, "segments": build_segments(msg)}],
@@ -554,10 +571,13 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
             yield {"type": "text", "delta": tail}
         provider_name = done.get("provider") or provider_name
         round_text = clean_round_text(gate.raw)
-        calls = done.get("tool_calls") or []
+        calls = (done.get("tool_calls") or [])[:1]   # one tool per round: the model speaks between every tool call
 
         if round_text:
             blocks.append({"type": "text", "text": round_text})
+        if done.get("interrupted") and not (done.get("tool_calls") or []):
+            yield fail_final("stream interrupted")
+            return
 
         if not calls:
             if not round_text and state["tools_called"] and not forced_final:
