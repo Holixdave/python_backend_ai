@@ -637,7 +637,7 @@ TOOL_USE_HINT_TAIL = (
     "edit tool. Do NOT retype, resend, or rebuild the whole file, and do "
     "NOT read the entire file yourself first to hand-construct an exact "
     "find/replace pair. Instead request edit_file_by_intent with just "
-    "{\"doc_id\": \"<the file>\", \"instruction\": \"<plain-English "
+    "{\"path\": \"<the workspace file>\", \"instruction\": \"<plain-English "
     "description of the one change>\"} — e.g. \"change the submit button's "
     "color to blue\", \"add a loading spinner while the form submits\", "
     "\"rename the getUser function to fetchUser\". You do not need to know "
@@ -796,23 +796,22 @@ SEARCH_DISCIPLINE_HINT = (
 )
 
 FILE_STORES_HINT = (
-    "\n\nWHERE FILES LIVE: two separate places that do NOT sync by themselves. "
-    "(1) WORKSPACE — workspace_* tools and workspace_run; edit with workspace_edit / "
-    "workspace_edit_by_intent; delete with workspace_delete. "
-    "(2) SAVED DOCS — files from build_file/uploads; list_user_docs, read_user_doc, "
-    "edit_file / edit_file_by_intent, delete_user_doc. "
-    "To work on a saved doc in the workspace call workspace_import_doc; to put a "
-    "workspace file into saved docs call workspace_export_doc. run_code starts in an "
-    "EMPTY folder: pass input_files=[workspace paths or saved-doc ids] to let the code "
-    "read them at ./inputs/. Use the tool for the place the file is in — if a tool says "
-    "'not found', check the other place before telling the user it doesn't exist.\n"
+    "\n\nWHERE FILES LIVE: ONE place only — the user's WORKSPACE. Everything the user "
+    "attaches is saved in the workspace folder uploads/ (look with workspace_list); files "
+    "you build with build_file are saved in the workspace too. To keep working on an "
+    "upload, workspace_copy it from uploads/ into the main workspace (the original stays "
+    "put). Read with workspace_read, edit with workspace_edit / workspace_edit_by_intent "
+    "(or edit_file / edit_file_by_intent when the user should get the changed file as a "
+    "download), delete with workspace_delete. run_code starts in an EMPTY folder: pass "
+    "input_files=[workspace paths] to let the code read them at ./inputs/. If a tool says "
+    "'not found', run workspace_list before telling the user the file doesn't exist.\n"
 )
 
 OUTPUT_FILES_HINT = (
     "\n\nDELIVERING FILES: files made by ANY tool (run_code's ./outputs/, the "
     "workspace, build_file, generate_image, workspace_zip) are NOT sent to the "
     "user automatically. You decide what they receive by calling output_files "
-    "with the exact paths / doc ids / URLs you want delivered — you can mix "
+    "with the exact workspace paths / URLs you want delivered — you can mix "
     "files from different tools in one call, and use workspace_list to see "
     "everything that exists. Images and image files you output appear in the "
     "image gallery ABOVE your reply; other files appear as file cards ABOVE "

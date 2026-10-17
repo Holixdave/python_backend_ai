@@ -17,7 +17,6 @@ import json
 import requests
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple, List, Dict
-from user_doc_manager import UserDocManager
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG — API keys. Only GROQ_API_KEY is required.

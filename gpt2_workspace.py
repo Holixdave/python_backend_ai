@@ -199,14 +199,6 @@ def workspace_list(userid: str, path: str = "", depth: int = 2) -> dict:
                 out["persistence"] = st
         except Exception:
             pass
-        try:
-            from user_doc_manager import UserDocManager
-            docs = [d.get("filename") or d.get("id") for d in UserDocManager(userid).list_all_docs()][:30]
-            if docs:
-                out["saved_docs"] = docs
-                out["saved_docs_note"] = "These live in the saved-docs store, not the workspace. workspace_import_doc copies one in; read_user_doc reads it directly."
-        except Exception:
-            pass
     if truncated:
         out["note"] = (f"Listing capped at {MAX_LIST_ENTRIES} entries — "
                        "pass a deeper `path` to look inside a specific folder.")
@@ -476,7 +468,7 @@ def workspace_unzip(userid: str, path: str, dest: Optional[str] = None) -> dict:
 def workspace_ingest_zip_url(userid: str, url: str, filename: str) -> dict:
     """
     Backend-side (NOT an AI tool): called when the user ATTACHES a .zip.
-    Downloads it, keeps the original in the workspace, unzips it next to it.
+    Downloads it, keeps the original in uploads/, unzips it into uploads/<name>/.
     """
     try:
         resp = requests.get(url, timeout=30, stream=True, headers={"User-Agent": "Mozilla/5.0"})
@@ -492,12 +484,12 @@ def workspace_ingest_zip_url(userid: str, url: str, filename: str) -> dict:
     safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(filename or "upload.zip")) or "upload.zip"
     if not safe_name.lower().endswith(".zip"):
         safe_name += ".zip"
-    saved = workspace_write_bytes(userid, safe_name, buf.getvalue())
+    saved = workspace_write_bytes(userid, f"{UPLOADS_DIR}/{safe_name}", buf.getvalue())
     if not saved.get("success"):
         return saved
-    folder = os.path.splitext(safe_name)[0]
+    folder = f"{UPLOADS_DIR}/{os.path.splitext(safe_name)[0]}"
     res = _extract_zip_bytes(userid, buf.getvalue(), folder, strip_top=True)
-    res["zip_saved_as"] = safe_name
+    res["zip_saved_as"] = f"{UPLOADS_DIR}/{safe_name}"
     if res.get("success"):
         res["tree"] = workspace_list(userid, res["extracted_to"], depth=2).get("tree", "")
     return res
@@ -683,7 +675,7 @@ def workspace_edit_by_intent(userid: str, path: str, instruction: str) -> dict:
         return {"success": False, "error": str(e)}
     if not os.path.isfile(full):
         return {"success": False, "error": f"'{path}' is not a file in the workspace. "
-                                           "If it is a saved doc, workspace_import_doc it first, or use edit_file_by_intent."}
+                                           "Use workspace_list to see what exists (uploads are in uploads/)."}
     try:
         with open(full, "r", encoding="utf-8") as f:
             content = f.read()
@@ -747,32 +739,72 @@ def workspace_edit_by_intent(userid: str, path: str, instruction: str) -> dict:
                      "give a more specific instruction, or use workspace_read + workspace_edit with exact text."}
 
 
-# ── bridge to the saved-docs store ───────────────────────────────────────────
-def workspace_import_doc(userid: str, doc_id: str, path: Optional[str] = None) -> dict:
-    """Copy a saved doc (build_file / upload / list_user_docs) into the workspace so
-    workspace_edit / workspace_run can use it. path defaults to docs/<doc_id>."""
-    try:
-        from user_doc_manager import UserDocManager
-        doc = UserDocManager(userid).get_doc(doc_id)
-    except Exception as e:
-        return {"success": False, "error": f"Couldn't read saved docs: {e}"}
-    if not doc:
-        return {"success": False, "error": f"No saved doc with id '{doc_id}'."}
-    return workspace_write(userid, path or f"docs/{doc_id}", doc.get("content") or "")
+# ── uploads: ONE place for everything the user attaches ──────────────────────
+# Attachments land in  <workspace>/uploads/  . The AI looks there (workspace_list),
+# reads what it needs, and copies the files it wants to keep working on into the
+# main workspace with workspace_copy. There is no second file store.
+UPLOADS_DIR = "uploads"
 
 
-def workspace_export_doc(userid: str, path: str, doc_id: Optional[str] = None) -> dict:
-    """Save a workspace text file into the saved-docs store (so list_user_docs /
-    edit_file / edit_doc_line can see it). doc_id defaults to the file's name."""
-    full = _safe_path(userid, path)
-    if not os.path.isfile(full) or not _is_probably_text(full):
-        return {"success": False, "error": f"'{path}' isn't a text file in the workspace."}
+def _safe_upload_name(name: str, fallback: str = "upload") -> str:
+    base = os.path.basename((name or "").replace("\\", "/")) or fallback
+    return re.sub(r"[^A-Za-z0-9._ -]", "_", base)[:120] or fallback
+
+
+def workspace_save_upload(userid: Optional[str], filename: str, data: bytes) -> dict:
+    """Backend-side (NOT an AI tool): store one attachment as uploads/<filename>.
+    If the name is taken, adds a numeric suffix so nothing is overwritten."""
+    name = _safe_upload_name(filename)
+    stem, ext = os.path.splitext(name)
+    n, rel = 1, f"{UPLOADS_DIR}/{name}"
+    while os.path.exists(_safe_path(userid, rel)):
+        n += 1
+        rel = f"{UPLOADS_DIR}/{stem}_{n}{ext}"
+    return workspace_write_bytes(userid, rel, data)
+
+
+def workspace_read_text(userid: Optional[str], path: str):
+    """Backend-side helper: (text, None) for a UTF-8 workspace file, else (None, error)."""
     try:
-        from user_doc_manager import UserDocManager
-        with open(full, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
-        name = doc_id or os.path.basename(full)
-        UserDocManager(userid).save_doc(filename=name, content=content, hint=name, tags=["workspace"])
-        return {"success": True, "doc_id": name}
+        full = _safe_path(userid, path)
+    except ValueError as e:
+        return None, str(e)
+    if not os.path.isfile(full):
+        return None, (f"'{path}' is not a file in the workspace. Use workspace_list to see what "
+                      f"exists (the user's attachments are in {UPLOADS_DIR}/).")
+    try:
+        with open(full, "r", encoding="utf-8") as f:
+            return f.read(), None
+    except UnicodeDecodeError:
+        return None, f"'{path}' is a binary file — it can't be edited as text."
+
+
+def workspace_copy(userid: str, src: str, dest: Optional[str] = None) -> dict:
+    """Copy a file or folder inside the workspace — mainly from uploads/ into the main
+    workspace so you can edit/run it there (the original stays in uploads/).
+    dest defaults to the same name at the top level of the workspace."""
+    import shutil
+    try:
+        s_full = _safe_path(userid, src)
+        d_rel = dest or os.path.basename(src.rstrip("/\\")) or "copy"
+        d_full = _safe_path(userid, d_rel)
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    if not os.path.exists(s_full):
+        return {"success": False, "error": f"'{src}' doesn't exist. Use workspace_list {UPLOADS_DIR} to see the user's uploads."}
+    if os.path.exists(d_full):
+        return {"success": False, "error": f"'{d_rel}' already exists — pick another dest or workspace_delete it first."}
+    try:
+        os.makedirs(os.path.dirname(d_full), exist_ok=True)
+        if os.path.isdir(s_full):
+            if _dir_size(s_full) + _dir_size(_user_root(userid)) > MAX_USER_BYTES:
+                return {"success": False, "error": "Workspace would be over its size limit."}
+            shutil.copytree(s_full, d_full, symlinks=False)
+        else:
+            if os.path.getsize(s_full) + _dir_size(_user_root(userid)) > MAX_USER_BYTES:
+                return {"success": False, "error": "Workspace would be over its size limit."}
+            shutil.copy2(s_full, d_full)
     except Exception as e:
-        return {"success": False, "error": f"Couldn't save doc: {e}"}
+        return {"success": False, "error": f"Copy failed: {e}"}
+    _dirty(userid)
+    return {"success": True, "copied": _rel(userid, s_full), "to": _rel(userid, d_full)}

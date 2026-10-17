@@ -453,21 +453,8 @@ def _stage_inputs(run_dir: str, userid: Optional[str], refs: list):
                 if not found:
                     missing.append(f"{ref} (folder is empty)")
             else:
-                from user_doc_manager import UserDocManager  # lazy
-                doc = UserDocManager(userid).get_doc(ref) if userid else None
-                if not doc:
-                    missing.append(f"{ref} (not found in workspace or saved docs)")
-                    continue
-                data = (doc.get("content") or "").encode("utf-8")
-                name = _SAFE_FILENAME_RE.sub("_", os.path.basename(ref))[:80] or "doc.txt"
-                dest = _dest_for(name)
-                if dest is None or not _room(len(data)):
-                    missing.append(f"{ref} (over the input size/count limit)")
-                    continue
-                with open(dest, "wb") as f:
-                    f.write(data)
-                state["files"] += 1
-                state["bytes"] += len(data)
+                missing.append(f"{ref} (not found in the workspace — use workspace_list)")
+                continue
                 staged.append({"path": f"{INPUT_SUBDIR}/{name}", "source": "saved_doc", "size": len(data)})
         except Exception as e:
             missing.append(f"{ref} ({str(e)[:80]})")

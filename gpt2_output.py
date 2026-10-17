@@ -8,7 +8,6 @@
 #         until the model calls output_files with exactly the files it wants
 #         to hand over. It can mix sources in ONE call:
 #           - workspace paths   ("outputs/report.pdf", "myrepo/src/app.py")
-#           - saved docs        ({"doc_id": "help-1.html"})   <- build_file etc.
 #           - existing URLs     ("https://...")               <- generate_image,
 #                                                               earlier uploads
 # Images come back as kind="image" and the dispatcher (gpt2_test.py) puts
@@ -39,7 +38,7 @@ def output_files(userid: str, files: list) -> dict:
     Deliver files to the user. YOU choose what they get — nothing from run_code
     or the workspace is sent automatically. `files` is a list; each entry is
     either a workspace path string ("outputs/chart.png"), an http(s) URL string,
-    or a dict: {"path": ...} | {"doc_id": ...} | {"url": ..., "filename": ...}.
+    or a dict: {"path": ...} | {"url": ..., "filename": ...}.
     Images appear in the image gallery above your reply; other files appear as
     file cards. Returns what was delivered and what failed — only claim files
     that appear in the returned `files` list.
@@ -55,7 +54,7 @@ def output_files(userid: str, files: list) -> dict:
     for item in list(files)[:MAX_OUTPUT_FILES]:
         spec = {"path": item} if isinstance(item, str) and not item.startswith(("http://", "https://")) \
             else ({"url": item} if isinstance(item, str) else dict(item or {}))
-        label = spec.get("path") or spec.get("doc_id") or spec.get("url") or "?"
+        label = spec.get("path") or spec.get("url") or "?"
         try:
             # 1) already a public URL — pass straight through
             if spec.get("url"):
@@ -66,16 +65,8 @@ def output_files(userid: str, files: list) -> dict:
                 delivered.append({"filename": name, "url": url, "kind": _kind(name)})
                 continue
 
-            # 2) a saved doc (build_file / uploads) — upload its content
-            if spec.get("doc_id"):
-                from user_doc_manager import UserDocManager
-                doc = UserDocManager(userid).get_doc(spec["doc_id"])
-                if not doc:
-                    raise ValueError("no saved doc with that id")
-                data = (doc.get("content") or "").encode("utf-8")
-                name = doc.get("filename") or spec["doc_id"]
             # 3) a workspace file
-            elif spec.get("path"):
+            if spec.get("path"):
                 full = _safe_path(userid, spec["path"])
                 if not os.path.isfile(full):
                     raise ValueError("not a file in the workspace")
@@ -85,7 +76,7 @@ def output_files(userid: str, files: list) -> dict:
                     data = f.read()
                 name = spec.get("filename") or os.path.basename(full)
             else:
-                raise ValueError("entry needs path, doc_id or url")
+                raise ValueError("entry needs path or url")
 
             if not data:
                 raise ValueError("file is empty")

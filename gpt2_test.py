@@ -366,7 +366,7 @@ from gpt2_functions import (
     redisplay_file,
     is_web_search_enabled,
     web_search_off_note,
-    save_uploaded_files_as_docs,
+    save_uploads_to_workspace,
     DESIGN_GUIDELINES,
     generate_image,       # NEW — was only reachable via the generic
                            # execute_tool() path, which swallowed its
@@ -648,7 +648,7 @@ def _ask_gpt2_core(
     IDE agent (Cline, Continue) that has ITS OWN tool-call convention and
     its own access to the real project files. Two things go wrong without
     this: (1) this backend's TOOL_USE_HINT gives the model a second,
-    competing text convention for tools like run_code/list_user_docs,
+    competing text convention for tools like run_code/workspace_list,
     which only ever run in this backend's own sandbox — NOT the user's
     actual repo — so the model "investigates" using fake tools and
     confabulates answers about files it never actually saw; (2) the
@@ -683,25 +683,23 @@ def _ask_gpt2_core(
     tools_ok = []  # generic-path tools that returned success this turn (proof for the honesty skill)
     code_results = []  # every run_code call this turn, in order — its own list, not file_results, so the frontend can tell "here's a saved file" apart from "here's a code-run's stdout/stderr"
 
-    # NEW: non-image attachments (html/txt/md/etc) — fetch each one's raw
-    # content, auto-save it into the user's UserDocManager (so
-    # list_user_docs/read_user_doc/edit_doc_line can find it later without
-    # a separate save step), and fold the content directly into THIS
-    # turn's prompt too, so a plain "output the text in this file" works
-    # in one round trip instead of forcing a tool call first.
+    # Non-image attachments (html/txt/md/pdf/zip/etc): each one is stored ONCE in the
+    # user's workspace under uploads/ (the single file store), and its text is also folded
+    # straight into THIS turn's prompt so a plain "summarise this file" needs no tool call.
+    # To keep working on a file, the AI copies it from uploads/ into the main workspace.
     attached_files_note = ""
     if valid_file_urls:
         yield {"type": "status", "text": "Reading attached file(s)...", "detail": None, "icon": "docs"}
-        saved_files = save_uploaded_files_as_docs(userid, valid_file_urls, file_names or [])
+        saved_files = save_uploads_to_workspace(userid, valid_file_urls, file_names or [])
         blocks = []
         for f in saved_files:
-            saved_tag = " (saved for later as well)" if f["saved"] else ""
+            saved_tag = f" (saved at {f['path']})" if f.get("saved") and f.get("path") else ""
             blocks.append(f"--- FILE: {f['filename']}{saved_tag} ---\n{f['content']}")
         attached_files_note = (
             "\n\n[The user attached the following file(s) with this message — "
-            "their full raw content is included below. If asked to edit a "
-            "specific line later, use read_doc_lines/edit_doc_line with the "
-            "filename as doc_id rather than retyping the whole file.]\n\n"
+            "their content is included below and the originals are saved in the "
+            "workspace folder uploads/. To edit or run one, workspace_copy it into the "
+            "main workspace first (or read it in place with workspace_read).]\n\n"
             + "\n\n".join(blocks)
         )
         prompt = f"{prompt}{attached_files_note}"
@@ -1251,14 +1249,14 @@ def _ask_gpt2_core(
                 file_results.append(zip_event)
                 file_result = zip_event
         elif call_data["tool"] == "edit_file":
-            # doc_id/find_text/replace_text are the AI's real args — userid
+            # path/find_text/replace_text are the AI's real args — userid
             # still comes from session, never trusted from the AI. Same
             # single-file-result pattern; on failure (0 or 2+ matches),
             # tool_result carries the specific "error" back to the model
             # so it can re-read the file or narrow find_text instead of
             # silently giving up or guessing.
             edit_args = {
-                "doc_id": call_data["args"].get("doc_id"),
+                "path": call_data["args"].get("path") or call_data["args"].get("doc_id"),
                 "find_text": call_data["args"].get("find_text") or "",
                 "replace_text": call_data["args"].get("replace_text") or "",
                 "userid": session_context["userid"],
@@ -1277,14 +1275,14 @@ def _ask_gpt2_core(
                 file_result = edit_event
         elif call_data["tool"] == "edit_file_by_intent":
             # NEW — planner/executor split. The model only supplies
-            # doc_id + a plain-English instruction here; edit_file_by_intent
+            # path + a plain-English instruction here; edit_file_by_intent
             # itself makes a SEPARATE model call internally to work out the
             # actual find/replace pair, validates it, retries on its own if
             # the first attempt isn't unique, then calls edit_file() for
             # real. Same single-file-result pattern as edit_file above —
             # userid still comes from session, never trusted from the AI.
             intent_args = {
-                "doc_id": call_data["args"].get("doc_id"),
+                "path": call_data["args"].get("path") or call_data["args"].get("doc_id"),
                 "instruction": call_data["args"].get("instruction") or "",
                 "userid": session_context["userid"],
             }

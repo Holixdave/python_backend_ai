@@ -17,7 +17,6 @@ import json
 import random
 import requests
 from typing import Optional
-from user_doc_manager import UserDocManager
 from bs4 import BeautifulSoup
 # Pulled back from gpt2_test.py — see the note over the matching import
 # there for why this is safe despite being circular.
@@ -491,119 +490,6 @@ def get_user_notes(userid: str, limit: int = 20) -> list:
     except Exception as e:
         print(f"[USER_NOTES] fetch failed for userid={userid!r}: {e}")
         return []
-
-
-def list_user_docs(userid: str) -> list:
-    """
-    List every doc saved for this user (filename, hint, tags, date, size —
-    NOT the full content, this is just the menu). Call this first when the
-    user refers to "my file" / "the file I sent" / "that html file" without
-    naming it exactly, so you can pick the right doc_id before reading it.
-    Never raises; returns [] if the user has no saved docs or on failure.
-    """
-    if not userid:
-        return []
-    try:
-        return UserDocManager(userid).list_all_docs()
-    except Exception as e:
-        print(f"[USER_DOCS] list failed for userid={userid!r}: {e}")
-        return []
-
-
-def read_user_doc(userid: str, doc_id: str) -> dict:
-    """
-    Read one saved doc's FULL content by its doc_id (this is the filename,
-    e.g. "help-1.html" — get the exact id from list_user_docs first if
-    unsure). Returns {"id", "filename", "content", "size", "hint", "tags",
-    "date"} or {"error": "..."} if no doc with that id exists for this user.
-    """
-    if not userid:
-        return {"error": "no userid on this session"}
-    try:
-        manager = UserDocManager(userid)
-        doc = manager.get_doc(doc_id)
-        if doc is None:
-            return {"error": f"No saved doc found with id '{doc_id}' for this user."}
-        return doc
-    except Exception as e:
-        print(f"[USER_DOCS] read failed for userid={userid!r}, doc_id={doc_id!r}: {e}")
-        return {"error": f"Failed to read '{doc_id}': {e}"}
-
-
-def read_doc_lines(userid: str, doc_id: str, start_line: int = 1, end_line: Optional[int] = None) -> dict:
-    """
-    Read a specific LINE RANGE (1-indexed, inclusive) from a saved doc
-    instead of pulling the whole thing — use this on a large file before
-    editing, the same way you'd `sed -n 'start,endp' file`. Leave end_line
-    out to read to the end of the file. Returns {"lines": {line_no: text,
-    ...}, "total_lines": int} so you always know how many lines exist, or
-    {"error": "..."} if the doc isn't found.
-    """
-    if not userid:
-        return {"error": "no userid on this session"}
-    try:
-        manager = UserDocManager(userid)
-        doc = manager.get_doc(doc_id)
-        if doc is None:
-            return {"error": f"No saved doc found with id '{doc_id}' for this user."}
-        all_lines = doc["content"].split("\n")
-        total = len(all_lines)
-        start = max(1, start_line)
-        end = total if end_line is None else min(end_line, total)
-        selected = {i: all_lines[i - 1] for i in range(start, end + 1)}
-        return {"lines": selected, "total_lines": total}
-    except Exception as e:
-        print(f"[USER_DOCS] read_lines failed for userid={userid!r}, doc_id={doc_id!r}: {e}")
-        return {"error": f"Failed to read lines from '{doc_id}': {e}"}
-
-
-def edit_doc_line(userid: str, doc_id: str, line_number: int, new_content: str) -> dict:
-    """
-    Replace ONE specific line (1-indexed) in a saved doc and re-save the
-    whole file with that line swapped in. Call read_doc_lines first to
-    confirm the exact line number and current content before editing —
-    never guess a line number blind. Returns the updated doc's metadata,
-    or {"error": "..."} if the doc isn't found or line_number is out of
-    range.
-    """
-    if not userid:
-        return {"error": "no userid on this session"}
-    try:
-        manager = UserDocManager(userid)
-        doc = manager.get_doc(doc_id)
-        if doc is None:
-            return {"error": f"No saved doc found with id '{doc_id}' for this user."}
-        lines = doc["content"].split("\n")
-        if line_number < 1 or line_number > len(lines):
-            return {"error": f"'{doc_id}' has {len(lines)} lines — line_number {line_number} is out of range."}
-        lines[line_number - 1] = new_content
-        updated_content = "\n".join(lines)
-        return manager.save_doc(
-            filename=doc_id,
-            content=updated_content,
-            hint=doc.get("hint"),
-            tags=doc.get("tags"),
-        )
-    except Exception as e:
-        print(f"[USER_DOCS] edit_line failed for userid={userid!r}, doc_id={doc_id!r}: {e}")
-        return {"error": f"Failed to edit line {line_number} in '{doc_id}': {e}"}
-
-
-def update_user_doc(userid: str, doc_id: str, content: str, hint: Optional[str] = None, tags: Optional[list] = None) -> dict:
-    """
-    Overwrite an entire saved doc with new content (or create it if it
-    doesn't exist yet) — use this for a full rewrite; use edit_doc_line
-    instead when only one line needs to change. Returns the saved doc's
-    metadata, or {"error": "..."} on failure.
-    """
-    if not userid:
-        return {"error": "no userid on this session"}
-    try:
-        manager = UserDocManager(userid)
-        return manager.save_doc(filename=doc_id, content=content, hint=hint, tags=tags)
-    except Exception as e:
-        print(f"[USER_DOCS] update failed for userid={userid!r}, doc_id={doc_id!r}: {e}")
-        return {"error": f"Failed to save '{doc_id}': {e}"}
 
 
 def save_study_note(userid: str, content: str, title: str = None) -> bool:
@@ -1334,49 +1220,49 @@ def fetch_raw_file_content(url: str, max_chars: int = 40000) -> str:
         return f"[Couldn't load this file: {e}]"
 
 
-def save_uploaded_files_as_docs(userid: Optional[str], file_urls: list, file_names: list) -> list:
+def save_uploads_to_workspace(userid: Optional[str], file_urls: list, file_names: list) -> list:
     """
-    For every (url, name) pair in a message's attachments: fetch the raw
-    content and persist it into this user's UserDocManager under that
-    filename, so it's immediately readable/editable later via
-    list_user_docs/read_user_doc/read_doc_lines/edit_doc_line — without
-    the AI having to explicitly call a save tool just to keep an upload.
+    For every (url, name) pair in a message's attachments: download it ONCE and store it
+    in the user's workspace at  uploads/<name>  (zips are unpacked into uploads/<zipname>/).
+    The AI then scans uploads/ with workspace_list / workspace_read and copies what it
+    wants into the main workspace with workspace_copy.
 
-    Returns a list of {"filename", "content", "saved": bool} — content is
-    included here (not just the doc metadata) so the caller can also
-    inject it straight into the current turn's prompt for an immediate
-    answer, on top of it being saved for later. Skips silently (saved:
-    False) if userid is missing or a given fetch/save fails — never raises.
+    Returns [{"filename", "content", "saved", "path"}] — `content` is a text preview (or a
+    short note for binary files) so the caller can put it straight into the current turn's
+    prompt. Never raises; saved=False when the file couldn't be stored.
     """
     results = []
     names = list(file_names or [])
     for i, url in enumerate(file_urls or []):
         filename = names[i] if i < len(names) and names[i] else f"upload_{i+1}.txt"
-        # .zip attachments are binary: never read them as text. Save into
-        # the user's workspace + unzip, and hand the AI the file tree so it
-        # can workspace_list / workspace_grep / workspace_read from there.
         if filename.lower().endswith(".zip") or url.lower().split("?")[0].endswith(".zip"):
             from gpt2_workspace import workspace_ingest_zip_url
-            z = workspace_ingest_zip_url(userid, url, filename)
+            z = workspace_ingest_zip_url(userid, url, filename) if userid else {"success": False, "error": "no userid"}
             if z.get("success"):
                 note = (f"[ZIP unpacked into the workspace at '{z['extracted_to']}' "
                         f"({z['files']} files). File tree:\n{z.get('tree','')}\n"
-                        "Use workspace_list / workspace_grep / workspace_read to explore it.]")
+                        "Use workspace_list / workspace_grep / workspace_read to explore it, "
+                        "and workspace_copy to move what you need into the main workspace.]")
             else:
                 note = f"[Couldn't open this zip: {z.get('error')}]"
-            results.append({"filename": filename, "content": note, "saved": z.get("success", False)})
+            results.append({"filename": filename, "content": note, "saved": z.get("success", False),
+                            "path": z.get("extracted_to")})
             continue
         content = fetch_raw_file_content(url)
-        saved = False
-        if userid and content and not content.startswith("[Couldn't load this file"):
+        saved, path = False, None
+        if userid:
             try:
-                manager = UserDocManager(userid)
-                manager.save_doc(filename=filename, content=content, hint=filename, tags=["user-upload"])
-                saved = True
+                from gpt2_workspace import workspace_save_upload
+                raw = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+                raw.raise_for_status()
+                res = workspace_save_upload(userid, filename, raw.content[:25 * 1024 * 1024])
+                saved, path = bool(res.get("success")), res.get("path")
             except Exception as e:
-                print(f"[USER_DOCS] auto-save failed for userid={userid!r}, filename={filename!r}: {e}")
-        results.append({"filename": filename, "content": content, "saved": saved})
+                print(f"[UPLOADS] couldn't store {filename!r} for userid={userid!r}: {e}")
+        results.append({"filename": filename, "content": content, "saved": saved, "path": path})
     return results
+
+
 # ---------------------------------------------------------------------------
 # INTENT CLASSIFIER — one small, cheap call per prompt.
 #
@@ -1536,7 +1422,7 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
                 topic = "general"
             
             search_type = data.get("search_type", "none")
-            if search_type not in ("web", "none"):  # "user_docs" (auto saved-docs search) was removed
+            if search_type not in ("web", "none"):  
                 search_type = "none"
 
             search_query = (data.get("search_query") or "").strip()
@@ -2095,7 +1981,7 @@ def _bracket_balance_ok(text: str) -> bool:
     return all(counts[open_ch] == counts[close_ch] for open_ch, close_ch in _BRACKET_PAIRS.items())
 
 
-def edit_file(doc_id: str, find_text: str, replace_text: str, userid: Optional[str] = None):
+def edit_file(path: str, find_text: str, replace_text: str, userid: Optional[str] = None):
     """
     Surgically edits ONE saved file in place — finds an EXACT, UNIQUE
     match of `find_text` in the file's real saved content and replaces it
@@ -2114,7 +2000,7 @@ def edit_file(doc_id: str, find_text: str, replace_text: str, userid: Optional[s
 
     SAFETY: find_text must match EXACTLY ONCE in the file.
       - 0 matches -> error, asks the AI to re-check the exact text (don't
-        guess/retry blindly — re-reading via read_user_doc/read_doc_lines
+        guess/retry blindly — re-reading via workspace_read
         first is the correct move).
       - 2+ matches -> error, asks the AI to include more surrounding
         context in find_text to make the match unique, rather than
@@ -2131,24 +2017,20 @@ def edit_file(doc_id: str, find_text: str, replace_text: str, userid: Optional[s
     same shape build_file() uses.
     """
     if not userid:
-        yield {"type": "file_result", "success": False, "url": None, "filename": doc_id or "file", "error": "no userid on this session"}
+        yield {"type": "file_result", "success": False, "url": None, "filename": path or "file", "error": "no userid on this session"}
         return
-    if not doc_id:
-        yield {"type": "file_result", "success": False, "url": None, "filename": "file", "error": "no doc_id given"}
-        return
-
-    yield {"type": "status", "text": f"Reading {doc_id}...", "detail": None, "icon": "docs"}
-
-    try:
-        manager = UserDocManager(userid)
-        doc = manager.get_doc(doc_id)
-    except Exception as e:
-        yield {"type": "file_result", "success": False, "url": None, "filename": doc_id, "error": f"Failed to read '{doc_id}': {e}"}
+    if not path:
+        yield {"type": "file_result", "success": False, "url": None, "filename": "file", "error": "no path given"}
         return
 
-    if doc is None:
-        yield {"type": "file_result", "success": False, "url": None, "filename": doc_id, "error": f"No saved doc found with id '{doc_id}' for this user."}
+    yield {"type": "status", "text": f"Reading {path}...", "detail": None, "icon": "docs"}
+
+    from gpt2_workspace import workspace_read_text, workspace_write
+    _text, _read_err = workspace_read_text(userid, path)
+    if _text is None:
+        yield {"type": "file_result", "success": False, "url": None, "filename": path, "error": _read_err}
         return
+    doc = {"content": _text}
 
     content = doc.get("content", "")
     occurrences = content.count(find_text) if find_text else 0
@@ -2158,10 +2040,10 @@ def edit_file(doc_id: str, find_text: str, replace_text: str, userid: Optional[s
             "type": "file_result",
             "success": False,
             "url": None,
-            "filename": doc_id,
+            "filename": path,
             "error": (
                 "find_text did not match anywhere in the file. Re-read the file "
-                "(read_user_doc or read_doc_lines) to get the exact current text "
+                "(workspace_read) to get the exact current text "
                 "before trying again — do not guess."
             ),
         }
@@ -2172,7 +2054,7 @@ def edit_file(doc_id: str, find_text: str, replace_text: str, userid: Optional[s
             "type": "file_result",
             "success": False,
             "url": None,
-            "filename": doc_id,
+            "filename": path,
             "error": (
                 f"find_text matched {occurrences} times — it must match exactly "
                 "once. Include more surrounding lines/context in find_text to "
@@ -2181,23 +2063,16 @@ def edit_file(doc_id: str, find_text: str, replace_text: str, userid: Optional[s
         }
         return
 
-    yield {"type": "status", "text": f"Editing {doc_id}...", "detail": None, "icon": "build"}
+    yield {"type": "status", "text": f"Editing {path}...", "detail": None, "icon": "build"}
     new_content = content.replace(find_text, replace_text, 1)
     bracket_warning = not _bracket_balance_ok(new_content)
 
     yield {"type": "status", "text": "Uploading updated file...", "detail": None, "icon": "upload"}
-    file_url = _upload_to_supabase(userid, doc_id, new_content)
+    file_url = _upload_to_supabase(userid, os.path.basename(path), new_content)
 
-    if file_url:
-        try:
-            manager.save_doc(
-                filename=doc_id,
-                content=new_content,
-                hint=doc.get("hint"),
-                tags=doc.get("tags"),
-            )
-        except Exception as e:
-            print(f"[EDIT_FILE] failed to update saved doc for {doc_id}: {e}")
+    _ws = workspace_write(userid, path, new_content)   # the ONE file store
+    if not _ws.get("success"):
+        print(f"[EDIT_FILE] workspace write failed for {path}: {_ws.get('error')}")
 
     yield {
         "type": "status",
@@ -2209,38 +2084,10 @@ def edit_file(doc_id: str, find_text: str, replace_text: str, userid: Optional[s
         "type": "file_result",
         "success": bool(file_url),
         "url": file_url,
-        "filename": doc_id,
+        "filename": path,
         "bracket_warning": bracket_warning,
         "new_size": len(new_content),
     }
-
-
-def delete_user_doc(userid: str, doc_id: str) -> dict:
-    """
-    Permanently delete ONE saved doc by its exact doc_id (filename). Only call
-    this when the user clearly asked to delete/remove that file — it cannot be
-    undone. Get the exact id from list_user_docs first if unsure. Returns
-    {"success": True, "deleted": doc_id} only if the file was really removed,
-    otherwise {"success": False, "error": "..."}. Does not touch workspace
-    files (use workspace_delete for those).
-    """
-    if not userid:
-        return {"success": False, "error": "no userid on this session"}
-    if not doc_id or not str(doc_id).strip():
-        return {"success": False, "error": "no doc_id given"}
-    doc_id = str(doc_id).strip()
-    try:
-        manager = UserDocManager(userid)
-        if manager.get_doc(doc_id) is None:
-            return {"success": False, "error": f"No saved doc found with id '{doc_id}'. Use list_user_docs for the exact id."}
-        if not manager.delete_doc(doc_id):
-            return {"success": False, "error": f"Couldn't delete '{doc_id}'."}
-        if manager.get_doc(doc_id) is not None:  # verify, don't assume
-            return {"success": False, "error": f"'{doc_id}' is still there after the delete attempt."}
-        return {"success": True, "deleted": doc_id}
-    except Exception as e:
-        print(f"[USER_DOCS] delete failed for userid={userid!r}, doc_id={doc_id!r}: {e}")
-        return {"success": False, "error": f"Failed to delete '{doc_id}': {e}"}
 
 
 EDIT_EXECUTOR_MAX_ATTEMPTS = 3
@@ -2271,7 +2118,7 @@ def _edit_executor_system_prompt() -> str:
     )
 
 
-def edit_file_by_intent(doc_id: str, instruction: str, userid: Optional[str] = None):
+def edit_file_by_intent(path: str, instruction: str, userid: Optional[str] = None):
     """
     Two-step "planner -> executor" edit tool, for weak/small backend models
     that struggle to both DECIDE what to change and correctly retype an
@@ -2298,34 +2145,31 @@ def edit_file_by_intent(doc_id: str, instruction: str, userid: Optional[str] = N
     an "error" if every attempt is exhausted).
     """
     if not userid:
-        yield {"type": "file_result", "success": False, "url": None, "filename": doc_id or "file", "error": "no userid on this session"}
+        yield {"type": "file_result", "success": False, "url": None, "filename": path or "file", "error": "no userid on this session"}
         return
-    if not doc_id:
-        yield {"type": "file_result", "success": False, "url": None, "filename": "file", "error": "no doc_id given"}
+    if not path:
+        yield {"type": "file_result", "success": False, "url": None, "filename": "file", "error": "no path given"}
         return
     if not instruction or not instruction.strip():
-        yield {"type": "file_result", "success": False, "url": None, "filename": doc_id, "error": "no instruction given"}
+        yield {"type": "file_result", "success": False, "url": None, "filename": path, "error": "no instruction given"}
         return
 
-    yield {"type": "status", "text": f"Reading {doc_id}...", "detail": None, "icon": "docs"}
-    try:
-        manager = UserDocManager(userid)
-        doc = manager.get_doc(doc_id)
-    except Exception as e:
-        yield {"type": "file_result", "success": False, "url": None, "filename": doc_id, "error": f"Failed to read '{doc_id}': {e}"}
+    yield {"type": "status", "text": f"Reading {path}...", "detail": None, "icon": "docs"}
+    from gpt2_workspace import workspace_read_text, workspace_write
+    _text, _read_err = workspace_read_text(userid, path)
+    if _text is None:
+        yield {"type": "file_result", "success": False, "url": None, "filename": path, "error": _read_err}
         return
-    if doc is None:
-        yield {"type": "file_result", "success": False, "url": None, "filename": doc_id, "error": f"No saved doc found with id '{doc_id}' for this user."}
-        return
+    doc = {"content": _text}
 
     content = doc.get("content", "")
     if not content:
-        yield {"type": "file_result", "success": False, "url": None, "filename": doc_id, "error": "file is empty, nothing to edit"}
+        yield {"type": "file_result", "success": False, "url": None, "filename": path, "error": "file is empty, nothing to edit"}
         return
 
     messages = [
         {"role": "system", "content": _edit_executor_system_prompt()},
-        {"role": "user", "content": f"FILE CONTENT ({doc_id}):\n\n{content}\n\nINSTRUCTION: {instruction.strip()}"},
+        {"role": "user", "content": f"FILE CONTENT ({path}):\n\n{content}\n\nINSTRUCTION: {instruction.strip()}"},
     ]
 
     feedback = None
@@ -2343,7 +2187,7 @@ def edit_file_by_intent(doc_id: str, instruction: str, userid: Optional[str] = N
             TEXT_PROVIDERS, messages, temperature=0.1, max_tokens=4000,
         )
         if raw is None:
-            yield {"type": "file_result", "success": False, "url": None, "filename": doc_id, "error": "editor model unavailable — try again shortly"}
+            yield {"type": "file_result", "success": False, "url": None, "filename": path, "error": "editor model unavailable — try again shortly"}
             return
 
         messages.append({"role": "assistant", "content": raw})
@@ -2390,7 +2234,7 @@ def edit_file_by_intent(doc_id: str, instruction: str, userid: Optional[str] = N
         # it. This is where the actual file gets read again, patched, and
         # re-uploaded — edit_file() re-validates independently, so there's
         # no risk of a race between this check and the real write.
-        for event in edit_file(doc_id=doc_id, find_text=find_text, replace_text=replace_text, userid=userid):
+        for event in edit_file(path=path, find_text=find_text, replace_text=replace_text, userid=userid):
             yield event
         return
 
@@ -2398,7 +2242,7 @@ def edit_file_by_intent(doc_id: str, instruction: str, userid: Optional[str] = N
         "type": "file_result",
         "success": False,
         "url": None,
-        "filename": doc_id,
+        "filename": path,
         "error": f"Couldn't land a unique edit after {EDIT_EXECUTOR_MAX_ATTEMPTS} attempts — try a more specific instruction, or describe exactly where in the file the change belongs.",
     }
 
@@ -2534,17 +2378,12 @@ def build_file(filename: str, content: str, userid: Optional[str] = None):
     yield {"type": "status", "text": "Uploading file...", "detail": None, "icon": "upload"}
     file_url = _upload_to_supabase(userid or "anonymous", filename, clean_content)
 
-    if file_url and userid:
+    if userid:
         try:
-            manager = UserDocManager(userid)
-            manager.save_doc(
-                filename=filename,
-                content=clean_content,
-                hint=filename,
-                tags=["ai-built-file", filename.split(".")[-1]],
-            )
+            from gpt2_workspace import workspace_write
+            workspace_write(userid, filename, clean_content)   # the ONE file store
         except Exception as e:
-            print(f"[FILEBUILD] failed to register doc reference: {e}")
+            print(f"[FILEBUILD] couldn't save {filename} to the workspace: {e}")
 
     yield {
         "type": "status",
@@ -2617,17 +2456,12 @@ def build_multiple_files(files: list, userid: Optional[str] = None):
         clean_content = _FENCE_RE.sub("", content).strip()
         file_url = _upload_to_supabase(userid or "anonymous", filename, clean_content)
 
-        if file_url and userid:
+        if userid:
             try:
-                manager = UserDocManager(userid)
-                manager.save_doc(
-                    filename=filename,
-                    content=clean_content,
-                    hint=filename,
-                    tags=["ai-built-file", filename.split(".")[-1]],
-                )
+                from gpt2_workspace import workspace_write
+                workspace_write(userid, filename, clean_content)   # the ONE file store
             except Exception as e:
-                print(f"[FILEBUILD] failed to register doc reference for {filename}: {e}")
+                print(f"[FILEBUILD] couldn't save {filename} to the workspace: {e}")
 
         results.append({"success": bool(file_url), "url": file_url, "filename": filename})
 
@@ -2668,9 +2502,8 @@ def build_zip_file(files: list, zip_filename: str, userid: Optional[str] = None)
     {"type": "file_result", "success", "url", "filename"} event — the
     SAME shape build_file() uses, since this produces exactly one
     downloadable file (the archive itself). Zip content is binary, so
-    unlike build_file/build_multiple_files this does NOT register
-    editable content in UserDocManager — edit_file only makes sense on
-    the individual text files, not on a packed archive.
+    unlike build_file/build_multiple_files this does NOT write
+    the archive into the workspace — edit the individual text files instead.
     """
     import zipfile
     import io
@@ -2726,17 +2559,6 @@ def build_zip_file(files: list, zip_filename: str, userid: Optional[str] = None)
     zip_bytes = buffer.getvalue()
     file_url = _upload_bytes_to_supabase(userid or "anonymous", zip_filename, zip_bytes, "application/zip")
 
-    if file_url and userid:
-        try:
-            manager = UserDocManager(userid)
-            manager.save_doc(
-                filename=f"ref_{zip_filename}.md",
-                content=f"Zip archive stored at: {file_url} ({packed} file(s) inside)",
-                hint=zip_filename,
-                tags=["ai-built-file", "zip"],
-            )
-        except Exception as e:
-            print(f"[FILEBUILD] failed to register zip doc reference: {e}")
 
     yield {
         "type": "status",
@@ -2852,17 +2674,6 @@ def remove_background(image_url: str, userid: Optional[str] = None, filename: Op
     yield {"type": "status", "text": "Uploading result...", "detail": None, "icon": "upload"}
     file_url = _upload_bytes_to_supabase(userid or "anonymous", out_filename, final_bytes, "image/png")
 
-    if file_url and userid:
-        try:
-            manager = UserDocManager(userid)
-            manager.save_doc(
-                filename=f"ref_{out_filename}.md",
-                content=f"Background-removed image stored at: {file_url}",
-                hint=out_filename,
-                tags=["ai-built-file", "image"],
-            )
-        except Exception as e:
-            print(f"[REMOVE_BG] failed to register doc reference: {e}")
 
     yield {
         "type": "status",
@@ -2976,17 +2787,6 @@ def create_image(
     yield {"type": "status", "text": "Uploading image...", "detail": None, "icon": "upload"}
     file_url = _upload_bytes_to_supabase(userid or "anonymous", out_filename, image_bytes, "image/png")
 
-    if file_url and userid:
-        try:
-            manager = UserDocManager(userid)
-            manager.save_doc(
-                filename=f"ref_{out_filename}.md",
-                content=f"Generated image stored at: {file_url}",
-                hint=out_filename,
-                tags=["ai-built-file", "image"],
-            )
-        except Exception as e:
-            print(f"[CREATE_IMAGE] failed to register doc reference: {e}")
 
     yield {
         "type": "status",
@@ -3121,18 +2921,12 @@ def build_file_with_continuation(prompt: str, filename: str, userid: Optional[st
     yield {"type": "status", "text": "Uploading file...", "detail": None, "icon": "upload"}
     file_url = _upload_to_supabase(userid or "anonymous", filename, full_content)
 
-    if file_url and userid:
+    if userid:
         try:
-            manager = UserDocManager(userid)
-            manager.save_doc(
-                filename=f"ref_{filename}.md",
-                content=f"File stored at: {file_url}",
-                hint=filename,
-                tags=["ai-built-file", filename.split(".")[-1]],
-                metadata={"supabase_url": file_url, "original_filename": filename},
-            )
+            from gpt2_workspace import workspace_write
+            workspace_write(userid, filename, full_content)   # the ONE file store
         except Exception as e:
-            print(f"[FILEBUILD] failed to register doc reference: {e}")
+            print(f"[FILEBUILD] couldn't save {filename} to the workspace: {e}")
 
     yield {
         "type": "status",

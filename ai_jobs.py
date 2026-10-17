@@ -389,6 +389,9 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
                 "allow_multiple": bool(question.get("allow_multiple")),
                 "allow_other": bool(question.get("allow_other", True)),
             }
+            if question.get("questions"):          # several questions in one sheet (Next button)
+                q["questions"] = question["questions"]
+                q["total"] = question.get("total") or len(question["questions"])
             ref.set(_clean({"status": "asking", "question": q, "text": "", "updatedAt": _now_ms()}), merge=True)
             remember_turn(db, uid, contextual, q["question"] or "")
             print(f"[AI-JOB] asking {req.aiMessageId}: {q['question']!r}")

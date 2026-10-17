@@ -48,10 +48,10 @@ MAX_ASK_QUESTIONS = 3
 
 def ask_user_multi_enabled() -> bool:
     """True once the app's bottom sheet can show several questions with a Next
-    button (set ASK_USER_MULTI=1 on the server then). Until then only ONE
+    button (ON by default; ASK_USER_MULTI=0 turns it off). When off only ONE
     question is sent per sheet — extra questions are asked one at a time."""
     import os
-    return os.environ.get("ASK_USER_MULTI", "0").strip().lower() in ("1", "true", "yes", "on")
+    return os.environ.get("ASK_USER_MULTI", "1").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _normalize_one_question(args: dict) -> Optional[dict]:
@@ -177,7 +177,6 @@ def ask_user(question: str = "", options: Optional[list] = None, allow_multiple:
 
 
 from gpt2_functions import (
-    delete_user_doc,
     search_web,
     search_images,
     _fetch_og_image,
@@ -203,11 +202,6 @@ from gpt2_functions import (
     redisplay_images,
     generate_image,
     is_web_search_enabled,
-    list_user_docs,
-    read_user_doc,
-    read_doc_lines,
-    edit_doc_line,
-    update_user_doc,
 )
 from gpt2_sandbox import run_code
 from gpt2_output import output_files
@@ -221,10 +215,9 @@ from gpt2_workspace import (
     workspace_unzip,
     workspace_github_clone,
     workspace_zip,
+    workspace_copy,
     workspace_edit,
     workspace_edit_by_intent,
-    workspace_import_doc,
-    workspace_export_doc,
 )
 
 # Tools that reach out to the internet on the user's behalf. Every one of
@@ -276,12 +269,6 @@ TOOL_REGISTRY = {
     "schedule_reminder": schedule_reminder,
     "redisplay_images": redisplay_images,
     "generate_image": generate_image,
-    "list_user_docs": list_user_docs,
-    "read_user_doc": read_user_doc,
-    "read_doc_lines": read_doc_lines,
-    "edit_doc_line": edit_doc_line,
-    "update_user_doc": update_user_doc,
-    "delete_user_doc": delete_user_doc,
     "run_code": run_code,
     "ask_user": ask_user,
     # Persistent per-user workspace (gpt2_workspace.py)
@@ -293,12 +280,11 @@ TOOL_REGISTRY = {
     "workspace_unzip": workspace_unzip,
     "workspace_github_clone": workspace_github_clone,
     "workspace_zip": workspace_zip,
+    "workspace_copy": workspace_copy,
     "output_files": output_files,
     "workspace_edit": workspace_edit,
     "workspace_edit_by_intent": workspace_edit_by_intent,
     "workspace_run": workspace_run,
-    "workspace_import_doc": workspace_import_doc,
-    "workspace_export_doc": workspace_export_doc,
 }
 # Short, hand-written purpose lines for the initial manifest only — this is
 # deliberately NOT the full docs. Once the AI picks one, it gets the real
@@ -312,8 +298,8 @@ TOOL_DESCRIPTIONS = {
     "build_file": "Save and upload a file — you write the COMPLETE real file content yourself as the 'content' argument, this just uploads it. Call it once per file; call it multiple times in one turn for multiple files.",
     "build_multiple_files": "Save and upload SEVERAL files in one call — pass files as a list of {\"filename\": ..., \"content\": ...} objects, each with the COMPLETE real content you wrote. Use this instead of calling build_file repeatedly when asked for more than a couple files. Capped at 39 files per call — if you have more, call it again with the rest after.",
     "build_zip_file": "Bundle several files into ONE downloadable .zip archive — same {\"filename\", \"content\"} list shape as build_multiple_files, but packs them into a single zip instead of uploading each separately. Use when the user wants everything as one package.",
-    "edit_file": "Surgically edit ONE existing saved file by exact find/replace — find_text must match exactly once in the file, so re-read it first if unsure. Use this instead of build_file when only part of a file needs to change; do not retype the whole file. Prefer edit_file_by_intent unless you already know the exact current text to find.",
-    "edit_file_by_intent": "Edit ONE existing saved file by describing the change in plain English — e.g. \"change the submit button color to blue\". You do NOT need to know or retype the exact current text; a separate step reads the real file and works out the precise find/replace for you, retrying itself if the first attempt isn't unique. Use this for any edit instead of edit_file/build_file — it's far more reliable when you can't see the file's exact current wording.",
+    "edit_file": "Surgically edit ONE existing workspace file (give its workspace path as `path`) by exact find/replace — find_text must match exactly once in the file, so re-read it first if unsure. Use this instead of build_file when only part of a file needs to change; do not retype the whole file. Prefer edit_file_by_intent unless you already know the exact current text to find.",
+    "edit_file_by_intent": "Edit ONE existing workspace file (give its workspace path as `path`) by describing the change in plain English — e.g. \"change the submit button color to blue\". You do NOT need to know or retype the exact current text; a separate step reads the real file and works out the precise find/replace for you, retrying itself if the first attempt isn't unique. Use this for any edit instead of edit_file/build_file — it's far more reliable when you can't see the file's exact current wording.",
     "remove_background": "Remove the background from an existing image (given its url) and get back a transparent PNG.",
     "create_image": "Draw a real image from simple shapes/text (rectangles, ellipses, lines, polygons, text) — describe what to draw as a list of operations, this renders and uploads the actual image.",
     "redisplay_file": "Re-show a file you already built/uploaded earlier in this conversation, using its real filename + url — does not rebuild or re-upload anything.",
@@ -331,14 +317,8 @@ TOOL_DESCRIPTIONS = {
     "schedule_reminder": "Schedule a push-notification reminder for the user at a specific future time.",
     "redisplay_images": "Re-render a gallery of images already found earlier in this conversation, without searching again.",
     "generate_image": "Generate a brand-new AI image from a text description and show it in a real gallery, same as search_images.",
-    "run_code": "Actually execute code you wrote (python/javascript/bash) in a sandbox and get back real stdout/stderr/exit_code — use this whenever the user asks you to run/execute/test code, not just to verify build_file's output. Supports an optional packages list (python only) to auto-install third-party imports like numpy/requests before running — no separate pip install step needed. To READ files the user already has, pass input_files=[workspace paths/folders or saved-doc ids] — they are copied into ./inputs/ for that run (open('inputs/data.csv')); without it the code starts in an EMPTY folder and cannot see any workspace or saved file. For a whole project with its own files/tests use workspace_run. To produce a real file (audio, image, pdf, zip, csv, etc.), write it into the ./outputs/ folder from your code, e.g. open('outputs/tone.wav','wb'); every file saved there lands in your workspace under outputs/ and is listed in `saved_to_workspace` — it is NOT shown to the user until you call output_files with those paths. Never claim the user has a file unless output_files returned it.",
+    "run_code": "Actually execute code you wrote (python/javascript/bash) in a sandbox and get back real stdout/stderr/exit_code — use this whenever the user asks you to run/execute/test code, not just to verify build_file's output. Supports an optional packages list (python only) to auto-install third-party imports like numpy/requests before running — no separate pip install step needed. To READ files the user already has, pass input_files=[workspace paths/folders] — they are copied into ./inputs/ for that run (open('inputs/data.csv')); without it the code starts in an EMPTY folder and cannot see any workspace file. For a whole project with its own files/tests use workspace_run. To produce a real file (audio, image, pdf, zip, csv, etc.), write it into the ./outputs/ folder from your code, e.g. open('outputs/tone.wav','wb'); every file saved there lands in your workspace under outputs/ and is listed in `saved_to_workspace` — it is NOT shown to the user until you call output_files with those paths. Never claim the user has a file unless output_files returned it.",
     "ask_user": "Ask the user a quick multiple-choice question in a bottom sheet in their app (2-6 options, optional 'Other' box). Pass questions=[...] (max 3) to ask several related questions in one sheet; if the app can only show one, only the first appears, so put the most important first and ask the next after they answer. Use it when the request is genuinely ambiguous and a wrong guess would waste their time. The turn stops when you call it and their answer comes back as their next message — so write nothing else in that reply.",
-    "list_user_docs": "List all files the user has saved/uploaded (filename, hint, tags) — use this to find the right doc_id when the user says 'my file' without naming it.",
-    "read_user_doc": "Read a specific saved file's full content by its doc_id (filename).",
-    "read_doc_lines": "Read a specific line range from a saved file, with the total line count — use before editing a specific line.",
-    "edit_doc_line": "Replace one specific line (by line number) in a saved file and re-save it.",
-    "update_user_doc": "Overwrite a whole saved file with new content, or create a new saved file.",
-    "delete_user_doc": "Permanently DELETE one saved doc by its exact doc_id. Only when the user clearly asks to delete/remove that file — it can't be undone (confirm with ask_user if it is unclear which file). Only claim it was deleted if the result says success. Workspace files are deleted with workspace_delete instead.",
     "workspace_github_clone": "Download a WHOLE GitHub repo (owner/name or URL, optional ref/branch) into your workspace — no truncation. Use this instead of fetch_github_file whenever you need more than one small file. Then explore it with workspace_list / workspace_grep / workspace_read.",
     "workspace_list": "Show the workspace file tree (or one folder in it) with file sizes. Start here after a clone/unzip to see what exists.",
     "workspace_grep": "Regex-search all text files in the workspace (or a folder) and get file:line matches. Use it to FIND code in a big repo, then workspace_read that range.",
@@ -350,9 +330,8 @@ TOOL_DESCRIPTIONS = {
     "workspace_edit": "Change PART of a workspace file by exact find/replace (find_text must match once, or replace_all=true) — never retype a whole file for a small change. On a miss it tells you which line to re-read.",
     "workspace_edit_by_intent": "Edit ONE workspace file by describing the change in plain English — e.g. \"make the header text bigger\". You do NOT need the exact current text; a separate step reads the real file and works out the precise edit (retrying itself if not unique). Use this instead of workspace_edit when you can't see the file's exact wording. Files over ~60,000 characters: workspace_read + workspace_edit instead.",
     "workspace_run": "Run a shell command INSIDE a workspace project (e.g. \"pytest -q\", \"python app.py\", \"ls\") and get real stdout/stderr/exit_code. Runs on a copy of `cwd`; files it creates/changes are copied back and listed. Optional packages=[...] pip installs first. 60s default, 180s max. Use this (not run_code) whenever the code needs the workspace's files.",
-    "workspace_import_doc": "Copy a saved doc (from build_file / uploads / list_user_docs) into the workspace so you can workspace_edit or workspace_run it.",
-    "workspace_export_doc": "Save a workspace text file into the saved-docs store so list_user_docs / edit_file / edit_doc_line can see it.",
     "result_more": "Get the NEXT part of a tool result that ended with '[truncated ... result_id ...]'. Args: result_id, offset (use the offset the note gives you).",
+    "workspace_copy": "Copy a file or folder inside the workspace — mainly from uploads/ (where the user's attachments land) into the main workspace so you can edit or run it. The original stays in uploads/. Args: src, dest (optional, defaults to the same name at the top level).",
     "workspace_zip": "Pack a workspace folder (or everything) into ONE .zip and get a download URL (then pass that URL to output_files to show it).",
 }
 
