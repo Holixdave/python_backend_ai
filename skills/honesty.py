@@ -28,19 +28,24 @@ _VERBS = (r"created|written|wrote|saved|updated|edited|generated|built|migrated|
 _FILE_NOUNS = (r"files?|documents?|docs?|project|workspace|repo|repository|website|"
                r"script|folder|\.py|\.html|\.css|\.js|\.txt|\.wav|\.zip|\.md")
 
+_FILE_NOUNS_PASSIVE = r"files?|charts?|images?|documents?|docs?|reports?|summary|folder|workspace|script"
+
 CLAIMS = {
     # "I've created/updated ... the file/project/workspace"
     "write": re.compile(
-        rf"\bI(?:'ve|\s+have)?\s+(?:just\s+|now\s+|successfully\s+|fully\s+)*(?:{_VERBS})\b[^.\n]{{0,80}}?(?:{_FILE_NOUNS})\b",
+        rf"\bI(?:'ve|\s+have)?\s+(?:just\s+|now\s+|successfully\s+|fully\s+)*(?:{_VERBS})\b[^.\n]{{0,80}}?(?:{_FILE_NOUNS})\b"
+        rf"|\b(?:{_FILE_NOUNS_PASSIVE})\b[^.\n]{{0,40}}\b(?:has|have|had)\s+been\s+(?:successfully\s+)?(?:created|generated|saved|written|updated|built)\b",
         re.I),
     # "I ran / I tested / tests passed / test suite ran"
     "run": re.compile(
         r"\bI(?:'ve|\s+have)?\s+(?:just\s+|now\s+|successfully\s+)*(?:ran|run|executed|tested|verified)\b",
         re.I),
-    # "download it above / in the file card above / see the file above"
+    # "download it above / in the file card above / see the file above / I am now sending them to you"
     "deliver": re.compile(
         r"\b(?:download|find|access|see|get|grab|open)\b[^.\n]{0,60}?\b(?:above|file card|link below)\b"
-        r"|\bfile cards?\s+above\b|\b(?:attached|delivered)\s+(?:above|below)\b",
+        r"|\bfile cards?\s+above\b|\b(?:attached|delivered)\s+(?:above|below)\b"
+        r"|\bI(?:'m|\s+am)(?:\s+now)?\s+(?:delivering|sending|attaching)\b"
+        r"|\b(?:files?|charts?|images?|documents?|docs?|reports?)\b[^.\n]{0,40}\b(?:has|have|had)\s+been\s+(?:successfully\s+)?(?:delivered|sent|attached)\b",
         re.I),
     # status boasts that need a real run behind them
     "verified": re.compile(
