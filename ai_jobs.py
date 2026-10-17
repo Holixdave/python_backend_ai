@@ -44,6 +44,7 @@ import firebase_config  # noqa: F401 (initialises firebase_admin before firestor
 from database import SessionLocal
 from gpt2_functions import is_friendly_failure, premium_from_user_doc
 from gpt2_test import ask_gpt2_stream
+from leak_guard import scrub_internal
 from memory_service import build_memory, remember_turn
 
 router = APIRouter()
@@ -331,7 +332,8 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
         if not force and now - last_block_write < STEP_WRITE_INTERVAL:
             return
         last_block_write = now
-        _safe_update(ref, {"blocks": _clean(live_blocks), "updatedAt": _now_ms()})
+        shown = [dict(b, text=scrub_internal(b.get("text") or "")) if b.get("type") == "text" else b for b in live_blocks]
+        _safe_update(ref, {"blocks": _clean(shown), "updatedAt": _now_ms()})
 
     def apply_stream_event(event: dict) -> bool:
         """Folds one text/tool_call/tool_result/block event into live_blocks. True if it was one."""
@@ -344,12 +346,14 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
             push_blocks()
         elif et == "tool_call":
             live_blocks.append({"type": "tool", "id": event.get("id"), "tool": event.get("tool"),
-                                "text": event.get("text") or "", "icon": event.get("icon"), "ok": None})
+                                "text": event.get("text") or "", "icon": event.get("icon"), "ok": None,
+                                "input": event.get("input"), "output": None})
             push_blocks(force=True)
         elif et == "tool_result":
             for b in live_blocks:
                 if b.get("type") == "tool" and b.get("id") == event.get("id"):
                     b["ok"] = bool(event.get("ok"))
+                    b["output"] = event.get("output")
             push_blocks(force=True)
         elif et == "block":
             kind = event.get("kind")
@@ -371,7 +375,9 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
     question = None
     memory_reply = None
     contextual = _contextual_query(req, query)
-    model_query = (ADVANCED_TAG + contextual) if premium else contextual
+    # The premium directive is a SYSTEM-prompt rule now (premium_mode below). It must never be
+    # glued onto the user's message: the model then treats it as user text and repeats it.
+    model_query = contextual
     try:
         history = build_memory(db, uid)
         print(f"[AI-JOB] start {req.aiMessageId} uid={uid!r} premium={premium} q={query[:80]!r}")
@@ -394,6 +400,7 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
                 file_urls=req.fileUrls or None,
                 file_names=req.fileNames or None,
                 userid=uid,
+                premium_mode=premium,
             ):
                 if state["cancel"]:
                     break
@@ -408,7 +415,7 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
                     push_steps(force=bool(event.get("tool")) or event.get("icon") in ("image", "sandbox"))
                 elif etype == "think":
                     steps.append({
-                        "text": event.get("text") or "", "detail": None,
+                        "text": scrub_internal(event.get("text") or ""), "detail": None,
                         "icon": event.get("icon"), "kind": "think", "tool": None,
                     })
                     push_steps()

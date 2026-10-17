@@ -504,7 +504,7 @@ from gpt2_tools import (
 # around the dynamic manifest) moved to prompts.py. The manifest itself is
 # still generated at import time here since build_tool_manifest() is a
 # real function call, not static text.
-from prompts import NATIVE_TOOL_HINT
+from prompts import NATIVE_TOOL_HINT, OUTPUT_DISCIPLINE, PREMIUM_MODE_PROMPT
 from gpt2_native import native_enabled, run_native_turn, build_tool_schemas, friendly_label
 from prompts import SEARCH_DISCIPLINE_HINT, FILE_STORES_HINT, OUTPUT_FILES_HINT, SUGGESTION_HINT, TOOL_USE_HINT_TAIL, MEMORY_TRUNCATED_NOTE, INLINE_VISUAL_HINT, NOTE_CALLOUT_HINT
 
@@ -523,6 +523,7 @@ def ask_gpt2(
     userid: Optional[str] = None,
     extra_system_prompt: Optional[str] = None,
     copilot_mode: bool = False,
+    premium_mode: bool = False,
 ) -> dict:
     """
     Non-streaming entry point — unchanged signature/behaviour for existing
@@ -532,7 +533,7 @@ def ask_gpt2(
     Internally just drains _ask_gpt2_core() and keeps the final result.
     """
     final = None
-    for event in _ask_gpt2_core(prompt, history=history, image_urls=image_urls, file_urls=file_urls, file_names=file_names, userid=userid, extra_system_prompt=extra_system_prompt, copilot_mode=copilot_mode):
+    for event in _ask_gpt2_core(prompt, history=history, image_urls=image_urls, file_urls=file_urls, file_names=file_names, userid=userid, extra_system_prompt=extra_system_prompt, copilot_mode=copilot_mode, premium_mode=premium_mode):
         if event["type"] == "final":
             final = event
     return {
@@ -554,6 +555,7 @@ def ask_gpt2_stream(
     userid: Optional[str] = None,
     extra_system_prompt: Optional[str] = None,
     copilot_mode: bool = False,
+    premium_mode: bool = False,
 ):
     """
     Streaming entry point for the /ai-query-stream SSE endpoint. Yields the
@@ -562,7 +564,7 @@ def ask_gpt2_stream(
     copilot_mode are optional and default to None/False, so existing
     callers are unaffected.
     """
-    yield from _ask_gpt2_core(prompt, history=history, image_urls=image_urls, file_urls=file_urls, file_names=file_names, userid=userid, extra_system_prompt=extra_system_prompt, copilot_mode=copilot_mode)
+    yield from _ask_gpt2_core(prompt, history=history, image_urls=image_urls, file_urls=file_urls, file_names=file_names, userid=userid, extra_system_prompt=extra_system_prompt, copilot_mode=copilot_mode, premium_mode=premium_mode)
 
 
 def _sources_from_tool_result(tool_name: str, tool_result: str, ai_args: dict) -> list:
@@ -637,6 +639,7 @@ def _ask_gpt2_core(
     userid: Optional[str] = None,
     extra_system_prompt: Optional[str] = None,
     copilot_mode: bool = False,
+    premium_mode: bool = False,
 ):
     """
     Shared generator. extra_system_prompt (optional, default None) lets a
@@ -933,6 +936,12 @@ def _ask_gpt2_core(
             "it for how to format actions/edits in your reply:]\n\n"
             + extra_system_prompt
         )
+
+    # Always-on privacy / narration rules; premium style lives here too (not in the user's message).
+    if not copilot_mode:
+        current_identity += OUTPUT_DISCIPLINE
+        if premium_mode:
+            current_identity += PREMIUM_MODE_PROMPT
 
     messages = [{"role": "system", "content": current_identity}]
     messages.extend(lean_history)

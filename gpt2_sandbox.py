@@ -36,6 +36,20 @@ import time
 import uuid
 from typing import Optional
 
+# gRPC / event-engine libraries print these to stderr and sometimes abort at interpreter
+# shutdown (exit code != 0) even though the user's code finished fine. They made good runs
+# show up as "Run failed" (and the AI then re-ran the same code a second time).
+_RUNTIME_NOISE = re.compile(
+    r"^.*(ev_epoll1_linux\.cc|epoll_wait error|epoll_ctl failed|\(event_engine\)|"
+    r"fork_posix\.cc|Other threads are currently calling into gRPC|"
+    r"All log messages before absl::InitializeLog).*$\n?",
+    re.M,
+)
+
+
+def _strip_runtime_noise(text: str) -> str:
+    return _RUNTIME_NOISE.sub("", text or "").strip()
+
 # ---------------------------------------------------------------------------
 # LIMITS — deliberately conservative. Raise per-call via the `timeout_s`
 # arg if a real use case needs more, never by changing these defaults.
@@ -629,17 +643,22 @@ def run_code(code: str, language: str = "python", timeout_s: int = DEFAULT_TIMEO
             if outcome.get("ok"):
                 print(f"[SANDBOX] ran {lang} via {link['name']} — exit={outcome.get('exit_code')}, "
                       f"timed_out={outcome.get('timed_out')}, userid={userid!r}")
+                raw_err = outcome.get("stderr", "") or ""
+                clean_err = _strip_runtime_noise(raw_err)
+                noise_only = bool(raw_err.strip()) and not clean_err
+                ran_ok = (outcome.get("exit_code") == 0) or (noise_only and outcome.get("exit_code") is not None)
+                ran_ok = ran_ok and not outcome.get("timed_out")
                 output_files = []
-                if outcome.get("exit_code") == 0 and not outcome.get("timed_out"):
+                if ran_ok:
                     output_files = _collect_outputs_into_workspace(run_dir, userid)
                 yield {
                     "type": "code_result",
-                    "success": (outcome.get("exit_code") == 0) and not outcome.get("timed_out"),
+                    "success": ran_ok,
                     "engine": link["name"],
                     "language": lang,
                     "stdout": outcome.get("stdout", ""),
-                    "stderr": outcome.get("stderr", ""),
-                    "exit_code": outcome.get("exit_code"),
+                    "stderr": clean_err,
+                    "exit_code": 0 if (noise_only and ran_ok) else outcome.get("exit_code"),
                     "timed_out": outcome.get("timed_out", False),
                     "duration_s": outcome.get("duration_s"),
                     "inputs": staged_inputs,               # files copied into ./inputs/ for this run

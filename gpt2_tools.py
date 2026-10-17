@@ -243,6 +243,14 @@ WEB_TOOLS = {
 # "All of em" per the current build phase — narrow this later if any of
 # these turn out to be too easy to misuse standalone.
 # ---------------------------------------------------------------------------
+from publish_pages import publish_page as _publish_page_impl
+
+
+def publish_page_tool(html: str, title: str = "page") -> dict:
+    """Publish one self-contained HTML page to a public link (GitHub Pages)."""
+    return _publish_page_impl(html, title)
+
+
 TOOL_REGISTRY = {
     "search_web": search_web,
     "search_images": search_images,
@@ -277,6 +285,7 @@ TOOL_REGISTRY = {
     "workspace_edit": workspace_edit,
     "workspace_edit_by_intent": workspace_edit_by_intent,
     "workspace_run": workspace_run,
+    "publish_page": publish_page_tool,
 }
 # Short, hand-written purpose lines for the initial manifest only — this is
 # deliberately NOT the full docs. Once the AI picks one, it gets the real
@@ -309,12 +318,13 @@ TOOL_DESCRIPTIONS = {
     "workspace_write": "Create or overwrite a text file in the workspace (path + COMPLETE content you wrote yourself). Pass deliver=true to ALSO send it to the user as a download card — this is how you hand over a file (call once per file).",
     "workspace_delete": "Delete a file or folder from the workspace.",
     "workspace_unzip": "Open a .zip that is in the workspace and extract it into a folder. (A .zip the user attaches is already saved and unzipped for you — just workspace_list it.)",
-    "output_files": "DELIVER existing files to the user — nothing from run_code or the workspace is sent automatically, you choose. files = list of workspace paths (e.g. \"outputs/chart.png\") or http(s) URLs (e.g. from generate_image or earlier in the chat), mixed freely. Images show in an image gallery, other files as download cards, right where you call this. Only claim files that come back in the result.",
+    "output_files": "DELIVER existing files to the user — nothing from run_code or the workspace is sent automatically, you choose. files = list of workspace paths (e.g. \"outputs/chart.png\") or http(s) URLs (e.g. from generate_image or earlier in the chat), mixed freely. Images show in an image gallery, other files as download cards, right where you call this. Do NOT pass images that search_images or generate_image already showed — those are displayed automatically. Only claim files that come back in the result.",
     "workspace_edit": "Change PART of a workspace file by exact find/replace (find_text must match once, or replace_all=true) — never retype a whole file for a small change. On a miss it tells you which line to re-read.",
     "workspace_edit_by_intent": "Edit ONE workspace file by describing the change in plain English — e.g. \"make the header text bigger\". You do NOT need the exact current text; a separate step reads the real file and works out the precise edit (retrying itself if not unique). Use this instead of workspace_edit when you can't see the file's exact wording. Files over ~60,000 characters: workspace_read + workspace_edit instead.",
     "workspace_run": "Run a shell command INSIDE a workspace project (e.g. \"pytest -q\", \"python app.py\", \"ls\") and get real stdout/stderr/exit_code. Runs on a copy of `cwd`; files it creates/changes are copied back and listed. Optional packages=[...] pip installs first. 60s default, 180s max. Use this (not run_code) whenever the code needs the workspace's files.",
     "result_more": "Get the NEXT part of a tool result that ended with '[truncated ... result_id ...]'. Args: result_id, offset (use the offset the note gives you).",
     "workspace_copy": "Copy a file or folder inside the workspace — mainly from uploads/ (where the user's attachments land) into the main workspace so you can edit or run it. The original stays in uploads/. Args: src, dest (optional, defaults to the same name at the top level).",
+    "publish_page": "Publish ONE self-contained HTML page (all CSS/JS inline) to a public https link the user can open and share. ONLY call this after the user has said yes to publishing. Args: html (complete page), title (short). Returns the public url.",
     "workspace_zip": "Pack a workspace folder (or everything) into ONE .zip and get a download URL (then pass that URL to output_files to show it).",
 }
 

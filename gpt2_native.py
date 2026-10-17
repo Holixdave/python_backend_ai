@@ -216,6 +216,9 @@ class TextGate:
 _THINK_RE = re.compile(r"<think>.*?</think>", re.S | re.I)
 
 
+from leak_guard import scrub_internal
+
+
 def clean_round_text(raw: str) -> str:
     """Final text of one model turn: no <think> blocks / leaked reasoning debris."""
     t = _THINK_RE.sub("", raw or "")
@@ -324,8 +327,8 @@ def _short(v, n=40) -> str:
 
 
 _LABELS = {
-    "search_web": lambda a: f"Searching: {_short(a.get('query'))}" if a.get("query") else "Searching the web",
-    "search_images": lambda a: f"Finding images: {_short(a.get('query'))}" if a.get("query") else "Finding images",
+    "search_web": lambda a: f"Searching for {_short(a.get('query'))}" if a.get("query") else "Searching the web",
+    "search_images": lambda a: f"Searching images for {_short(a.get('query'))}" if a.get("query") else "Searching images",
     "generate_image": lambda a: "Generating an image",
     "create_image": lambda a: "Drawing an image",
     "remove_background": lambda a: "Removing the background",
@@ -338,7 +341,8 @@ _LABELS = {
     "run_code": lambda a: f"Running {a.get('language') or 'python'} code",
     "workspace_list": lambda a: f"Looking in {_short(a.get('path') or 'your workspace')}",
     "workspace_read": lambda a: f"Reading {_short(a.get('path'))}",
-    "workspace_write": lambda a: f"Writing {_short(a.get('path'))}",
+    "workspace_write": lambda a: f"Creating {_short(a.get('path'))}",
+    "publish_page": lambda a: f"Publishing {_short(a.get('title') or 'page')}",
     "workspace_edit": lambda a: f"Editing {_short(a.get('path'))}",
     "workspace_edit_by_intent": lambda a: f"Editing {_short(a.get('path'))}",
     "workspace_delete": lambda a: f"Deleting {_short(a.get('path'))}",
@@ -359,6 +363,44 @@ _LABELS = {
 }
 
 
+_INPUT_KEYS = ("code", "query", "command", "url", "pattern", "path", "prompt", "title")
+
+
+def tool_input_preview(tool: str, args: dict, cap: int = 6000) -> str:
+    """The thing the tool was given (python code, search text, path…) for the tap-to-open card."""
+    args = args or {}
+    if tool == "workspace_write":
+        return _short(args.get("path"), 200)
+    if tool == "publish_page":
+        return _short(args.get("title"), 200)
+    for k in _INPUT_KEYS:
+        v = args.get(k)
+        if isinstance(v, str) and v.strip():
+            return v if len(v) <= cap else v[:cap] + "\n…"
+    return ""
+
+
+def tool_output_preview(tool: str, ok: bool, result_str: str, cap: int = 1500) -> str:
+    """Short, human-readable result line(s) for the tap-to-open card."""
+    data = _loads(result_str)
+    if tool == "run_code" and isinstance(data, dict):
+        out = (data.get("stdout") or "").strip()
+        err = (data.get("stderr") or "").strip()
+        text = out if ok and out else (err or out)
+        return text[:cap]
+    if isinstance(data, list):
+        return f"{len(data)} result{'s' if len(data) != 1 else ''}"
+    if isinstance(data, dict):
+        if data.get("error") and not ok:
+            return str(data["error"])[:cap]
+        files = data.get("files") or data.get("delivered")
+        if isinstance(files, list) and files:
+            return ", ".join(str(f.get("filename") or f.get("url"))[:60] for f in files if isinstance(f, dict))[:cap]
+        if data.get("url"):
+            return str(data["url"])[:cap]
+    return (result_str or "")[:cap]
+
+
 def friendly_label(tool: str, args: dict) -> str:
     fn = _LABELS.get(tool)
     try:
@@ -377,15 +419,37 @@ def _loads(s):
         return None
 
 
+_IMAGE_URL_HINTS = (
+    "/crawler/media", "lookaside.fbsbx.com", "fbcdn.net", "cdninstagram.com", "encrypted-tbn",
+    "gstatic.com/images", "googleusercontent.com", "pbs.twimg.com", "images.unsplash.com",
+    "i.pinimg.com", "upload.wikimedia.org", "/image/", "/images/", "/media/",
+)
+
+
 def _is_image(name: str) -> bool:
-    return os.path.splitext((name or "").lower().split("?")[0])[1] in IMAGE_EXTS
+    low = (name or "").lower()
+    ext = os.path.splitext(low.split("?")[0])[1]
+    if ext in IMAGE_EXTS:
+        return True
+    if ext in (".pdf", ".zip", ".wav", ".mp3", ".mp4", ".txt", ".json", ".csv", ".docx", ".xlsx", ".html", ".py", ".js"):
+        return False                                    # a known non-image type is never an image
+    return low.startswith("http") and any(h in low for h in _IMAGE_URL_HINTS)
 
 
 def _image_item(url, title="", generated=False):
     return {"image": url, "thumbnail": url, "title": title or "", "source": "", "generated": generated}
 
 
-def blocks_from_result(tool: str, args: dict, result_str: str, ok: bool) -> list:
+def _nice_name(name, url: str) -> str:
+    """A real filename for the card — never a URL path like COM/LOOKASIDE/CRAWLER/MEDIA/."""
+    name = (name or "").strip()
+    if name and "/" not in name and not name.lower().startswith("http"):
+        return name
+    tail = os.path.basename((url or "").split("?")[0].rstrip("/")) or "file"
+    return tail[:60]
+
+
+def blocks_from_result(tool: str, args: dict, result_str: str, ok: bool, shown_images: Optional[set] = None) -> list:
     """Visible blocks (images / file cards / code run) a tool result produces. Sources are
     handled separately (they need de-duplication across the whole turn)."""
     if not ok:
@@ -399,11 +463,13 @@ def blocks_from_result(tool: str, args: dict, result_str: str, ok: bool) -> list
             if not isinstance(f, dict) or not f.get("url"):
                 continue
             name = f.get("filename") or ""
-            (imgs if (f.get("kind") == "image" or _is_image(name)) else others).append(f)
+            if shown_images and f["url"] in shown_images:
+                continue                                  # already in a gallery above — don't repeat it as a file card
+            (imgs if (f.get("kind") == "image" or _is_image(name) or _is_image(f["url"])) else others).append(f)
         if imgs:
             out.append({"kind": "images", "images": [_image_item(f["url"], f.get("filename")) for f in imgs]})
         for f in others:
-            out.append({"kind": "file", "file": {"filename": f.get("filename") or "file", "url": f["url"]}})
+            out.append({"kind": "file", "file": {"filename": _nice_name(f.get("filename"), f["url"]), "url": f["url"]}})
 
     if tool == "search_images" and isinstance(data, list):
         imgs = [d for d in data if isinstance(d, dict) and d.get("image")]
@@ -526,21 +592,25 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
             state["tools_called"].append(name)
             info = describe_call(name, args)
             chip = {"type": "tool", "id": cid, "tool": name, "text": info.get("text") or name,
-                    "icon": info.get("icon") or "tool", "ok": None}
+                    "icon": info.get("icon") or "tool", "ok": None,
+                    "input": tool_input_preview(name, args), "output": None}
             blocks.append(chip)
             yield {"type": "tool_call", "id": cid, "tool": name, "args": info.get("args", args),
-                   "text": chip["text"], "icon": chip["icon"], "call": info.get("call")}
+                   "text": chip["text"], "icon": chip["icon"], "call": info.get("call"), "input": chip["input"]}
 
             if bad_args:
                 ok, result = False, bad_args
             else:
                 ok, result = execute(name, args, session_context)
             chip["ok"] = bool(ok)
+            chip["output"] = tool_output_preview(name, bool(ok), result)
             if ok:
                 state["tools_ok"].append(name)
-            yield {"type": "tool_result", "id": cid, "tool": name, "ok": bool(ok), "summary": (result or "")[:300]}
+            yield {"type": "tool_result", "id": cid, "tool": name, "ok": bool(ok), "summary": (result or "")[:300],
+                   "output": chip["output"]}
 
-            new_blocks = blocks_from_result(name, args, result, ok)
+            shown_urls = {i.get("image") for i in state["image_results"] if isinstance(i, dict)}
+            new_blocks = blocks_from_result(name, args, result, ok, shown_urls)
             if ok and sources_fn:
                 fresh = []
                 for s in (sources_fn(name, result, args) or []):
@@ -578,7 +648,7 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
     for i, b in enumerate(blocks):
         if b["type"] != "text":
             continue
-        t = strip_markers(b["text"])
+        t = scrub_internal(strip_markers(b["text"]))
         if i == last_text:
             t, suggestions = parse_suggestions(t)
             if post_process:
