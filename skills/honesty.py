@@ -15,9 +15,8 @@ PRIORITY = 10
 # Tools that really change/produce files or run code, grouped by what they prove.
 WRITE_TOOLS = {
     "workspace_write", "workspace_edit", "workspace_edit_by_intent", "workspace_delete", "workspace_unzip",
-    "delete_user_doc",
-    "workspace_zip", "workspace_github_clone", "workspace_export_doc",
-    "update_user_doc", "edit_file", "edit_file_by_intent", "edit_doc_line",
+    "workspace_zip", "workspace_github_clone", "workspace_copy",
+    "edit_file", "edit_file_by_intent",
     "build_file", "output_files", "generate_image",
 }
 RUN_TOOLS = {"run_code", "workspace_run"}
