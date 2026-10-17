@@ -152,15 +152,33 @@ def build_tool_schemas(registry: dict, descriptions: dict, injected: set, only: 
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. LIVE TEXT GATE — streams answer text, but never leaks <think> or <<tags>>
+# 2. LIVE TEXT GATE — streams answer text, but never leaks reasoning tags or <<tags>>
 # ─────────────────────────────────────────────────────────────────────────────
-_PARTIAL_MARKER = re.compile(r"(<{1,2}|<t(h(i(n(k)?)?)?)?|</(t(h(i(n(k)?)?)?)?)?)$", re.I)
+from leak_guard import (  # noqa: E402  (kept next to its only users)
+    scrub_internal, repair_mojibake, strip_reasoning,
+    THINK_OPEN_RE, THINK_CLOSE_RE, THINK_BLOCK_RE, THINK_TAG_LITERALS, THINK_TAG_MAX_LEN,
+)
+
+
+def _partial_start(buf: str) -> int:
+    """Index where an unfinished '<<' or reasoning tag ('<tho', '</thin' ...) begins at the very
+    end of buf — that tail is held back until the next chunk shows what it is. -1 if none."""
+    lt = buf.rfind("<")
+    if lt == -1:
+        return -1
+    if lt > 0 and buf[lt - 1] == "<":          # a trailing '<<' (suggestion marker) is held whole
+        lt -= 1
+    tail = buf[lt:].lower()
+    if tail == "<<" or any(t.startswith(tail) for t in THINK_TAG_LITERALS):
+        return lt
+    return -1
 
 
 class TextGate:
     """feed(delta) -> text that is safe to show NOW. Everything from the first '<<'
-    (suggestion / inline-visual tags) is withheld until the turn ends; <think>
-    blocks are dropped. `raw` keeps the full unfiltered text for final parsing."""
+    (suggestion / inline-visual tags) is withheld until the turn ends; reasoning blocks
+    (<think>, <thought>, <thinking>, <reasoning> ...) are dropped. `raw` keeps the full
+    unfiltered text for final parsing."""
 
     def __init__(self):
         self.raw = ""
@@ -176,18 +194,18 @@ class TextGate:
         out = []
         while True:
             if self._in_think:
-                j = self._buf.lower().find("</think>")
-                if j == -1:
-                    self._buf = self._buf[-8:]
+                m = THINK_CLOSE_RE.search(self._buf)
+                if not m:                                   # still inside: keep only what could start a closer
+                    self._buf = self._buf[-THINK_TAG_MAX_LEN:]
                     break
-                self._buf = self._buf[j + 8:]
+                self._buf = self._buf[m.end():]
                 self._in_think = False
                 continue
-            low = self._buf.lower()
-            i, k = low.find("<think>"), self._buf.find("<<")
-            if i != -1 and (k == -1 or i < k):
-                out.append(self._buf[:i])
-                self._buf = self._buf[i + 7:]
+            o = THINK_OPEN_RE.search(self._buf)
+            k = self._buf.find("<<")
+            if o and (k == -1 or o.start() < k):
+                out.append(self._buf[:o.start()])
+                self._buf = self._buf[o.end():]
                 self._in_think = True
                 continue
             if k != -1:
@@ -195,10 +213,10 @@ class TextGate:
                 self._buf = ""
                 self._held = True
                 break
-            m = _PARTIAL_MARKER.search(self._buf)
-            if m:
-                out.append(self._buf[:m.start()])
-                self._buf = self._buf[m.start():]
+            ps = _partial_start(self._buf)
+            if ps != -1:
+                out.append(self._buf[:ps])
+                self._buf = self._buf[ps:]
             else:
                 out.append(self._buf)
                 self._buf = ""
@@ -213,39 +231,92 @@ class TextGate:
         return rest
 
 
-_THINK_RE = re.compile(r"<think>.*?</think>", re.S | re.I)
-
-
-from leak_guard import scrub_internal
+_THINK_RE = THINK_BLOCK_RE          # old name, kept so nothing importing it breaks
 
 
 def clean_round_text(raw: str) -> str:
-    """Final text of one model turn: no <think> blocks / leaked reasoning debris."""
-    t = _THINK_RE.sub("", raw or "")
-    if "</think>" in t.lower():
-        t = re.split(r"</think>", t, flags=re.I)[-1]
-    return t.strip()
+    """Final text of one model turn: no reasoning blocks / leaked reasoning debris."""
+    return repair_mojibake(strip_reasoning(raw))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. STREAMING CHAT — one provider after another, until one works
+# 3. STREAMING CHAT — one provider after another; if one dies MID-ANSWER the next one
+#    carries on from the exact words the user already saw
 # ─────────────────────────────────────────────────────────────────────────────
+CONTINUE_PROMPT = (
+    "Continue your previous reply from exactly the point where it stopped. Do not repeat anything "
+    "already written, do not greet, do not apologize and do not mention any interruption. If the "
+    "last sentence was cut off, finish it mid-sentence. Keep the same language, tone and formatting."
+)
+
+
+class _Stitcher:
+    """Glues a continuation onto words the user already saw. The first ~160 characters of the new
+    model's text are held briefly so any words it repeats from the end of `seen` can be dropped —
+    after that everything passes straight through."""
+    HOLD = 160
+
+    def __init__(self, seen: str):
+        self._tail = seen[-200:]
+        self._buf = ""
+        self._open = False
+
+    def feed(self, delta: str) -> str:
+        if self._open:
+            return delta
+        self._buf += delta
+        return self._release() if len(self._buf) >= self.HOLD else ""
+
+    def flush(self) -> str:
+        return "" if self._open else self._release()
+
+    def _release(self) -> str:
+        self._open = True
+        buf, self._buf = self._buf, ""
+        for k in range(min(len(self._tail), len(buf)), 7, -1):
+            if self._tail.endswith(buf[:k]):
+                return buf[k:]
+        return buf
+
+
+def _valid_calls(calls: list) -> list:
+    """Tool calls whose arguments are complete JSON — a call cut off mid-arguments is useless."""
+    good = []
+    for c in calls:
+        try:
+            json.loads(c.get("arguments") or "{}")
+            good.append(c)
+        except Exception:
+            pass
+    return good
+
+
 def stream_chat(providers: list, messages: list, tools: Optional[list], *, temperature: float,
                 max_tokens: int, timeout: int = 120, max_retries: int = 2, retry_delay: float = 1.0,
                 reasoning_effort: Optional[str] = None, post: Callable = None, sleep: Callable = time.sleep):
     """
     Generator over ("text", delta) ... then exactly one of
-        ("done", {"content": str, "tool_calls": [{"id","name","arguments"}], "provider": str})
+        ("done", {"content": str, "tool_calls": [...], "provider": str, "providers": [str, ...],
+                  "interrupted": bool (only when every provider died mid-answer)})
         ("fail", reason)
-    A provider that errors BEFORE producing anything is skipped (that is also how models
-    without tool support fall through). After output has started we never switch provider.
+    A provider that errors BEFORE producing words is skipped or retried. A provider that dies AFTER
+    the user already saw words is replaced: the next provider gets the partial answer and is told to
+    carry on from exactly there, so the reply just keeps flowing. `providers` lists every provider
+    that wrote part of the answer, in order.
     """
     post = post or requests.post
     last_error = "No provider available."
+    shown = ""                     # every word the user has seen this round, across providers
+    used: list = []                # providers that contributed words / tool calls, in order
     for provider in providers:
         if not provider.get("enabled"):
             continue
-        payload = {"model": provider["model"], "messages": messages, "temperature": temperature,
+        continuing = bool(shown)
+        msgs = messages
+        if continuing:
+            msgs = list(messages) + [{"role": "assistant", "content": shown},
+                                     {"role": "user", "content": CONTINUE_PROMPT}]
+        payload = {"model": provider["model"], "messages": msgs, "temperature": temperature,
                    "max_tokens": max_tokens, "stream": True}
         if tools:
             payload["tools"] = tools
@@ -255,20 +326,25 @@ def stream_chat(providers: list, messages: list, tools: Optional[list], *, tempe
             payload["reasoning_format"] = "raw"
 
         for attempt in range(1, max_retries + 1):
-            started = False
-            content, calls = "", []
+            stitch = _Stitcher(shown) if continuing else None
+            wrote = False                                   # this attempt put words in front of the user
+            calls: list = []
             try:
                 resp = post(provider["url"], headers=provider["headers"], json=payload,
                             timeout=timeout, stream=True)
                 if resp.status_code == 429:
                     last_error = f"{provider['name']}: rate limited (429)"
-                    if attempt < max_retries:
+                    if attempt < max_retries and not continuing:
                         sleep(retry_delay * attempt)
                         continue
                     break
                 if resp.status_code != 200:
                     last_error = f"{provider['name']}: HTTP {resp.status_code} — {str(resp.text)[:150]}"
                     break
+                try:
+                    resp.encoding = "utf-8"                 # SSE is always UTF-8; without this requests
+                except Exception:                           # assumes Latin-1 and turns "•" into "â¢"
+                    pass
                 for raw in resp.iter_lines(decode_unicode=True):
                     if isinstance(raw, bytes):
                         raw = raw.decode("utf-8", "replace")
@@ -281,17 +357,18 @@ def stream_chat(providers: list, messages: list, tools: Optional[list], *, tempe
                         obj = json.loads(data)
                     except Exception:
                         continue
-                    if isinstance(obj, dict) and obj.get("error") and not started:
+                    if isinstance(obj, dict) and obj.get("error"):
                         raise RuntimeError(str(obj["error"])[:150])
                     for ch in (obj.get("choices") or []):
                         d = ch.get("delta") or {}
                         piece = d.get("content")
                         if isinstance(piece, str) and piece:
-                            started = True
-                            content += piece
-                            yield ("text", piece)
+                            out = stitch.feed(piece) if stitch else piece
+                            if out:
+                                wrote = True
+                                shown += out
+                                yield ("text", out)
                         for tc in (d.get("tool_calls") or []):
-                            started = True
                             fn = tc.get("function") or {}
                             name = fn.get("name")
                             args = fn.get("arguments")
@@ -301,21 +378,46 @@ def stream_chat(providers: list, messages: list, tools: Optional[list], *, tempe
                                               json.dumps(args or {})})
                             elif calls and args:
                                 calls[-1]["arguments"] += args if isinstance(args, str) else json.dumps(args)
-                if content or calls:
-                    yield ("done", {"content": content, "tool_calls": calls, "provider": provider["name"]})
+                if stitch:
+                    tail = stitch.flush()
+                    if tail:
+                        wrote = True
+                        shown += tail
+                        yield ("text", tail)
+                if wrote or calls:
+                    used.append(provider["name"])
+                    yield ("done", {"content": shown, "tool_calls": calls, "provider": provider["name"],
+                                    "providers": used})
                     return
                 last_error = f"{provider['name']}: empty response"
                 break
             except Exception as e:
                 last_error = f"{provider['name']}: {e}"
-                if started:                                  # can't un-send what the user already saw
-                    yield ("done", {"content": content, "tool_calls": calls, "provider": provider["name"], "interrupted": True})
-                    return
+                if wrote:
+                    used.append(provider["name"])
+                if shown:
+                    # The user already saw words. A finished tool call can still be used; otherwise the
+                    # NEXT provider carries on from here (no retry of this one — it just died).
+                    good = _valid_calls(calls)
+                    if good:
+                        yield ("done", {"content": shown, "tool_calls": good, "provider": provider["name"],
+                                        "providers": used})
+                        return
+                    break
                 if attempt < max_retries:
                     sleep(retry_delay * attempt)
                     continue
                 break
+    if shown:                                               # every provider died mid-answer — keep what we have
+        yield ("done", {"content": shown, "tool_calls": [], "provider": used[-1] if used else None,
+                        "providers": used, "interrupted": True})
+        return
     yield ("fail", last_error)
+
+
+def _model_label(name: str) -> str:
+    """'openrouter/nvidia/nemotron-3-super:free' -> 'nemotron-3-super' — short name for the app's models chip."""
+    return (name or "").split("/")[-1].split(":")[0]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -526,7 +628,13 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
     provider_name = None
     forced_final = False
 
-    BUSY_NOTE = "The server got overloaded, so I had to stop here. Send \"continue\" and I'll pick up where I left off."
+    # Last resort only — every model died mid-answer. Plain words, no server talk, and "continue" really does resume.
+    BUSY_NOTE = "I got cut off right here. Send \"continue\" and I'll pick up from this exact point."
+    used_models: list = []                  # every model that wrote part of this reply, in order
+
+    def models_info() -> dict:
+        return {"models": [{"name": n, "label": _model_label(n)} for n in used_models],
+                "model_count": len(used_models)}
 
     def fail_final(reason):
         # Words, tool results or images already produced this turn are KEPT — never wipe a good partial answer.
@@ -536,20 +644,20 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
             print(f"[NATIVE] giving up (partial kept): {reason}")
             for b in kept:
                 if b["type"] == "text":
-                    b["text"] = scrub_internal(strip_markers(b["text"]))
+                    b["text"] = repair_mojibake(scrub_internal(strip_markers(b["text"])))
                     b["segments"] = build_segments(b["text"])
             kept.append({"type": "text", "text": BUSY_NOTE, "segments": build_segments(BUSY_NOTE)})
             ans = "\n\n".join(b["text"] for b in kept if b["type"] == "text").strip()
             return {"type": "final", "answer": ans, "blocks": kept, "segments": build_segments(ans),
                     "sources": state["sources"], "images": state["image_results"],
                     "files": state["file_results"], "file": (state["file_results"] or [None])[-1],
-                    "codes": state["code_results"], "suggestions": [], "provider": provider_name}
+                    "codes": state["code_results"], "suggestions": [], "provider": provider_name, **models_info()}
         msg = on_failure() if on_failure else "Something went wrong. Please try again."
         print(f"[NATIVE] giving up: {reason}")
         return {"type": "final", "answer": msg, "blocks": [{"type": "text", "text": msg, "segments": build_segments(msg)}],
                 "segments": build_segments(msg), "sources": state["sources"], "images": state["image_results"],
                 "files": state["file_results"], "file": (state["file_results"] or [None])[-1],
-                "codes": state["code_results"], "suggestions": [], "provider": provider_name}
+                "codes": state["code_results"], "suggestions": [], "provider": provider_name, **models_info()}
 
     for round_no in range(max_rounds + 1):
         use_tools = None if (forced_final or round_no == max_rounds) else tools
@@ -570,6 +678,9 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
         if tail:
             yield {"type": "text", "delta": tail}
         provider_name = done.get("provider") or provider_name
+        for n in (done.get("providers") or [done.get("provider")]):
+            if n and n not in used_models:
+                used_models.append(n)
         round_text = clean_round_text(gate.raw)
         calls = (done.get("tool_calls") or [])[:1]   # one tool per round: the model speaks between every tool call
 
@@ -580,10 +691,13 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
             return
 
         if not calls:
-            if not round_text and state["tools_called"] and not forced_final:
-                # Tools ran but the model said nothing — ask once more, tools off, so the user gets words.
+            if not round_text and not forced_final:
+                # The model said nothing (or only wrote reasoning) — ask once more, tools off, so the user gets words.
                 forced_final = True
-                messages.append({"role": "user", "content": "Now reply to the user in plain words using what you found. Do not call any more tools."})
+                messages.append({"role": "user", "content": (
+                    "Now reply to the user in plain words using what you found. Do not call any more tools."
+                    if state["tools_called"] else
+                    "Reply to the user directly in plain words. Do not write your reasoning or use any tags.")})
                 continue
             break
 
@@ -668,7 +782,7 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
     for i, b in enumerate(blocks):
         if b["type"] != "text":
             continue
-        t = scrub_internal(strip_markers(b["text"]))
+        t = repair_mojibake(scrub_internal(strip_markers(b["text"])))
         if i == last_text:
             t, suggestions = parse_suggestions(t)
             if post_process:
@@ -683,4 +797,4 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
     yield {"type": "final", "answer": answer, "blocks": blocks, "segments": build_segments(answer),
            "sources": state["sources"], "images": state["image_results"], "files": state["file_results"],
            "file": (state["file_results"] or [None])[-1], "codes": state["code_results"],
-           "suggestions": suggestions, "provider": provider_name}
+           "suggestions": suggestions, "provider": provider_name, **models_info()}

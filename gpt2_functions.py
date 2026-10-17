@@ -1505,8 +1505,11 @@ def get_lean_history(history):
 # — the chat bubble only ever gets the clean answer, and the full,
 # uncut reasoning shows up step-by-step in the Thought sheet.
 # ---------------------------------------------------------------------------
-_THINK_BLOCK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
-_ORPHAN_THINK_CLOSE_RE = re.compile(r"^.*?</think>\s*", re.DOTALL | re.IGNORECASE)
+# Every spelling models use for an inline reasoning block: <think>, <thought>, <thinking>, <reasoning> ...
+_THINK_NAMES = "think|thinking|thought|thoughts|reasoning|scratchpad"
+_THINK_BLOCK_RE = re.compile(r"<(?:%s)>(.*?)</(?:%s)>" % (_THINK_NAMES, _THINK_NAMES), re.DOTALL | re.IGNORECASE)
+_THINK_CLOSE_ANY_RE = re.compile(r"</(?:%s)>" % _THINK_NAMES, re.IGNORECASE)
+_ORPHAN_THINK_CLOSE_RE = re.compile(r"^.*?</(?:%s)>\s*" % _THINK_NAMES, re.DOTALL | re.IGNORECASE)
 _STEP_SPLIT_RE = re.compile(r"(?:^|\n)\s*\d+[\.\)]\s+")
 
 
@@ -1532,7 +1535,7 @@ def _split_thinking(raw):
         # visible answer since it's not a complete <think>...</think>
         # pair. If we see a lone closer, treat everything up to and
         # including it as leaked reasoning debris and drop it.
-        if "</think>" in raw.lower():
+        if _THINK_CLOSE_ANY_RE.search(raw):
             stripped = _ORPHAN_THINK_CLOSE_RE.sub("", raw, count=1).strip()
             if stripped:
                 return stripped, None
