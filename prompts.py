@@ -819,3 +819,23 @@ OUTPUT_FILES_HINT = (
     "\"here are the files\"). Only mention a file as delivered if output_files "
     "returned it.\n"
 )
+
+
+# ── NATIVE TOOL CALLING (gpt2_native.py) ─────────────────────────────────────
+# Replaces TOOL_USE_HINT_TAIL's <<TOOL_CALL>> protocol: the tools are passed to the
+# model as real function definitions, so none of that text convention is needed.
+NATIVE_TOOL_HINT = (
+    "\n\nTOOLS: you have real tools (function calling) — call them directly, never "
+    "write a tool call as text. You can talk, use a tool, talk again, use another "
+    "tool: whatever the task needs, in any order. The user sees your words and each "
+    "tool's result (images, files, sources) in the exact order they happen, so:\n"
+    "- Before a slow or important tool, say one short natural sentence about what you're "
+    "about to do (\"Let me look that up.\"), then call it. Don't narrate trivial steps.\n"
+    "- When a tool returns something the user can see (images, a file, sources), carry "
+    "on from it naturally in your next words — don't re-list what they can already see.\n"
+    "- Never mention tool names, JSON, or 'function calls' to the user.\n"
+    "- Call independent tools together when you can; call one at a time when a later "
+    "call needs an earlier result.\n"
+    "- If a tool fails, read its error, fix the call once, or say plainly what went wrong.\n"
+    "- Finish with a normal reply in your own words. Never end a turn silently after tools."
+)

@@ -495,12 +495,17 @@ from gpt2_tools import (
     build_answer_segments,
     MAX_TOOL_ROUNDS,
     compact_tool_history,
+    TOOL_REGISTRY,
+    TOOL_DESCRIPTIONS,
+    SESSION_INJECTED_PARAMS,
 )
 
 # SUGGESTION_HINT (static) and TOOL_USE_HINT_TAIL (static wrapper text
 # around the dynamic manifest) moved to prompts.py. The manifest itself is
 # still generated at import time here since build_tool_manifest() is a
 # real function call, not static text.
+from prompts import NATIVE_TOOL_HINT
+from gpt2_native import native_enabled, run_native_turn, build_tool_schemas, friendly_label
 from prompts import SEARCH_DISCIPLINE_HINT, FILE_STORES_HINT, OUTPUT_FILES_HINT, SUGGESTION_HINT, TOOL_USE_HINT_TAIL, MEMORY_TRUNCATED_NOTE, INLINE_VISUAL_HINT, NOTE_CALLOUT_HINT
 
 TOOL_USE_HINT = "\n\n" + build_tool_manifest() + TOOL_USE_HINT_TAIL + SEARCH_DISCIPLINE_HINT + FILE_STORES_HINT + OUTPUT_FILES_HINT
@@ -897,7 +902,11 @@ def _ask_gpt2_core(
     # it "remembered" needing to follow. Putting REASONING_STEP_HINT last
     # instead means it's the most recent instruction in context right
     # before the model starts writing its response.
-    if not copilot_mode:
+    use_native = (not copilot_mode) and native_enabled()
+    if use_native:
+        # Real function calling: no text-protocol manifest — keep only the rules that still apply.
+        current_identity += NATIVE_TOOL_HINT + SEARCH_DISCIPLINE_HINT + FILE_STORES_HINT + OUTPUT_FILES_HINT
+    elif not copilot_mode:
         current_identity += TOOL_USE_HINT
     current_identity += SUGGESTION_HINT
     current_identity += INLINE_VISUAL_HINT
@@ -928,6 +937,55 @@ def _ask_gpt2_core(
     messages = [{"role": "system", "content": current_identity}]
     messages.extend(lean_history)
     messages.append({"role": "user", "content": prompt.strip()})
+
+    # ── NATIVE PATH: real tool calling + interleaved streaming (gpt2_native.py) ──
+    if use_native:
+        native_state = {"file_results": file_results, "code_results": code_results,
+                        "image_results": image_results, "tools_called": tools_called,
+                        "tools_ok": tools_ok, "sources": sources}
+        native_session = {"prompt": prompt, "history": history, "userid": userid,
+                          "image_urls": valid_image_urls}
+
+        def _native_ctx() -> dict:
+            return {"prompt": prompt, "tools_called": native_state["tools_called"],
+                    "tools_ok": native_state["tools_ok"], "file_results": native_state["file_results"],
+                    "code_results": native_state["code_results"], "image_results": native_state["image_results"],
+                    "sources": native_state["sources"]}
+
+        def _describe(tool, args):
+            ev = _tool_call_event(tool, args)
+            return {"text": friendly_label(tool, args), "icon": ev.get("icon"), "args": ev.get("args", args), "call": ev.get("call")}
+
+        def _native_execute(name, args, ctx):
+            # generate_image's `prompt` is the model's own image description — not the user's message.
+            if name == "generate_image" and isinstance(args.get("prompt"), str) and args["prompt"].strip():
+                ctx = dict(ctx, prompt=args["prompt"].strip())
+            return execute_tool(name, args, ctx)
+
+        yield {"type": "status", "text": "Writing answer...", "detail": None, "icon": "thinking"}
+        for ev in run_native_turn(
+            messages,
+            COMPLEX_TEXT_PROVIDERS if intent["complex"] else TEXT_PROVIDERS,
+            native_session,
+            tools=build_tool_schemas(TOOL_REGISTRY, TOOL_DESCRIPTIONS, SESSION_INJECTED_PARAMS,
+                                     expose=frozenset({("generate_image", "prompt")})),
+            execute=_native_execute,
+            describe_call=_describe,
+            sources_fn=_sources_from_tool_result,
+            normalize_ask=normalize_ask_user,
+            max_rounds=MAX_TOOL_ROUNDS,
+            temperature=0.2 if intent["complex"] else 0.5,
+            max_tokens=MAX_ANSWER_TOKENS,
+            reasoning_effort="none",
+            post_process=lambda text: skills.run_post(_native_ctx(), text),
+            parse_suggestions=extract_suggestions,
+            strip_markers=strip_tool_markers,
+            build_segments=build_answer_segments,
+            on_failure=_friendly_failure_message,
+            state=native_state,
+        ):
+            yield ev
+        return
 
     # FIXED (see header notes 5): this used to always include a fabricated
     # "detail" line about temperature/token budgets, regardless of what

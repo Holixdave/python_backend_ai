@@ -296,8 +296,10 @@ def workspace_read(userid: str, path: str, start_line: int = 1, end_line: Option
 
 
 # ── write / delete ───────────────────────────────────────────────────────────
-def workspace_write(userid: str, path: str, content: str) -> dict:
-    """Create or overwrite a text file in the workspace (parent folders are created)."""
+def workspace_write(userid: str, path: str, content: str, deliver: bool = False) -> dict:
+    """Create or overwrite a text file in the workspace (parent folders are created).
+    Set deliver=true to ALSO send the file to the user as a download card right now —
+    that is how you hand over a file you just wrote (one call, no output_files needed)."""
     if not path or path.endswith("/"):
         return {"success": False, "error": "Give a file path, e.g. 'src/app.py'."}
     data = (content or "").encode("utf-8")
@@ -312,7 +314,17 @@ def workspace_write(userid: str, path: str, content: str) -> dict:
     with open(full, "wb") as f:
         f.write(data)
     _dirty(userid)
-    return {"success": True, "path": _rel(userid, full), "bytes": len(data)}
+    out = {"success": True, "path": _rel(userid, full), "bytes": len(data)}
+    if deliver:
+        try:
+            from gpt2_output import output_files   # lazy: gpt2_output imports this module
+            res = output_files(userid, [out["path"]])
+            out["delivered"] = res.get("files") or []
+            if res.get("failed"):
+                out["delivery_failed"] = res["failed"]
+        except Exception as e:
+            out["delivery_failed"] = [{"file": out["path"], "error": str(e)}]
+    return out
 
 
 def workspace_delete(userid: str, path: str) -> dict:

@@ -1220,6 +1220,17 @@ def fetch_raw_file_content(url: str, max_chars: int = 40000) -> str:
         return f"[Couldn't load this file: {e}]"
 
 
+def _looks_binary(text) -> bool:
+    """True when fetched file text is mostly non-printable (an image/exe/archive decoded as text)."""
+    if not text:
+        return False
+    head = text[:2000]
+    if "\x00" in head:
+        return True
+    bad = sum(1 for ch in head if (ord(ch) < 9 or 13 < ord(ch) < 32) or ch == "\ufffd")
+    return bad / max(len(head), 1) > 0.10
+
+
 def save_uploads_to_workspace(userid: Optional[str], file_urls: list, file_names: list) -> list:
     """
     For every (url, name) pair in a message's attachments: download it ONCE and store it
@@ -1250,6 +1261,9 @@ def save_uploads_to_workspace(userid: Optional[str], file_urls: list, file_names
             continue
         content = fetch_raw_file_content(url)
         saved, path = False, None
+        if _looks_binary(content):
+            content = ("[Binary file — not shown as text. It's saved in the workspace; use workspace_read "
+                       "(it extracts pdf/docx/xlsx) or run_code to inspect it.]")
         if userid:
             try:
                 from gpt2_workspace import workspace_save_upload

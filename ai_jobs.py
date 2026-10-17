@@ -294,6 +294,7 @@ def _build_done_payload(final: dict, steps: list, charge: Optional[dict]) -> dic
         "builtFileName": built_names[0] if built_names else None,
         "codeResults": final.get("codes") or [],
         "suggestions": final.get("suggestions") or [],
+        "blocks": final.get("blocks") or [],
         "thinkingSteps": steps,
         "status": "done",
         "updatedAt": _now_ms(),
@@ -318,6 +319,52 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
             return
         last_write = now
         _safe_update(ref, {"thinkingSteps": _clean(steps), "updatedAt": _now_ms()})
+
+    # Interleaved turn (gpt2_native.py): the ordered blocks as they happen, written to the
+    # message doc while it runs so the app draws text / tool chips / images / files in order.
+    live_blocks: list = []
+    last_block_write = 0.0
+
+    def push_blocks(force: bool = False):
+        nonlocal last_block_write
+        now = time.time()
+        if not force and now - last_block_write < STEP_WRITE_INTERVAL:
+            return
+        last_block_write = now
+        _safe_update(ref, {"blocks": _clean(live_blocks), "updatedAt": _now_ms()})
+
+    def apply_stream_event(event: dict) -> bool:
+        """Folds one text/tool_call/tool_result/block event into live_blocks. True if it was one."""
+        et = event.get("type")
+        if et == "text":
+            if live_blocks and live_blocks[-1].get("type") == "text":
+                live_blocks[-1]["text"] += event.get("delta") or ""
+            else:
+                live_blocks.append({"type": "text", "text": event.get("delta") or ""})
+            push_blocks()
+        elif et == "tool_call":
+            live_blocks.append({"type": "tool", "id": event.get("id"), "tool": event.get("tool"),
+                                "text": event.get("text") or "", "icon": event.get("icon"), "ok": None})
+            push_blocks(force=True)
+        elif et == "tool_result":
+            for b in live_blocks:
+                if b.get("type") == "tool" and b.get("id") == event.get("id"):
+                    b["ok"] = bool(event.get("ok"))
+            push_blocks(force=True)
+        elif et == "block":
+            kind = event.get("kind")
+            if kind == "images":
+                live_blocks.append({"type": "images", "images": event.get("images") or []})
+            elif kind == "file":
+                live_blocks.append({"type": "file", "file": event.get("file") or {}})
+            elif kind == "sources":
+                live_blocks.append({"type": "sources", "sources": event.get("sources") or []})
+            elif kind == "code":
+                live_blocks.append({"type": "code", "code": event.get("code") or {}})
+            push_blocks(force=True)
+        else:
+            return False
+        return True
 
     db = SessionLocal()
     final = None
@@ -351,6 +398,8 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
                 if state["cancel"]:
                     break
                 etype = event.get("type")
+                if apply_stream_event(event):
+                    continue
                 if etype == "status":
                     steps.append({
                         "text": event.get("text") or "", "detail": event.get("detail"),
