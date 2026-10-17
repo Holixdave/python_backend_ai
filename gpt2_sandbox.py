@@ -51,11 +51,12 @@ def _strip_runtime_noise(text: str) -> str:
     return _RUNTIME_NOISE.sub("", text or "").strip()
 
 # ---------------------------------------------------------------------------
-# LIMITS — deliberately conservative. Raise per-call via the `timeout_s`
-# arg if a real use case needs more, never by changing these defaults.
+# LIMITS — run time raised (was 10s default / 30s max) so real work like image
+# processing, package installs and data crunching finishes. A call can still
+# ask for less or more via the `timeout_s` arg, up to MAX_TIMEOUT_S.
 # ---------------------------------------------------------------------------
-DEFAULT_TIMEOUT_S = 10
-MAX_TIMEOUT_S = 30
+DEFAULT_TIMEOUT_S = 60
+MAX_TIMEOUT_S = 180
 MAX_CODE_CHARS = 20_000
 MAX_OUTPUT_CHARS = 8_000          # per stream (stdout/stderr), truncated past this
 MAX_MEMORY_BYTES = 256 * 1024 * 1024   # 256 MB, subprocess mode only
