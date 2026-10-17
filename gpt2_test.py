@@ -725,7 +725,7 @@ def _ask_gpt2_core(
         prompt = f"{prompt}\n\n[Image analysis: {image_description}]"
 
     # ── Normal text flow ─────────────────────────────────────────────────
-    yield {"type": "status", "text": "Reading your question...", "detail": None, "icon": "thinking"}
+    yield {"type": "status", "text": "Thinking…", "detail": None, "icon": "thinking"}
     intent = classify_intent(prompt, history=history)
 
     if copilot_mode and intent["complex"]:
@@ -965,13 +965,21 @@ def _ask_gpt2_core(
             ev = _tool_call_event(tool, args)
             return {"text": friendly_label(tool, args), "icon": ev.get("icon"), "args": ev.get("args", args), "call": ev.get("call")}
 
+        def _native_sources(name, result, args):
+            # Prefer the untruncated list captured by execute_tool (see gpt2_tools.py); fall back to parsing the text.
+            if name == "search_web":
+                kept = native_session.pop("_last_web_sources", None)
+                if kept:
+                    return kept
+            return _sources_from_tool_result(name, result, args)
+
         def _native_execute(name, args, ctx):
             # generate_image's `prompt` is the model's own image description — not the user's message.
             if name == "generate_image" and isinstance(args.get("prompt"), str) and args["prompt"].strip():
                 ctx = dict(ctx, prompt=args["prompt"].strip())
             return execute_tool(name, args, ctx)
 
-        yield {"type": "status", "text": "Writing answer...", "detail": None, "icon": "thinking"}
+        yield {"type": "status", "text": "Working…", "detail": None, "icon": "thinking"}
         for ev in run_native_turn(
             messages,
             COMPLEX_TEXT_PROVIDERS if intent["complex"] else TEXT_PROVIDERS,
@@ -980,7 +988,7 @@ def _ask_gpt2_core(
                                      expose=frozenset({("generate_image", "prompt")})),
             execute=_native_execute,
             describe_call=_describe,
-            sources_fn=_sources_from_tool_result,
+            sources_fn=_native_sources,
             normalize_ask=normalize_ask_user,
             max_rounds=MAX_TOOL_ROUNDS,
             temperature=0.2 if intent["complex"] else 0.5,
@@ -1005,7 +1013,7 @@ def _ask_gpt2_core(
     # announces the stage honestly, with nothing invented.
     yield {
         "type": "status",
-        "text": "Writing answer...",
+        "text": "Working…",
         "detail": None,
         "icon": "thinking"
     }

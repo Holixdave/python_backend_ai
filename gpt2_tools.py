@@ -772,6 +772,11 @@ def execute_tool(tool_name: str, ai_args: dict, session_context: dict):
             return True, _page_result(session_context.get("userid"), tool_name, json.dumps(last_event, default=str))
 
         result = fn(**final_args)
+        # search_web returns (text, sources). The sources sit at the END of the JSON, and _page_result cuts long
+        # results at PAGE_CHARS — which chops the sources off, so json.loads failed later and the Sources chip
+        # silently never appeared. Keep the real list out of band, before any truncation.
+        if tool_name == "search_web" and isinstance(result, (list, tuple)) and len(result) == 2 and isinstance(result[1], list):
+            session_context["_last_web_sources"] = result[1]
         # fetch_github_file and search_images both get a much higher cap
         # than other tools. For fetch_github_file, a source file cut off
         # mid-import/mid-syntax just confuses the model. For search_images,
