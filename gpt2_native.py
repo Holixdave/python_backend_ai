@@ -291,6 +291,80 @@ def _valid_calls(calls: list) -> list:
     return good
 
 
+class _Health:
+    """Remembers which models just failed, so a rate-limited or request-rejecting model is not
+    hammered again on every round of every message (that was burning the whole chain per tool call)."""
+
+    def __init__(self, clock: Callable = time.time):
+        self._until: dict = {}
+        self._clock = clock
+
+    def bad(self, key, seconds: float) -> None:
+        self._until[key] = self._clock() + seconds
+
+    def ok(self, key) -> bool:
+        return self._until.get(key, 0) <= self._clock()
+
+    def clear(self) -> None:
+        self._until.clear()
+
+
+HEALTH = _Health()
+
+
+def _request_kind(tools, messages) -> str:
+    """Models reject different things: some can't take tools, some choke on tool-call history."""
+    if not tools:
+        return "plain"
+    return "tools+history" if any(m.get("role") == "tool" for m in messages) else "tools"
+
+
+def apply_model_pin(providers: list) -> list:
+    """MODEL_PIN=name[,name...] (env) restricts the turn to just those models, in that order —
+    e.g. MODEL_PIN=groq-gpt-oss-120b for a single-model setup. Unknown/disabled names are ignored."""
+    pin = (os.environ.get("MODEL_PIN") or "").strip()
+    if not pin:
+        return providers
+    names = [n.strip() for n in pin.split(",") if n.strip()]
+    chosen = [p for n in names for p in providers if p.get("name") == n and p.get("enabled")]
+    if chosen:
+        return chosen
+    print(f"[NATIVE] MODEL_PIN={pin!r} matches no enabled model — using the normal chain")
+    return providers
+
+
+def _flatten_tool_history(messages: list) -> list:
+    """Same conversation with the tool-call structure turned into plain text. Some models reject
+    another model's tool-call history (ids, signatures, strict formats); plain text always works."""
+    out: list = []
+    pending: list = []
+
+    def flush():
+        if not pending:
+            return
+        text = "Results from the tools you just used:\n\n" + "\n\n".join(pending)
+        pending.clear()
+        if out and out[-1].get("role") == "user" and isinstance(out[-1].get("content"), str):
+            out[-1] = {"role": "user", "content": out[-1]["content"] + "\n\n" + text}
+        else:
+            out.append({"role": "user", "content": text})
+
+    for m in messages:
+        role = m.get("role")
+        if role == "assistant" and m.get("tool_calls"):
+            flush()
+            if m.get("content"):
+                out.append({"role": "assistant", "content": m["content"]})
+            continue
+        if role == "tool":
+            pending.append(f"[{m.get('name') or 'tool'}]\n{m.get('content') or ''}")
+            continue
+        flush()
+        out.append(m)
+    flush()
+    return out
+
+
 def stream_chat(providers: list, messages: list, tools: Optional[list], *, temperature: float,
                 max_tokens: int, timeout: int = 120, max_retries: int = 2, retry_delay: float = 1.0,
                 reasoning_effort: Optional[str] = None, post: Callable = None, sleep: Callable = time.sleep):
@@ -306,11 +380,16 @@ def stream_chat(providers: list, messages: list, tools: Optional[list], *, tempe
     """
     post = post or requests.post
     last_error = "No provider available."
+    errors: list = []              # every model's failure, so the log shows the whole story
     shown = ""                     # every word the user has seen this round, across providers
     used: list = []                # providers that contributed words / tool calls, in order
-    for provider in providers:
-        if not provider.get("enabled"):
-            continue
+    kind = _request_kind(tools, messages)
+    usable = [p for p in providers if p.get("enabled")
+              and HEALTH.ok(("rate", p["name"])) and HEALTH.ok((kind, p["name"]))]
+    if not usable:                 # everything is cooling down — try them anyway rather than give up
+        usable = [p for p in providers if p.get("enabled")]
+    for provider in usable:
+        name = provider["name"]
         continuing = bool(shown)
         msgs = messages
         if continuing:
@@ -333,13 +412,24 @@ def stream_chat(providers: list, messages: list, tools: Optional[list], *, tempe
                 resp = post(provider["url"], headers=provider["headers"], json=payload,
                             timeout=timeout, stream=True)
                 if resp.status_code == 429:
-                    last_error = f"{provider['name']}: rate limited (429)"
+                    last_error = f"{name}: rate limited (429)"
                     if attempt < max_retries and not continuing:
                         sleep(retry_delay * attempt)
                         continue
+                    errors.append(last_error)
+                    try:
+                        wait = float((getattr(resp, "headers", None) or {}).get("Retry-After") or 60)
+                    except (TypeError, ValueError):
+                        wait = 60.0
+                    HEALTH.bad(("rate", name), min(max(wait, 15.0), 120.0))
                     break
                 if resp.status_code != 200:
-                    last_error = f"{provider['name']}: HTTP {resp.status_code} — {str(resp.text)[:150]}"
+                    last_error = f"{name}: HTTP {resp.status_code} — {str(resp.text)[:150]}"
+                    errors.append(last_error)
+                    if resp.status_code >= 500 or resp.status_code in (401, 403):
+                        HEALTH.bad(("rate", name), 30 if resp.status_code >= 500 else 300)
+                    else:   # 400/404/413/422: this model won't take THIS kind of request — skip it for a while
+                        HEALTH.bad((kind, name), 60 if resp.status_code == 413 else 300)
                     break
                 try:
                     resp.encoding = "utf-8"                 # SSE is always UTF-8; without this requests
@@ -389,10 +479,12 @@ def stream_chat(providers: list, messages: list, tools: Optional[list], *, tempe
                     yield ("done", {"content": shown, "tool_calls": calls, "provider": provider["name"],
                                     "providers": used})
                     return
-                last_error = f"{provider['name']}: empty response"
+                last_error = f"{name}: empty response"
+                errors.append(last_error)
+                HEALTH.bad(("rate", name), 20)
                 break
             except Exception as e:
-                last_error = f"{provider['name']}: {e}"
+                last_error = f"{name}: {e}"
                 if wrote:
                     used.append(provider["name"])
                 if shown:
@@ -403,16 +495,22 @@ def stream_chat(providers: list, messages: list, tools: Optional[list], *, tempe
                         yield ("done", {"content": shown, "tool_calls": good, "provider": provider["name"],
                                         "providers": used})
                         return
+                    errors.append(last_error)
+                    HEALTH.bad(("rate", name), 30)
                     break
                 if attempt < max_retries:
                     sleep(retry_delay * attempt)
                     continue
+                errors.append(last_error)
+                HEALTH.bad(("rate", name), 30)
                 break
     if shown:                                               # every provider died mid-answer — keep what we have
         yield ("done", {"content": shown, "tool_calls": [], "provider": used[-1] if used else None,
                         "providers": used, "interrupted": True})
         return
-    yield ("fail", last_error)
+    summary = " | ".join(errors)[-900:] or last_error
+    print(f"[CHAIN] every model failed ({kind}): {summary}")
+    yield ("fail", summary)
 
 
 def _model_label(name: str) -> str:
@@ -623,20 +721,25 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
     parse_suggestions = parse_suggestions or (lambda t: (t, []))
     build_segments = build_segments or (lambda t: [{"type": "text", "content": t}] if t else [])
 
+    providers = apply_model_pin(providers)
     blocks: list = []                       # ordered, final form
     seen_sources = set()
     provider_name = None
     forced_final = False
+    sticky = None                           # the model that handled the last round — it goes first next round
+    flat_retry = False                      # the plain-text-history retry is used at most once per turn
 
     # Last resort only — every model died mid-answer. Plain words, no server talk, and "continue" really does resume.
     BUSY_NOTE = "I got cut off right here. Send \"continue\" and I'll pick up from this exact point."
+    # The last step never produced a single word (not a cut-off) — say that instead.
+    STEP_NOTE = "I hit a problem on that last step. Send \"continue\" and I'll try again."
     used_models: list = []                  # every model that wrote part of this reply, in order
 
     def models_info() -> dict:
         return {"models": [{"name": n, "label": _model_label(n)} for n in used_models],
                 "model_count": len(used_models)}
 
-    def fail_final(reason):
+    def fail_final(reason, mid_answer=False):
         # Words, tool results or images already produced this turn are KEPT — never wipe a good partial answer.
         kept = [b for b in blocks if not (b["type"] == "text" and not b["text"].strip())]
         has_content = any(b["type"] in ("text", "images", "file", "code") for b in kept)
@@ -646,7 +749,8 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
                 if b["type"] == "text":
                     b["text"] = repair_mojibake(scrub_internal(strip_markers(b["text"])))
                     b["segments"] = build_segments(b["text"])
-            kept.append({"type": "text", "text": BUSY_NOTE, "segments": build_segments(BUSY_NOTE)})
+            note = BUSY_NOTE if mid_answer else STEP_NOTE
+            kept.append({"type": "text", "text": note, "segments": build_segments(note)})
             ans = "\n\n".join(b["text"] for b in kept if b["type"] == "text").strip()
             return {"type": "final", "answer": ans, "blocks": kept, "segments": build_segments(ans),
                     "sources": state["sources"], "images": state["image_results"],
@@ -663,7 +767,10 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
         use_tools = None if (forced_final or round_no == max_rounds) else tools
         gate = TextGate()
         done = None
-        for kind, val in stream(providers, messages, use_tools, temperature=temperature,
+        failure = None
+        round_providers = ([p for p in providers if p.get("name") == sticky] +
+                           [p for p in providers if p.get("name") != sticky]) if sticky else providers
+        for kind, val in stream(round_providers, messages, use_tools, temperature=temperature,
                                 max_tokens=max_tokens, reasoning_effort=reasoning_effort):
             if kind == "text":
                 safe = gate.feed(val)
@@ -672,12 +779,26 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
             elif kind == "done":
                 done = val
             elif kind == "fail":
-                yield fail_final(val)
-                return
+                failure = val
+        if done is None:
+            if state["tools_called"] and not flat_retry:
+                # Every model refused the follow-up to a tool call. Often that is a model choking on the
+                # tool-call history, not a real outage — retry once with the history as plain text, no tools.
+                flat_retry = True
+                forced_final = True
+                messages[:] = _flatten_tool_history(messages)
+                messages.append({"role": "user", "content":
+                                 "Now reply to the user in plain words using the tool results above. "
+                                 "Do not call any more tools."})
+                print(f"[NATIVE] follow-up after a tool call failed — retrying with plain-text history: {failure}")
+                continue
+            yield fail_final(failure or "no answer")
+            return
         tail = gate.flush()
         if tail:
             yield {"type": "text", "delta": tail}
         provider_name = done.get("provider") or provider_name
+        sticky = done.get("provider") or sticky
         for n in (done.get("providers") or [done.get("provider")]):
             if n and n not in used_models:
                 used_models.append(n)
@@ -687,7 +808,7 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
         if round_text:
             blocks.append({"type": "text", "text": round_text})
         if done.get("interrupted") and not (done.get("tool_calls") or []):
-            yield fail_final("stream interrupted")
+            yield fail_final("stream interrupted", mid_answer=True)
             return
 
         if not calls:

@@ -143,8 +143,22 @@ def _gemini_text_provider(model_name: str) -> dict:
         "model": raw_model_id,
     }
 
+# Big window (131k in) and big answers (up to 65k out), supports tools, and Groq streams fast. Put first
+# because the Gemini free tier below is rate-limited on most requests (see the notes further down), which
+# meant every message paid for a string of failed Gemini calls before anything answered.
+# MODEL_PIN=groq-gpt-oss-120b (env) makes it the ONLY model used by the chat/tool loop.
+_GROQ_GPT_OSS_120B = {
+    "name": "groq-gpt-oss-120b",
+    "enabled": bool(GROQ_API_KEY),
+    "url": "https://api.groq.com/openai/v1/chat/completions",
+    "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {GROQ_API_KEY}"},
+    "model": "openai/gpt-oss-120b",
+}
+
 TEXT_PROVIDERS = [
-    # ── Primary: Native Google Gemini endpoints to handle large context & bypass 429s ──
+    _GROQ_GPT_OSS_120B,
+
+    # ── Next: Native Google Gemini endpoints to handle large context & bypass 429s ──
     *[_gemini_text_provider(m) for m in GEMINI_MODELS_CHAIN],
 
     # ── Secondary: OpenRouter Free Chain ─────────────────────────────────
@@ -190,6 +204,7 @@ TEXT_PROVIDERS = [
 # first, flash models kept at the tail purely as a last-resort fallback
 # if Groq/Cerebras are both down.
 COMPLEX_TEXT_PROVIDERS = [
+    _GROQ_GPT_OSS_120B,
     {
         "name": "groq-qwen3.6-27b",
         "enabled": bool(GROQ_API_KEY),
