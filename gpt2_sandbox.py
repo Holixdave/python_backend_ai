@@ -594,6 +594,23 @@ def _chown_tree(root: str):
         print(f"[SANDBOX] chown failed: {e}")
 
 
+def _sweep_stray_files(run_dir: str, placed: Optional[dict] = None):
+    """Code that saves a new file next to main.py (instead of ./outputs/) would lose it when the
+    run folder is deleted. Move such new files into ./outputs/ so they are kept like any other output."""
+    try:
+        out_dir = os.path.join(run_dir, OUTPUT_SUBDIR)
+        for name in os.listdir(run_dir):
+            path = os.path.join(run_dir, name)
+            if (name.startswith("main.") or os.path.islink(path) or not os.path.isfile(path)
+                    or os.path.exists(os.path.join(out_dir, name))):
+                continue
+            if name in (placed or {}) and int(os.path.getmtime(path)) == 1_000_000_000:
+                continue   # an input copy the code only read
+            shutil.move(path, os.path.join(out_dir, name))
+    except Exception as e:
+        print(f"[SANDBOX] stray-file sweep failed: {e}")
+
+
 def _build_sandbox_chain(prefer_isolation: bool) -> list:
     # Mirrors _build_image_provider_chain's shape in gpt2_functions.py:
     # an ordered list this function just walks, falling through on any
@@ -763,6 +780,7 @@ def run_code(code: str, language: str = "python", timeout_s: int = DEFAULT_TIMEO
                 ran_ok = ran_ok and not outcome.get("timed_out")
                 output_files = []
                 if ran_ok:
+                    _sweep_stray_files(run_dir, auto_placed)
                     output_files = _collect_outputs_into_workspace(run_dir, userid, auto_placed)
                 yield {
                     "type": "code_result",

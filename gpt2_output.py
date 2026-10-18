@@ -29,6 +29,28 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]")
 
 
+def _find_workspace_file(userid, path):
+    """Models often give a bare name ("a.wav") for a file that lives in outputs/.
+    Try outputs/<path>, then a single unique file with that name anywhere in the workspace."""
+    try:
+        rel = str(path).replace("\\", "/").lstrip("/")
+        for cand in (f"outputs/{rel}", f"outputs/{os.path.basename(rel)}"):
+            full = _safe_path(userid, cand)
+            if os.path.isfile(full):
+                return full
+        root = _safe_path(userid, "")
+        hits = []
+        for dp, dn, fn in os.walk(root):
+            dn[:] = [d for d in dn if d not in (".git", "node_modules", "__pycache__")]
+            if os.path.basename(rel) in fn:
+                hits.append(os.path.join(dp, os.path.basename(rel)))
+            if len(hits) > 1:
+                return None
+        return hits[0] if hits else None
+    except Exception:
+        return None
+
+
 def _kind(name: str) -> str:
     return "image" if os.path.splitext(name.lower().split("?")[0])[1] in IMAGE_EXTS else "file"
 
@@ -68,6 +90,8 @@ def output_files(userid: str, files: list) -> dict:
             # 3) a workspace file
             if spec.get("path"):
                 full = _safe_path(userid, spec["path"])
+                if not os.path.isfile(full):
+                    full = _find_workspace_file(userid, spec["path"]) or full
                 if not os.path.isfile(full):
                     raise ValueError("not a file in the workspace")
                 if os.path.getsize(full) > MAX_OUTPUT_FILE_BYTES:
