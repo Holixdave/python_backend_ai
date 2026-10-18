@@ -499,6 +499,54 @@ def _stage_inputs(run_dir: str, userid: Optional[str], refs: list):
 _PATH_LITERAL_RE = re.compile(r"""(['"])([^'"\n\\]{1,200}\.[A-Za-z0-9]{1,8})\1""")
 
 
+_DISCOVERY_RE = re.compile(r"os\.walk|os\.listdir|os\.scandir|glob\.|\.glob\(|\.rglob\(|\.iterdir\(|listdir\(", re.I)
+_DATA_EXTS = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".csv", ".tsv", ".json", ".txt", ".md", ".xlsx", ".xls",
+              ".docx", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".mp4", ".zip", ".html"}
+
+
+def _stage_workspace_data(run_dir: str, userid: str, placed: dict) -> None:
+    """Code that searches folders (os.walk('.'), glob, listdir) finds nothing in an empty run folder.
+    Copy the user's data files (outputs/ first, then other media/documents; never source code or
+    repos' dot-folders) into the run folder at their workspace-relative paths, within the size limits."""
+    import hashlib
+    try:
+        from gpt2_workspace import _safe_path
+        root = _safe_path(userid, "")
+    except Exception:
+        return
+    if not os.path.isdir(root):
+        return
+    run_real = os.path.realpath(run_dir)
+    found = []
+    for dp, dn, fn in os.walk(root):
+        dn[:] = sorted(d for d in dn if d not in _INPUT_SKIP_DIRS and not d.startswith("."))
+        for name in sorted(fn):
+            full = os.path.join(dp, name)
+            if os.path.islink(full) or os.path.splitext(name)[1].lower() not in _DATA_EXTS:
+                continue
+            rel = os.path.relpath(full, root).replace(os.sep, "/")
+            found.append((0 if rel.startswith(OUTPUT_SUBDIR + "/") else 1, rel, full))
+    found.sort()
+    count, total = 0, 0
+    for _, rel, full in found:
+        try:
+            size = os.path.getsize(full)
+            if count >= MAX_INPUT_FILES or total + size > MAX_INPUT_TOTAL_BYTES:
+                continue
+            dest = os.path.realpath(os.path.join(run_real, rel))
+            if not dest.startswith(run_real + os.sep):
+                continue
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copyfile(full, dest)
+            with open(dest, "rb") as f:
+                placed[rel] = hashlib.sha256(f.read()).hexdigest()
+            os.utime(dest, (1_000_000_000, 1_000_000_000))
+            count += 1
+            total += size
+        except Exception as e:
+            print(f"[SANDBOX] discovery-stage of {rel!r} failed: {e}")
+
+
 def _auto_stage_referenced(run_dir: str, userid: Optional[str], code: str) -> dict:
     """
     Models often open a workspace file by name in run_code and forget
@@ -513,6 +561,8 @@ def _auto_stage_referenced(run_dir: str, userid: Optional[str], code: str) -> di
     placed = {}
     if not userid:
         return placed
+    if _DISCOVERY_RE.search(code or ""):
+        _stage_workspace_data(run_dir, userid, placed)
     try:
         from gpt2_workspace import _safe_path  # lazy: no import cycle
     except Exception:

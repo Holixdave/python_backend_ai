@@ -17,6 +17,7 @@ The "[ADVANCED THINKING ENABLED ...]" directive lives in the system prompt
 (prompts.PREMIUM_MODE_PROMPT), never in the user turn; scrub_internal() still removes
 any sentence that repeats it.
 """
+from typing import Optional
 import re
 
 # ── 1. reasoning tags ────────────────────────────────────────────────────────
@@ -165,6 +166,7 @@ def scrub_internal(text: str) -> str:
 
 def _scrub_prose(text: str) -> str:
     t = THINK_BLOCK_RE.sub("", text)
+    t = strip_text_tool_calls(t)
     t = strip_stray_tool_json(t)
     t = _BRACKET_DIRECTIVE.sub("", t)
     if not _is_internal(t):
@@ -216,3 +218,51 @@ def repair_mojibake(text: str) -> str:
     # mixed text (some real non-Latin characters too): repair each garbled run on its own
     pat = re.compile(r"[Â-ô][\u0080-¿€‚-›ˆ˜ŠšŒœŽžŸƒ™¡-¿]+")
     return pat.sub(lambda m: _undo_latin1(m.group(0)), text)
+
+
+# ── tool calls a model typed as plain text (Qwen/Hermes style) instead of really calling the tool ──
+#   <tool_call> <function=run_code> <parameter=code> ... </parameter> </function> </tool_call>
+# They must never reach the user, and are turned into real calls by parse_text_tool_calls().
+TEXT_CALL_LITERALS = ("<tool_call", "<function=", "<parameter=", "<tool_use", "<function_call", "<invoke")
+_TEXT_CALL_START = re.compile(r"<\s*(?:tool_call|function=|parameter=|tool_use|function_call|invoke)", re.I)
+_TEXT_CALL_BLOCK = re.compile(
+    r"<\s*(?:tool_call|tool_use|function_call)\b.*?(?:<\s*/\s*(?:tool_call|tool_use|function_call)\s*>|\Z)",
+    re.I | re.S)
+_TEXT_CALL_LOOSE = re.compile(
+    r"<\s*(?:function=|parameter=|invoke\b).*?(?:<\s*/\s*(?:function|invoke)\s*>|\Z)|<\s*/\s*(?:tool_call|function|parameter|tool_use|invoke)\s*>",
+    re.I | re.S)
+
+
+def strip_text_tool_calls(text: str) -> str:
+    """Remove typed-out tool calls (closed or cut off) from text."""
+    if not text or "<" not in text:
+        return text or ""
+    out = _TEXT_CALL_BLOCK.sub("", text)
+    out = _TEXT_CALL_LOOSE.sub("", out)
+    return out
+
+
+_PARAM_RE = re.compile(r"<\s*parameter=([A-Za-z_][\w.-]*)\s*>(.*?)(?=<\s*/\s*parameter\s*>|<\s*parameter=|<\s*/\s*function\s*>|<\s*/\s*tool_call\s*>|\Z)", re.S | re.I)
+_FUNC_RE = re.compile(r"<\s*function=([A-Za-z_][\w.-]*)\s*>", re.I)
+
+
+def parse_text_tool_calls(text: str, known_tools: Optional[set] = None) -> list:
+    """Turn typed-out tool calls into [(name, {args})]. The name comes from <function=NAME>; when it is
+    missing, a `code` argument means run_code. Unknown tool names are dropped."""
+    calls = []
+    if not text or not _TEXT_CALL_START.search(text):
+        return calls
+    for block in _TEXT_CALL_BLOCK.findall(text) or [text]:
+        args = {}
+        for k, v in _PARAM_RE.findall(block):
+            args[k] = v.strip("\n").strip() if k != "code" else v.strip("\n")
+        fm = _FUNC_RE.search(block)
+        name = fm.group(1) if fm else ("run_code" if "code" in args else None)
+        if not name or not args:
+            continue
+        if known_tools is not None and name not in known_tools:
+            continue
+        if name == "run_code" and not args.get("language"):
+            args["language"] = "python"
+        calls.append((name, args))
+    return calls[:1]

@@ -116,6 +116,15 @@ def _doc_args(fn) -> dict:
     return out
 
 
+def _known_tool_names(tools) -> Optional[set]:
+    names = set()
+    for t in tools or []:
+        n = (t.get("function") or {}).get("name") if isinstance(t, dict) else None
+        if n:
+            names.add(n)
+    return names or None
+
+
 def build_tool_schemas(registry: dict, descriptions: dict, injected: set, only: Optional[set] = None,
                        expose: frozenset = frozenset()) -> list:
     """OpenAI-style `tools` list. Session-owned params (userid, history, ...) are NOT
@@ -157,6 +166,7 @@ def build_tool_schemas(registry: dict, descriptions: dict, injected: set, only: 
 from leak_guard import (  # noqa: E402  (kept next to its only users)
     scrub_internal, repair_mojibake, strip_reasoning,
     THINK_OPEN_RE, THINK_CLOSE_RE, THINK_BLOCK_RE, THINK_TAG_LITERALS, THINK_TAG_MAX_LEN,
+    TEXT_CALL_LITERALS, strip_text_tool_calls, parse_text_tool_calls,
 )
 
 
@@ -171,7 +181,12 @@ def _partial_start(buf: str) -> int:
     tail = buf[lt:].lower()
     if tail == "<<" or any(t.startswith(tail) for t in THINK_TAG_LITERALS):
         return lt
+    if any(t.startswith(tail) for t in TEXT_CALL_LITERALS):
+        return lt
     return -1
+
+
+_TEXT_CALL_OPEN = re.compile(r"<\s*(?:tool_call|function=|parameter=|tool_use|function_call|invoke)", re.I)
 
 
 class TextGate:
@@ -203,6 +218,9 @@ class TextGate:
                 continue
             o = THINK_OPEN_RE.search(self._buf)
             k = self._buf.find("<<")
+            tc = _TEXT_CALL_OPEN.search(self._buf)       # a tool call typed out as text: hold it, never show it
+            if tc and (k == -1 or tc.start() < k):
+                k = tc.start()
             if o and (k == -1 or o.start() < k):
                 out.append(self._buf[:o.start()])
                 self._buf = self._buf[o.end():]
@@ -236,7 +254,7 @@ _THINK_RE = THINK_BLOCK_RE          # old name, kept so nothing importing it bre
 
 def clean_round_text(raw: str) -> str:
     """Final text of one model turn: no reasoning blocks / leaked reasoning debris."""
-    return repair_mojibake(strip_reasoning(raw))
+    return repair_mojibake(strip_text_tool_calls(strip_reasoning(raw))).strip()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -801,6 +819,13 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
                 used_models.append(n)
         round_text = clean_round_text(gate.raw)
         calls = (done.get("tool_calls") or [])[:1]   # one tool per round: the model speaks between every tool call
+        if not calls:
+            # the model typed its tool call as text instead of really calling it: run it for real
+            typed = parse_text_tool_calls(gate.raw, _known_tool_names(tools))
+            if typed:
+                tname, targs = typed[0]
+                calls = [{"id": f"txt_{len(messages)}_{tname}", "name": tname, "arguments": json.dumps(targs)}]
+                print(f"[NATIVE] model typed a {tname} call as text — running it as a real call")
 
         if round_text:
             blocks.append({"type": "text", "text": round_text})
