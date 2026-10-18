@@ -368,7 +368,7 @@ def _run_docker(runner: dict, code_path: str, timeout_s: int, packages_dir: Opti
         return {"ok": False, "skip_reason": f"docker run failed: {e}"}
 
 
-def _collect_outputs_into_workspace(run_dir: str, userid: Optional[str]) -> list:
+def _collect_outputs_into_workspace(run_dir: str, userid: Optional[str], unchanged: Optional[dict] = None) -> list:
     """
     Copies every regular file the code left in <run_dir>/outputs/ into the
     user's WORKSPACE (under outputs/) and returns [{"path","size"}]. It does
@@ -394,6 +394,11 @@ def _collect_outputs_into_workspace(run_dir: str, userid: Optional[str]) -> list
         try:
             with open(path, "rb") as f:
                 data = f.read()
+            if unchanged:
+                import hashlib
+                if (unchanged.get(f"{OUTPUT_SUBDIR}/{name}") == hashlib.sha256(data).hexdigest()
+                        and int(os.path.getmtime(path)) == 1_000_000_000):
+                    continue   # a copy of an existing workspace file the code never changed
             saved = workspace_write_bytes(userid, f"{OUTPUT_SUBDIR}/{safe_name}", data)
             if saved.get("success"):
                 results.append({"path": saved["path"], "size": size})
@@ -489,6 +494,104 @@ def _stage_inputs(run_dir: str, userid: Optional[str], refs: list):
     except Exception as e:
         print(f"[SANDBOX] couldn't set input permissions: {e}")
     return staged, missing
+
+
+_PATH_LITERAL_RE = re.compile(r"""(['"])([^'"\n\\]{1,200}\.[A-Za-z0-9]{1,8})\1""")
+
+
+def _auto_stage_referenced(run_dir: str, userid: Optional[str], code: str) -> dict:
+    """
+    Models often open a workspace file by name in run_code and forget
+    input_files, so the code runs in an empty folder and fails with
+    FileNotFoundError. This looks at the quoted file names in the code, finds
+    the matching WORKSPACE files, and copies each one to exactly the path the
+    code uses (so open("outputs/a.wav") or open("a.wav") both just work).
+    Copy-in only. Returns {relpath_in_run_dir: sha256} for what it placed, so
+    unchanged copies are not saved back as "new" outputs. Never raises.
+    """
+    import hashlib
+    placed = {}
+    if not userid:
+        return placed
+    try:
+        from gpt2_workspace import _safe_path  # lazy: no import cycle
+    except Exception:
+        return placed
+    run_real = os.path.realpath(run_dir)
+    total = 0
+    seen = set()
+    for m in _PATH_LITERAL_RE.finditer(code or ""):
+        lit = m.group(2).replace("\\", "/").strip()
+        rel = lit
+        while rel.startswith("./"):
+            rel = rel[2:]
+        rel = rel.lstrip("/")
+        if not rel or ".." in rel.split("/") or rel in seen or rel == "main.py":
+            continue
+        seen.add(rel)
+        if len(placed) >= MAX_INPUT_FILES:
+            break
+        src = None
+        candidates = [rel[len(INPUT_SUBDIR) + 1:]] if rel.startswith(INPUT_SUBDIR + "/") else []
+        candidates.append(rel)
+        for cand in candidates:
+            try:
+                full = _safe_path(userid, cand)
+            except Exception:
+                continue
+            if os.path.isfile(full) and not os.path.islink(full):
+                src = full
+                break
+        if src is None and "/" not in rel:
+            # bare file name: look for it in the workspace (outputs/ first, then anywhere)
+            try:
+                root = _safe_path(userid, "")
+            except Exception:
+                root = None
+            if root and os.path.isdir(root):
+                hit = None
+                for dp, dn, fn in os.walk(root):
+                    dn[:] = [d for d in dn if d not in _INPUT_SKIP_DIRS]
+                    if rel in fn:
+                        cand = os.path.join(dp, rel)
+                        if not os.path.islink(cand):
+                            if os.path.basename(dp) == OUTPUT_SUBDIR:
+                                hit = cand
+                                break
+                            hit = hit or cand
+                src = hit
+        if src is None:
+            continue
+        try:
+            size = os.path.getsize(src)
+            if total + size > MAX_INPUT_TOTAL_BYTES:
+                continue
+            dest = os.path.realpath(os.path.join(run_real, rel))
+            if not dest.startswith(run_real + os.sep):
+                continue
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copyfile(src, dest)
+            with open(dest, "rb") as f:
+                placed[rel] = hashlib.sha256(f.read()).hexdigest()
+            os.utime(dest, (1_000_000_000, 1_000_000_000))   # marks it as "not written by the code"; a rewrite gets a fresh time
+            total += size
+        except Exception as e:
+            print(f"[SANDBOX] auto-stage of {rel!r} failed: {e}")
+    if placed:
+        print(f"[SANDBOX] auto-staged workspace files for the run: {sorted(placed)}")
+    return placed
+
+
+def _chown_tree(root: str):
+    try:
+        if not (hasattr(os, "geteuid") and os.geteuid() == 0):
+            return
+        for dp, dn, fn in os.walk(root):
+            os.chown(dp, 65534, 65534)
+            for name in fn:
+                os.chown(os.path.join(dp, name), 65534, 65534)
+    except Exception as e:
+        print(f"[SANDBOX] chown failed: {e}")
 
 
 def _build_sandbox_chain(prefer_isolation: bool) -> list:
@@ -625,11 +728,20 @@ def run_code(code: str, language: str = "python", timeout_s: int = DEFAULT_TIMEO
                 }
                 return
 
+        # Files the code names but the model forgot to pass in input_files.
+        auto_placed = _auto_stage_referenced(run_dir, userid, code)
+
         # Pre-create the outputs folder (world-writable so the docker
         # 'nobody' user can write to it too).
         out_dir = os.path.join(run_dir, OUTPUT_SUBDIR)
         os.makedirs(out_dir, exist_ok=True)
         os.chmod(out_dir, 0o777)
+        if auto_placed:
+            _chown_tree(run_dir)
+            for dp, dn, fn in os.walk(run_dir):
+                os.chmod(dp, 0o777 if os.path.basename(dp) == OUTPUT_SUBDIR else 0o755)
+                for n in fn:
+                    os.chmod(os.path.join(dp, n), 0o644)
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             # the child runs as nobody (see _resource_limits) — it must own
             # its run folder to read main.py and write ./outputs/
@@ -651,7 +763,7 @@ def run_code(code: str, language: str = "python", timeout_s: int = DEFAULT_TIMEO
                 ran_ok = ran_ok and not outcome.get("timed_out")
                 output_files = []
                 if ran_ok:
-                    output_files = _collect_outputs_into_workspace(run_dir, userid)
+                    output_files = _collect_outputs_into_workspace(run_dir, userid, auto_placed)
                 yield {
                     "type": "code_result",
                     "success": ran_ok,

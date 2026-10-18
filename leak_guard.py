@@ -100,7 +100,7 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
 # That JSON is never something the user should read.
 _ARG_KEYS = (
     "query", "code", "paths", "path", "url", "urls", "prompt", "content", "command", "language", "title",
-    "pattern", "packages", "filename", "src", "dest", "repo", "result_id", "offset", "timeout_s",
+    "pattern", "packages", "filename", "files", "file", "outputs", "src", "dest", "repo", "result_id", "offset", "timeout_s",
 )
 _STRAY_JSON_START = re.compile(r'\{\s*"(?:' + "|".join(_ARG_KEYS) + r')"\s*:')
 
