@@ -24,7 +24,7 @@ RUN_TOOLS = {"run_code", "workspace_run"}
 DELIVER_TOOLS = {"output_files", "build_file", "generate_image", "workspace_zip"}
 
 _VERBS = (r"created|written|wrote|saved|updated|edited|generated|built|migrated|"
-          r"refactored|cloned|deleted|removed|fixed|added|implemented|rewrote")
+          r"refactored|cloned|deleted|removed|fixed|added|implemented|rewrote|processed|extended|converted|trimmed|appended|finished|completed|prepared")
 _FILE_NOUNS = (r"files?|documents?|docs?|project|workspace|repo|repository|website|"
                r"script|folder|\.py|\.html|\.css|\.js|\.txt|\.wav|\.zip|\.md")
 
@@ -42,7 +42,7 @@ CLAIMS = {
         re.I),
     # "download it above / in the file card above / see the file above / I am now sending them to you"
     "deliver": re.compile(
-        r"\b(?:download|find|access|see|get|grab|open)\b[^.\n]{0,60}?\b(?:above|file card|link below)\b"
+        r"\b(?:download|find|access|see|get|grab|open)\b[^.\n]{0,60}?\b(?:above|file card|link below|here)\b"
         r"|\bfile cards?\s+above\b|\b(?:attached|delivered)\s+(?:above|below)\b"
         r"|\bI(?:'m|\s+am)(?:\s+now)?\s+(?:delivering|sending|attaching)\b"
         r"|\b(?:files?|charts?|images?|documents?|docs?|reports?)\b[^.\n]{0,40}\b(?:has|have|had)\s+been\s+(?:successfully\s+)?(?:delivered|sent|attached)\b",
