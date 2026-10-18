@@ -227,6 +227,8 @@ def _clean_env(extra_pythonpath: Optional[str] = None) -> dict:
         "HOME": "/tmp",
         "LANG": "C.UTF-8",
     }
+    if os.environ.get("U2NET_HOME"):
+        env["U2NET_HOME"] = os.environ["U2NET_HOME"]      # a path to the pre-downloaded background-removal model, not a secret
     if extra_pythonpath:
         # Only ever set to PACKAGE_INSTALL_DIR (our own pip --target dir),
         # never anything caller-supplied — this is not a general env
@@ -737,6 +739,15 @@ def run_code(code: str, language: str = "python", timeout_s: int = DEFAULT_TIMEO
             "type": "code_result", "success": False, "engine": None,
             "language": lang, "stdout": "", "stderr": "", "exit_code": None,
             "error": "empty code",
+        }
+        return
+
+    if packages and any(re.sub(r"[^a-z]", "", str(x).lower()).startswith(("rembg", "onnxruntime", "torch", "tensorflow")) for x in packages):
+        yield {
+            "type": "code_result", "success": False, "engine": None,
+            "language": lang, "stdout": "", "stderr": "", "exit_code": None,
+            "error": ("That package is too heavy to install inside run_code (it would time out). "
+                      "For removing an image background use the remove_background tool instead."),
         }
         return
 

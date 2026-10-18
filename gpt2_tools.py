@@ -296,7 +296,7 @@ TOOL_DESCRIPTIONS = {
     "search_images": "Search the web for candidate images matching a query.",
     "fetch_page_preview_image": "Grab a specific webpage's own declared preview image.",
     "analyze_image": "Look at image(s) and answer a question about what's in them.",
-    "remove_background": "Remove the background from an existing image (given its url) and get back a transparent PNG.",
+    "remove_background": "Remove the background from an existing image (given its url) and get back a transparent PNG. ALWAYS use this for background removal — never try it with run_code (far too slow there).",
     "create_image": "Draw a real image from simple shapes/text (rectangles, ellipses, lines, polygons, text) — describe what to draw as a list of operations, this renders and uploads the actual image.",
     "fetch_webpage": "Open a Specific url and read its actual page text/content.",
     "search_github": "Search GitHub for repositories or code matching a query.",

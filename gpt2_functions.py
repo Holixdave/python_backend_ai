@@ -2631,12 +2631,27 @@ def remove_background(image_url: str, userid: Optional[str] = None, filename: Op
 
     yield {"type": "status", "text": "Loading image...", "detail": None, "icon": "docs"}
 
-    try:
-        resp = requests.get(image_url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
-        resp.raise_for_status()
-        input_bytes = resp.content
-    except Exception as e:
-        yield {"type": "file_result", "success": False, "url": None, "filename": filename or "image.png", "error": f"Couldn't fetch the image: {e}"}
+    # Generated-image links (pollinations etc.) re-render on every fetch and often answer 429/503 the
+    # second time. Retry a few times with a growing pause before giving up.
+    input_bytes, fetch_err = None, None
+    for attempt in range(4):
+        try:
+            resp = requests.get(image_url, timeout=45, headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code in (429, 500, 502, 503, 504) and attempt < 3:
+                fetch_err = f"{resp.status_code} from the image host"
+                time.sleep(3 * (attempt + 1))
+                continue
+            resp.raise_for_status()
+            input_bytes = resp.content
+            break
+        except requests.exceptions.Timeout as e:
+            fetch_err = e
+            time.sleep(2)
+        except Exception as e:
+            fetch_err = e
+            break
+    if input_bytes is None:
+        yield {"type": "file_result", "success": False, "url": None, "filename": filename or "image.png", "error": f"Couldn't fetch the image: {fetch_err}"}
         return
 
     yield {"type": "status", "text": "Removing background...", "detail": None, "icon": "build"}
