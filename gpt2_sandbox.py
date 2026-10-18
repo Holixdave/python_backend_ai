@@ -99,23 +99,127 @@ _INPUT_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".id
 # is an instant no-op.
 # ---------------------------------------------------------------------------
 PACKAGE_INSTALL_DIR = os.environ.get("SANDBOX_PACKAGE_DIR", "/tmp/sandbox_site_packages")
-PACKAGE_INSTALL_TIMEOUT_S = 120   # generous — first pull of a heavy package (torch, onnxruntime) is slow
+PACKAGE_INSTALL_TIMEOUT_S = 240   # allow slower binary wheels on small hosted runners
 MAX_PACKAGES_PER_RUN = 6
 _PACKAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")   # blocks flags/paths/shell metacharacters
 
 
 def _installed_package_names() -> set:
-    # pip's --target layout drops a `<name>-<version>.dist-info` folder
-    # per package — reading those names back out is how we know what's
-    # already there without re-invoking pip (which would itself take a
-    # network round trip just to report "already satisfied").
+    # Only distribution metadata proves that pip completed an installation.
+    # Do NOT count import-package folders (e.g. `numpy/`) as installed:
+    # an interrupted pip run can leave that folder behind without its compiled
+    # extension, which previously caused NumPy to be skipped forever.
     names = set()
     if os.path.isdir(PACKAGE_INSTALL_DIR):
         for entry in os.listdir(PACKAGE_INSTALL_DIR):
-            base = entry.split("-")[0].split(".")[0]
-            if base:
-                names.add(base.lower().replace("_", "-"))
+            if not (entry.endswith(".dist-info") or entry.endswith(".egg-info")):
+                continue
+            metadata_name = os.path.join(PACKAGE_INSTALL_DIR, entry, "METADATA")
+            if not os.path.isfile(metadata_name):
+                metadata_name = os.path.join(PACKAGE_INSTALL_DIR, entry, "PKG-INFO")
+            try:
+                with open(metadata_name, "r", encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        if line.lower().startswith("name:"):
+                            names.add(line.split(":", 1)[1].strip().lower().replace("_", "-"))
+                            break
+            except OSError:
+                continue
     return names
+
+
+def _distribution_imports_healthy(package: str) -> bool:
+    """Return False when an installed distribution's import is broken."""
+    normalized = package.lower().replace("_", "-").split("[", 1)[0]
+    candidates = []
+    try:
+        for entry in os.listdir(PACKAGE_INSTALL_DIR):
+            if not (entry.endswith(".dist-info") or entry.endswith(".egg-info")):
+                continue
+            metadata = os.path.join(PACKAGE_INSTALL_DIR, entry, "METADATA")
+            try:
+                with open(metadata, "r", encoding="utf-8", errors="replace") as fh:
+                    content = fh.read(20000)
+            except OSError:
+                continue
+            match = re.search(r"(?im)^Name:\s*(.+?)\s*$", content)
+            if match and match.group(1).strip().lower().replace("_", "-") == normalized:
+                top_level = os.path.join(PACKAGE_INSTALL_DIR, entry, "top_level.txt")
+                try:
+                    with open(top_level, "r", encoding="utf-8", errors="replace") as fh:
+                        candidates = [line.strip() for line in fh if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", line.strip())]
+                except OSError:
+                    pass
+                break
+    except OSError:
+        return False
+
+    # Some wheels omit top_level.txt. At least force a clean reinstall of
+    # known compiled packages when their files are incomplete.
+    if not candidates:
+        candidates = {"numpy": ["numpy"], "pillow": ["PIL"], "opencv-python": ["cv2"],
+                      "scikit-learn": ["sklearn"], "beautifulsoup4": ["bs4"]}.get(normalized, [])
+    if not candidates:
+        return True
+
+    probe = "import importlib; " + "; ".join(f"importlib.import_module({name!r})" for name in candidates)
+    try:
+        result = subprocess.run(
+            ["python3", "-S", "-c", probe],
+            env=_clean_env(extra_pythonpath=PACKAGE_INSTALL_DIR),
+            capture_output=True, text=True, timeout=15,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _remove_broken_distribution(package: str) -> None:
+    """Remove stale files for one broken distribution before reinstalling it."""
+    normalized = package.lower().replace("_", "-").split("[", 1)[0]
+    if not os.path.isdir(PACKAGE_INSTALL_DIR):
+        return
+    remove_paths = set()
+    for entry in os.listdir(PACKAGE_INSTALL_DIR):
+        if entry.lower().replace("_", "-").startswith(normalized.replace("-", "_") + "-") or entry.lower().replace("_", "-").startswith(normalized + "-"):
+            if entry.endswith(".dist-info") or entry.endswith(".egg-info"):
+                remove_paths.add(os.path.join(PACKAGE_INSTALL_DIR, entry))
+    # Use known import-folder names for common compiled packages and recover
+    # other packages from their top_level.txt when available.
+    aliases = {"numpy": ["numpy"], "pillow": ["PIL"], "opencv-python": ["cv2"],
+               "scikit-learn": ["sklearn"], "beautifulsoup4": ["bs4"]}
+    import_names = aliases.get(normalized, [])
+    for entry in os.listdir(PACKAGE_INSTALL_DIR):
+        if entry.endswith(".dist-info") or entry.endswith(".egg-info"):
+            metadata = os.path.join(PACKAGE_INSTALL_DIR, entry, "METADATA")
+            try:
+                with open(metadata, "r", encoding="utf-8", errors="replace") as fh:
+                    content = fh.read(20000)
+            except OSError:
+                continue
+            match = re.search(r"(?im)^Name:\s*(.+?)\s*$", content)
+            if match and match.group(1).strip().lower().replace("_", "-") == normalized:
+                top_level = os.path.join(PACKAGE_INSTALL_DIR, entry, "top_level.txt")
+                try:
+                    with open(top_level, "r", encoding="utf-8", errors="replace") as fh:
+                        import_names = [line.strip() for line in fh if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", line.strip())]
+                except OSError:
+                    pass
+                break
+    for name in import_names:
+        for path in (os.path.join(PACKAGE_INSTALL_DIR, name), os.path.join(PACKAGE_INSTALL_DIR, name + ".py")):
+            if os.path.isdir(path) and not os.path.islink(path):
+                remove_paths.add(path)
+            elif os.path.isfile(path):
+                remove_paths.add(path)
+    for path in remove_paths:
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 def _ensure_packages(packages: list, timeout_s: int = PACKAGE_INSTALL_TIMEOUT_S):
@@ -139,13 +243,28 @@ def _ensure_packages(packages: list, timeout_s: int = PACKAGE_INSTALL_TIMEOUT_S)
 
     os.makedirs(PACKAGE_INSTALL_DIR, exist_ok=True)
     already_there = _installed_package_names()
-    to_install = [p for p in packages if p.lower().replace("_", "-") not in already_there]
+    to_install = []
+    for package in packages:
+        normalized = package.lower().replace("_", "-")
+        if normalized not in already_there:
+            # Clear abandoned package folders left by an interrupted install.
+            _remove_broken_distribution(package)
+            # Also remove an orphan import folder when no distribution metadata
+            # exists (the exact failure mode from the NumPy traceback).
+            if normalized == "numpy":
+                stale_numpy = os.path.join(PACKAGE_INSTALL_DIR, "numpy")
+                if os.path.isdir(stale_numpy):
+                    shutil.rmtree(stale_numpy, ignore_errors=True)
+            to_install.append(package)
+        elif not _distribution_imports_healthy(package):
+            _remove_broken_distribution(package)
+            to_install.append(package)
     if not to_install:
         return True, ""
 
     cmd = [
         "python3", "-m", "pip", "install",
-        "--target", PACKAGE_INSTALL_DIR,
+        "--upgrade", "--target", PACKAGE_INSTALL_DIR,
         "--no-input", "--disable-pip-version-check", "--no-warn-script-location",
         *to_install,
     ]
