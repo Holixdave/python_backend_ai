@@ -416,6 +416,36 @@ def _truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
     return text[:limit] + f"\n...[truncated, {len(text) - limit} more chars]"
 
 
+_FFMPEG_CACHE: dict = {}
+
+
+def _ffmpeg_exe() -> Optional[str]:
+    """Absolute path of a usable ffmpeg, or None. Found HERE (in the server process) and handed to
+    sandboxed code via IMAGEIO_FFMPEG_EXE, so imageio / imageio-ffmpeg never have to discover it
+    themselves inside the scrubbed environment (that lookup raised "No ffmpeg exe could be found"
+    even though the bundled binary and /usr/bin/ffmpeg both existed). Prefers the binary bundled
+    with imageio-ffmpeg, falls back to a system ffmpeg."""
+    if "exe" in _FFMPEG_CACHE:
+        return _FFMPEG_CACHE["exe"]
+    exe = None
+    try:
+        import glob
+        import importlib.util
+        spec = importlib.util.find_spec("imageio_ffmpeg")
+        if spec and spec.origin:
+            pattern = os.path.join(os.path.dirname(spec.origin), "binaries", "ffmpeg-*")
+            for cand in sorted(glob.glob(pattern)):
+                if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                    exe = cand
+                    break
+    except Exception:
+        exe = None
+    if not exe:
+        exe = shutil.which("ffmpeg")
+    _FFMPEG_CACHE["exe"] = exe
+    return exe
+
+
 def _clean_env(extra_pythonpath: Optional[str] = None) -> dict:
     # Deliberately NOT os.environ.copy() — this is the whole point. A
     # subprocess that inherited the real environment gets every API key/
@@ -433,6 +463,9 @@ def _clean_env(extra_pythonpath: Optional[str] = None) -> dict:
         "NUMEXPR_NUM_THREADS": "1",
         "MPLBACKEND": "Agg",
     }
+    ffmpeg = _ffmpeg_exe()
+    if ffmpeg:
+        env["IMAGEIO_FFMPEG_EXE"] = ffmpeg      # a path, not a secret
     if os.environ.get("U2NET_HOME"):
         env["U2NET_HOME"] = os.environ["U2NET_HOME"]      # a path to the pre-downloaded background-removal model, not a secret
     if extra_pythonpath:

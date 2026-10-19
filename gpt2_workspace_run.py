@@ -33,7 +33,7 @@ from typing import Optional
 from gpt2_workspace import (
     MAX_FILE_BYTES, MAX_USER_BYTES, _dir_size, _dirty, _rate_ok, _safe_path, _user_root,
 )
-from gpt2_sandbox import PACKAGE_INSTALL_DIR, _ensure_packages, _truncate
+from gpt2_sandbox import PACKAGE_INSTALL_DIR, _ensure_packages, _truncate, _ffmpeg_exe
 
 DEFAULT_TIMEOUT_S = 60
 MAX_TIMEOUT_S = 180
@@ -134,6 +134,8 @@ def workspace_run(userid: str, command: str, cwd: str = "", timeout_s: int = DEF
         }
         if packages_dir:
             env["PYTHONPATH"] = packages_dir
+        if _ffmpeg_exe():
+            env["IMAGEIO_FFMPEG_EXE"] = _ffmpeg_exe()
 
         bash = ["bash", "--noprofile", "--norc", "-c", command]
         if is_root and isolate_net:
