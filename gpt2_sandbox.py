@@ -476,6 +476,42 @@ def _clean_env(extra_pythonpath: Optional[str] = None) -> dict:
     return env
 
 
+def _uid_thread_count(uid: int) -> int:
+    """Processes + threads currently owned by `uid` — exactly what RLIMIT_NPROC counts."""
+    total = 0
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return 0
+    for pid in entries:
+        if not pid.isdigit():
+            continue
+        try:
+            real_uid, threads = None, 1
+            with open(f"/proc/{pid}/status", "r") as fh:
+                for line in fh:
+                    if line.startswith("Uid:"):
+                        real_uid = int(line.split()[1])
+                    elif line.startswith("Threads:"):
+                        threads = int(line.split()[1])
+            if real_uid == uid:
+                total += threads
+        except (OSError, ValueError, IndexError):
+            continue
+    return total
+
+
+def _nproc_limit(headroom: int) -> int:
+    """RLIMIT_NPROC is per-USER, not per-process. When the server isn't root (Render native
+    runtime = uid 1000) the sandboxed child is the SAME user as the web server, so a fixed
+    number is already used up by the server's own threads and every fork fails with EAGAIN
+    ('Resource temporarily unavailable'). Give the child `headroom` on top of current usage."""
+    if not hasattr(os, "geteuid"):
+        return headroom
+    target = 65534 if os.geteuid() == 0 else os.geteuid()
+    return _uid_thread_count(target) + headroom
+
+
 def _resource_limits():
     # preexec_fn for subprocess.Popen — applies OS-level caps to the CHILD
     # only, never this process. Linux-only (resource module); silently
@@ -488,10 +524,14 @@ def _resource_limits():
     except ImportError:
         return None
 
+    nproc = _nproc_limit(MAX_PROCS)      # computed in the parent, applied in the child
+
     def _apply():
         resource.setrlimit(resource.RLIMIT_CPU, (MAX_TIMEOUT_S, MAX_TIMEOUT_S))
         resource.setrlimit(resource.RLIMIT_AS, (MAX_MEMORY_BYTES, MAX_MEMORY_BYTES))
-        resource.setrlimit(resource.RLIMIT_NPROC, (MAX_PROCS, MAX_PROCS))
+        _, hard = resource.getrlimit(resource.RLIMIT_NPROC)
+        n = nproc if hard == resource.RLIM_INFINITY else min(nproc, hard)
+        resource.setrlimit(resource.RLIMIT_NPROC, (n, n))
         resource.setrlimit(resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024))  # 10MB file writes max
         os.setsid()  # own process group, so a timeout kill takes any children with it
         # When the server runs as root (Render's Docker does) the sandboxed code

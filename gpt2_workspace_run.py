@@ -33,7 +33,7 @@ from typing import Optional
 from gpt2_workspace import (
     MAX_FILE_BYTES, MAX_USER_BYTES, _dir_size, _dirty, _rate_ok, _safe_path, _user_root,
 )
-from gpt2_sandbox import PACKAGE_INSTALL_DIR, _ensure_packages, _truncate, _ffmpeg_exe
+from gpt2_sandbox import PACKAGE_INSTALL_DIR, _ensure_packages, _truncate, _ffmpeg_exe, _nproc_limit
 
 DEFAULT_TIMEOUT_S = 60
 MAX_TIMEOUT_S = 180
@@ -145,11 +145,15 @@ def workspace_run(userid: str, command: str, cwd: str = "", timeout_s: int = DEF
         else:
             cmd = bash
 
+        nproc = _nproc_limit(128)      # per-USER cap: current usage of that user + headroom (computed in parent)
+
         def _limits():
             import resource
             resource.setrlimit(resource.RLIMIT_CPU, (timeout_s + 5, timeout_s + 5))
             resource.setrlimit(resource.RLIMIT_AS, (MEMORY_BYTES, MEMORY_BYTES))
-            resource.setrlimit(resource.RLIMIT_NPROC, (128, 128))
+            _, hard = resource.getrlimit(resource.RLIMIT_NPROC)
+            n = nproc if hard == resource.RLIM_INFINITY else min(nproc, hard)
+            resource.setrlimit(resource.RLIMIT_NPROC, (n, n))
             resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_FILE_BYTES, MAX_FILE_BYTES))
             os.setsid()
             if is_root and not isolate_net:   # (with unshare the setpriv wrapper drops privileges instead)
