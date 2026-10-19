@@ -151,9 +151,10 @@ def workspace_run(userid: str, command: str, cwd: str = "", timeout_s: int = DEF
             import resource
             resource.setrlimit(resource.RLIMIT_CPU, (timeout_s + 5, timeout_s + 5))
             resource.setrlimit(resource.RLIMIT_AS, (MEMORY_BYTES, MEMORY_BYTES))
-            _, hard = resource.getrlimit(resource.RLIMIT_NPROC)
-            n = nproc if hard == resource.RLIM_INFINITY else min(nproc, hard)
-            resource.setrlimit(resource.RLIMIT_NPROC, (n, n))
+            if nproc is not None:        # opt-in only (env SANDBOX_NPROC_HEADROOM), see gpt2_sandbox._nproc_limit
+                _, hard = resource.getrlimit(resource.RLIMIT_NPROC)
+                n = nproc if hard == resource.RLIM_INFINITY else min(nproc, hard)
+                resource.setrlimit(resource.RLIMIT_NPROC, (n, n))
             resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_FILE_BYTES, MAX_FILE_BYTES))
             os.setsid()
             if is_root and not isolate_net:   # (with unshare the setpriv wrapper drops privileges instead)

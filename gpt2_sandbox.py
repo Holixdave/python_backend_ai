@@ -501,15 +501,22 @@ def _uid_thread_count(uid: int) -> int:
     return total
 
 
-def _nproc_limit(headroom: int) -> int:
-    """RLIMIT_NPROC is per-USER, not per-process. When the server isn't root (Render native
-    runtime = uid 1000) the sandboxed child is the SAME user as the web server, so a fixed
-    number is already used up by the server's own threads and every fork fails with EAGAIN
-    ('Resource temporarily unavailable'). Give the child `headroom` on top of current usage."""
-    if not hasattr(os, "geteuid"):
-        return headroom
+def _nproc_limit(headroom: int) -> Optional[int]:
+    """RLIMIT_NPROC is OFF by default (returns None = leave the inherited limit alone).
+
+    Why: it is a per-USER cap counted by the kernel across every process of that uid on the
+    machine, including ones this container cannot see in /proc (other containers on a shared
+    host, the web server itself). On Render the sandbox child is the same uid as the server, so
+    ANY fixed or usage-based number fails every fork with EAGAIN ('Resource temporarily
+    unavailable') — even `true` could not start — while only ~29 threads were visible.
+    Fork-bomb protection comes from the container's own pids cgroup limit (and the CPU/time
+    caps) instead. To force a cap anyway, set env SANDBOX_NPROC_HEADROOM=<n>: the child may
+    then run <n> more processes/threads than this user's visible total."""
+    raw = os.environ.get("SANDBOX_NPROC_HEADROOM", "").strip()
+    if not raw.isdigit() or not hasattr(os, "geteuid"):
+        return None
     target = 65534 if os.geteuid() == 0 else os.geteuid()
-    return _uid_thread_count(target) + headroom
+    return _uid_thread_count(target) + int(raw)
 
 
 def _resource_limits():
@@ -529,9 +536,10 @@ def _resource_limits():
     def _apply():
         resource.setrlimit(resource.RLIMIT_CPU, (MAX_TIMEOUT_S, MAX_TIMEOUT_S))
         resource.setrlimit(resource.RLIMIT_AS, (MAX_MEMORY_BYTES, MAX_MEMORY_BYTES))
-        _, hard = resource.getrlimit(resource.RLIMIT_NPROC)
-        n = nproc if hard == resource.RLIM_INFINITY else min(nproc, hard)
-        resource.setrlimit(resource.RLIMIT_NPROC, (n, n))
+        if nproc is not None:            # opt-in only, see _nproc_limit()
+            _, hard = resource.getrlimit(resource.RLIMIT_NPROC)
+            n = nproc if hard == resource.RLIM_INFINITY else min(nproc, hard)
+            resource.setrlimit(resource.RLIMIT_NPROC, (n, n))
         resource.setrlimit(resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024))  # 10MB file writes max
         os.setsid()  # own process group, so a timeout kill takes any children with it
         # When the server runs as root (Render's Docker does) the sandboxed code
