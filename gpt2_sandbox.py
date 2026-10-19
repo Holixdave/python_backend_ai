@@ -26,15 +26,23 @@
 # execution without owning a Docker host at all.
 # ─────────────────────────────────────────────────────────────────────────────
 
+import importlib.metadata
 import mimetypes
 import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
+import threading
 import time
 import uuid
 from typing import Optional
+
+try:                      # Linux/macOS only; local Windows dev just skips the cross-process lock
+    import fcntl
+except ImportError:       # pragma: no cover
+    fcntl = None
 
 # gRPC / event-engine libraries print these to stderr and sometimes abort at interpreter
 # shutdown (exit code != 0) even though the user's code finished fine. They made good runs
@@ -59,8 +67,9 @@ DEFAULT_TIMEOUT_S = 60
 MAX_TIMEOUT_S = 180
 MAX_CODE_CHARS = 20_000
 MAX_OUTPUT_CHARS = 8_000          # per stream (stdout/stderr), truncated past this
-MAX_MEMORY_BYTES = 256 * 1024 * 1024   # 256 MB, subprocess mode only
-MAX_PROCS = 32                          # fork-bomb guard, subprocess mode only
+MAX_MEMORY_BYTES = 1024 * 1024 * 1024  # 1 GB address space, subprocess mode only (256 MB was too small for numpy + video frames)
+MAX_PROCS = 128                         # fork-bomb guard, subprocess mode only. Counts THREADS too, and is shared by every
+                                        # process running as 'nobody' — 32 caused "fork: Resource temporarily unavailable".
 
 # ---------------------------------------------------------------------------
 # OUTPUT FILES - anything the code writes into ./outputs/ is copied into the
@@ -165,7 +174,7 @@ def _distribution_imports_healthy(package: str) -> bool:
     probe = "import importlib; " + "; ".join(f"importlib.import_module({name!r})" for name in candidates)
     try:
         result = subprocess.run(
-            ["python3", "-S", "-c", probe],
+            [sys.executable, "-S", "-c", probe],
             env=_clean_env(extra_pythonpath=PACKAGE_INSTALL_DIR),
             capture_output=True, text=True, timeout=15,
         )
@@ -222,13 +231,58 @@ def _remove_broken_distribution(package: str) -> None:
                 pass
 
 
+_INSTALL_THREAD_LOCK = threading.Lock()
+_INTERPRETER_STAMP = os.path.join(PACKAGE_INSTALL_DIR, ".python-stamp")
+
+
+def _installed_in_host_python(package: str) -> bool:
+    """True when the interpreter we run user code with (sys.executable, WITHOUT -S)
+    already has this distribution — e.g. numpy/pillow/pandas baked into the image.
+    Those never need a pip --target copy, and a second copy is exactly what broke."""
+    name = package.split("[", 1)[0]
+    try:
+        importlib.metadata.version(name)
+        return True
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    except Exception:
+        return False
+
+
+def _reset_dir_if_wrong_python() -> None:
+    """Compiled wheels (numpy, pillow...) only load on the Python they were built for.
+    If PACKAGE_INSTALL_DIR was filled by a different interpreter (3.11 vs 3.13, as in
+    the `_multiarray_umath` / `_imaging` errors), wipe it so it reinstalls cleanly."""
+    stamp = f"{sys.version_info.major}.{sys.version_info.minor} {sys.executable}"
+    try:
+        with open(_INTERPRETER_STAMP, "r", encoding="utf-8") as fh:
+            if fh.read().strip() == stamp:
+                return
+    except OSError:
+        pass
+    if os.path.isdir(PACKAGE_INSTALL_DIR):
+        for entry in os.listdir(PACKAGE_INSTALL_DIR):
+            path = os.path.join(PACKAGE_INSTALL_DIR, entry)
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+    os.makedirs(PACKAGE_INSTALL_DIR, exist_ok=True)
+    try:
+        with open(_INTERPRETER_STAMP, "w", encoding="utf-8") as fh:
+            fh.write(stamp)
+    except OSError:
+        pass
+
+
 def _ensure_packages(packages: list, timeout_s: int = PACKAGE_INSTALL_TIMEOUT_S):
     """
-    Installs any of `packages` not already present in the shared
-    PACKAGE_INSTALL_DIR. Returns (ok: bool, message: str) — message is
-    empty on success (nothing worth telling the AI), or a clear reason
-    on failure so it can be surfaced in the code_result error rather
-    than the run just silently failing with a confusing ModuleNotFoundError.
+    Installs any of `packages` not already available. Returns (ok, message).
+    Serialised with a thread lock + file lock so two runs can never pip into the
+    same folder at once (that left half-written numpy/PIL installs behind).
     """
     if not packages:
         return True, ""
@@ -242,6 +296,30 @@ def _ensure_packages(packages: list, timeout_s: int = PACKAGE_INSTALL_TIMEOUT_S)
             )
 
     os.makedirs(PACKAGE_INSTALL_DIR, exist_ok=True)
+    lock_path = PACKAGE_INSTALL_DIR.rstrip("/\\") + ".lock"
+    with _INSTALL_THREAD_LOCK:
+        lock_fh = None
+        try:
+            if fcntl is not None:
+                lock_fh = open(lock_path, "w")
+                fcntl.flock(lock_fh, fcntl.LOCK_EX)
+            # ALWAYS validate the shared dir first: it goes on PYTHONPATH ahead of the image's
+            # own site-packages, so a stale dir built by another Python would shadow a good numpy.
+            _reset_dir_if_wrong_python()
+            # Anything the image already ships (numpy, pillow, pandas, imageio, ...) needs no install.
+            packages = [p for p in packages if not _installed_in_host_python(p)]
+            if not packages:
+                return True, ""
+            return _ensure_packages_locked(packages, timeout_s)
+        finally:
+            if lock_fh is not None:
+                try:
+                    fcntl.flock(lock_fh, fcntl.LOCK_UN)
+                finally:
+                    lock_fh.close()
+
+
+def _ensure_packages_locked(packages: list, timeout_s: int):
     already_there = _installed_package_names()
     to_install = []
     for package in packages:
@@ -263,7 +341,7 @@ def _ensure_packages(packages: list, timeout_s: int = PACKAGE_INSTALL_TIMEOUT_S)
         return True, ""
 
     cmd = [
-        "python3", "-m", "pip", "install",
+        sys.executable, "-m", "pip", "install",
         "--upgrade", "--target", PACKAGE_INSTALL_DIR,
         "--no-input", "--disable-pip-version-check", "--no-warn-script-location",
         *to_install,
@@ -294,16 +372,18 @@ def _ensure_packages(packages: list, timeout_s: int = PACKAGE_INSTALL_TIMEOUT_S)
 LANGUAGE_RUNNERS = {
     "python": {
         "ext": "py",
-        "subprocess_cmd": lambda path: ["python3", "-I", "-S", path],
-        # Used instead of subprocess_cmd when packages were requested.
-        # -I (isolated mode) ignores PYTHONPATH entirely, which would
-        # make pip-installed packages unreachable no matter where they
-        # live — so packages drop -I but keep -S, which still skips the
-        # HOST's own global/user site-packages. Only our own
-        # PACKAGE_INSTALL_DIR (set via PYTHONPATH in _clean_env) becomes
-        # importable, never whatever happens to be installed on the host.
-        "subprocess_cmd_with_packages": lambda path: ["python3", "-S", path],
-        "docker_image": "python:3.12-slim",
+        # sys.executable (never bare "python3") so pip, the health probe and user code all use
+        # the SAME interpreter — mixing 3.11 and 3.13 is what broke numpy/PIL's compiled parts.
+        # -S was removed: it hid the numpy/pillow/pandas/imageio already installed in the image,
+        # forcing a fragile second copy into /tmp/sandbox_site_packages. -I still ignores
+        # PYTHONPATH/user site, so a no-packages run sees only the image's own packages.
+        "subprocess_cmd": lambda path: [sys.executable, "-I", path],
+        # Packages requested: drop -I so PYTHONPATH (PACKAGE_INSTALL_DIR, set in _clean_env)
+        # is honoured. Extras are found first, everything else falls back to the image.
+        "subprocess_cmd_with_packages": lambda path: [sys.executable, path],
+        # Must match the host Python minor version: the mounted pip --target dir holds
+        # wheels built for it (a 3.13 numpy will not load in a 3.12 container).
+        "docker_image": f"python:{sys.version_info.major}.{sys.version_info.minor}-slim",
         "docker_cmd": lambda container_path: ["python3", container_path],
     },
     "javascript": {
@@ -345,6 +425,13 @@ def _clean_env(extra_pythonpath: Optional[str] = None) -> dict:
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "HOME": "/tmp",
         "LANG": "C.UTF-8",
+        # BLAS/OpenMP otherwise start one thread per CPU core; thread count is charged against
+        # RLIMIT_NPROC and virtual memory (RLIMIT_AS) and caused numpy import + fork failures.
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "NUMEXPR_NUM_THREADS": "1",
+        "MPLBACKEND": "Agg",
     }
     if os.environ.get("U2NET_HOME"):
         env["U2NET_HOME"] = os.environ["U2NET_HOME"]      # a path to the pre-downloaded background-removal model, not a secret

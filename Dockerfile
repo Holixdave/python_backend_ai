@@ -1,5 +1,12 @@
 FROM python:3.13-slim
 
+# ffmpeg for video/audio work inside the sandbox. The image's own Python (3.13) is the ONLY
+# interpreter the sandbox uses (gpt2_sandbox.py runs user code with sys.executable), so
+# numpy/pillow/imageio below are always importable without any runtime pip install.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY requirements.txt .

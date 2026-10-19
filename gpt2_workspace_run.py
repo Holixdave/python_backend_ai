@@ -40,7 +40,7 @@ MAX_TIMEOUT_S = 180
 MAX_COPY_BYTES = 100 * 1024 * 1024
 MAX_SYNC_FILES = 500
 MAX_STREAM_CHARS = 12_000
-MEMORY_BYTES = 768 * 1024 * 1024
+MEMORY_BYTES = 1024 * 1024 * 1024
 NOBODY = 65534
 _COPY_SKIP = {".git", "__pycache__"}
 _unshare_ok: Optional[bool] = None
@@ -128,6 +128,9 @@ def workspace_run(userid: str, command: str, cwd: str = "", timeout_s: int = DEF
             "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "HOME": home, "LANG": "C.UTF-8", "TMPDIR": home,
             "PYTHONDONTWRITEBYTECODE": "1",
+            # one BLAS/OpenMP thread: threads count against RLIMIT_NPROC / RLIMIT_AS
+            "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1", "NUMEXPR_NUM_THREADS": "1", "MPLBACKEND": "Agg",
         }
         if packages_dir:
             env["PYTHONPATH"] = packages_dir

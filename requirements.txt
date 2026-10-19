@@ -20,3 +20,8 @@ elevenlabs
 pypdf
 python-docx
 openpyxl
+
+# preinstalled for the run_code sandbox (video / audio / science work)
+imageio
+imageio-ffmpeg
+scipy
