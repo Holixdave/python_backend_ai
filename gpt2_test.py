@@ -521,6 +521,7 @@ from gpt2_tools import (
 # real function call, not static text.
 from prompts import NATIVE_TOOL_HINT, OUTPUT_DISCIPLINE, PREMIUM_MODE_PROMPT
 from gpt2_native import native_enabled, run_native_turn, build_tool_schemas, friendly_label
+import gpt2_filetrack
 from prompts import SEARCH_DISCIPLINE_HINT, FILE_STORES_HINT, OUTPUT_FILES_HINT, SUGGESTION_HINT, TOOL_USE_HINT_TAIL, MEMORY_TRUNCATED_NOTE, INLINE_VISUAL_HINT, NOTE_CALLOUT_HINT, CHECK_WORK_HINT, LONG_TEXT_HINT
 
 TOOL_USE_HINT = "\n\n" + build_tool_manifest() + TOOL_USE_HINT_TAIL + SEARCH_DISCIPLINE_HINT + FILE_STORES_HINT + OUTPUT_FILES_HINT + CHECK_WORK_HINT + LONG_TEXT_HINT
@@ -926,6 +927,11 @@ def _ask_gpt2_core(
         current_identity += NATIVE_TOOL_HINT + SEARCH_DISCIPLINE_HINT + FILE_STORES_HINT + OUTPUT_FILES_HINT + CHECK_WORK_HINT + LONG_TEXT_HINT
     elif not copilot_mode:
         current_identity += TOOL_USE_HINT
+    if not copilot_mode and userid:
+        try:   # tells the model which files exist and which the user has NOT received (stops rebuild-instead-of-send)
+            current_identity += gpt2_filetrack.files_note(userid)
+        except Exception as _e:
+            print(f"[FILES] note skipped: {type(_e).__name__}: {_e}")
     current_identity += SUGGESTION_HINT
     current_identity += INLINE_VISUAL_HINT
     current_identity += NOTE_CALLOUT_HINT
@@ -994,6 +1000,17 @@ def _ask_gpt2_core(
                 ctx = dict(ctx, prompt=args["prompt"].strip())
             return execute_tool(name, args, ctx)
 
+        # "drop the file" / "send the file": hand over the file that already exists - never rebuild it
+        send_now = []
+        try:
+            if userid:
+                send_now = gpt2_filetrack.build_delivery_calls(
+                    userid, gpt2_filetrack.send_request_paths(userid, prompt))
+        except Exception as _e:
+            print(f"[FILES] send-request check skipped: {type(_e).__name__}: {_e}")
+        if send_now:
+            print(f"[FILES] user asked for an existing file - delivering without rebuilding: {send_now}")
+
         yield {"type": "status", "text": "Working…", "detail": None, "icon": "thinking"}
         for ev in run_native_turn(
             messages,
@@ -1015,6 +1032,7 @@ def _ask_gpt2_core(
             build_segments=build_answer_segments,
             on_failure=_friendly_failure_message,
             state=native_state,
+            initial_calls=send_now,
         ):
             yield ev
         return

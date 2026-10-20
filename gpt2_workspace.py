@@ -315,6 +315,8 @@ def workspace_write(userid: str, path: str, content: str, deliver: bool = False)
         f.write(data)
     _dirty(userid)
     out = {"success": True, "path": _rel(userid, full), "bytes": len(data)}
+    if os.path.splitext(full)[1].lower() in (".txt", ".md", ".html", ".htm", ".csv", ".json", ".py", ".js", ".css"):
+        out.update(_text_stats(full))
     if deliver:
         try:
             from gpt2_output import output_files   # lazy: gpt2_output imports this module
@@ -325,6 +327,21 @@ def workspace_write(userid: str, path: str, content: str, deliver: bool = False)
         except Exception as e:
             out["delivery_failed"] = [{"file": out["path"], "error": str(e)}]
     return out
+
+
+def _text_stats(full: str) -> dict:
+    """Progress numbers for building a long text file in parts: words so far, and whether the file
+    currently ends on a finished sentence/line (a half-written one ends mid-sentence)."""
+    try:
+        if os.path.getsize(full) > 3_000_000:
+            return {}
+        with open(full, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return {}
+    tail = text.rstrip()
+    return {"total_words": len(text.split()),
+            "ends_cleanly": bool(tail) and (tail[-1] in '.!?:;)]}"\'*`_|>' or text.endswith("\n\n"))}
 
 
 def workspace_append(userid: str, path: str, content: str, deliver: bool = False) -> dict:
@@ -350,6 +367,7 @@ def workspace_append(userid: str, path: str, content: str, deliver: bool = False
         f.write(data)
     _dirty(userid)
     out = {"success": True, "path": _rel(userid, full), "bytes_added": len(data), "total_bytes": before + len(data)}
+    out.update(_text_stats(full))
     if deliver:
         try:
             from gpt2_output import output_files   # lazy: gpt2_output imports this module

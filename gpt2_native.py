@@ -45,6 +45,8 @@ from typing import Callable, Optional
 
 import requests
 
+import gpt2_filetrack as filetrack
+
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 
 
@@ -723,6 +725,53 @@ def _compact_old_tool_results(messages: list, keep_full: int = 4, old_chars: int
             messages[i]["content"] = c[:old_chars] + f"\n[…shortened — {len(c) - old_chars} more chars]"
 
 
+# ── stalled turns: the model SAYS what it will do next, then ends the turn without doing it ──
+_SIGNOFF_RE = re.compile(r"\b(?:let me know|let us know|feel free|let'?s (?:chat|talk|connect)|"
+                         r"i(?:'ll| will) (?:be )?(?:happy|glad|here|wait|stand by))\b", re.I)
+_CONDITIONAL_RE = re.compile(r"\b(?:if you|when you|should you|would you|do you want|want me to|shall i|"
+                             r"in case|once you|whenever you)\b", re.I)
+_INTENT_RE = re.compile(
+    r"(?:\blet(?:'s| us)\b|\blet me\b|\bi(?:'ll| will| shall)\b|\bi(?:'m| am) going to\b|"
+    r"\b(?:now|next|then|first),? (?:i(?:'ll| will)|we(?:'ll| will)|let(?:'s| me))\b|\bgoing to\b)"
+    r"\s+(?:now |first |also |just |quickly |go ahead and |start by |begin by )?"
+    r"(?:write|create|build|make|run|check|inspect|examine|look|read|open|search|find|fetch|generate|convert|"
+    r"extract|install|test|fix|update|edit|add|send|deliver|draft|compile|render|try|use|start|begin|proceed|"
+    r"continue|see|view|list|verify|fill|rebuild|rewrite|save|package|zip|publish|design|get|pull|load|"
+    r"analy[sz]e|process|apply|put|set ?up)\b", re.I)
+
+
+def announces_next_step(text: str) -> bool:
+    """True if the reply ENDS by announcing an action ("Let's write a script to inspect the PDF.") - a
+    turn that stops there did nothing. Sign-offs ("let me know"), questions and offers don't count."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    parts = [x for x in re.split(r"(?<=[.!?:])\s+|\n+", t[-500:]) if x.strip()]
+    last = parts[-1].strip() if parts else ""
+    if not last or last.endswith("?") or _SIGNOFF_RE.search(last) or _CONDITIONAL_RE.search(last):
+        return False
+    return bool(_INTENT_RE.search(last))
+
+
+def _result_failed(result) -> bool:
+    """A tool can return normally yet say {"success": false}: that is a failure, not a success."""
+    try:
+        d = json.loads(result) if isinstance(result, str) else None
+    except Exception:
+        return False
+    return isinstance(d, dict) and d.get("success") is False
+
+
+UNSENT_NUDGE = ("You made {names} but the user has NOT received it. If they should have it, call output_files now "
+                "with exactly {paths} (for a PDF or website design_check comes first). Do not recreate or rewrite anything.")
+STALL_NUDGE = ("You said what you would do next, but you did not call a tool, so NOTHING happened. Do that step now "
+               "with the right tool call. If something really blocks you, say plainly what it is and stop.")
+CUT_OFF_FILE_MSG = ("Your file content was cut off before the call finished (the arguments were not valid JSON), so "
+                    "NOTHING was saved. Do not retry at the same size. Send it in smaller parts: workspace_write the first "
+                    "~100 lines (about 4,000 characters), then workspace_append each next part, each ending at a complete "
+                    "section, and deliver=true on the last one.")
+
+
 def run_native_turn(messages: list, providers: list, session_context: dict, *,
                     tools: list, execute: Callable, describe_call: Callable,
                     sources_fn: Optional[Callable] = None, normalize_ask: Optional[Callable] = None,
@@ -730,7 +779,8 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
                     max_tokens: int = 4000, reasoning_effort: Optional[str] = None,
                     post_process: Optional[Callable] = None, parse_suggestions: Optional[Callable] = None,
                     strip_markers: Optional[Callable] = None, build_segments: Optional[Callable] = None,
-                    on_failure: Optional[Callable] = None, state: Optional[dict] = None):
+                    on_failure: Optional[Callable] = None, state: Optional[dict] = None,
+                    initial_calls: Optional[list] = None):
     """
     Generator of the events described at the top of this file. `state` (optional dict) is
     filled with tools_called / tools_ok / file_results / code_results / image_results /
@@ -756,6 +806,16 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
     # The last step never produced a single word (not a cut-off) — say that instead.
     STEP_NOTE = "I hit a problem on that last step. Send \"continue\" and I'll try again."
     used_models: list = []                  # every model that wrote part of this reply, in order
+
+    userid = session_context.get("userid") if isinstance(session_context, dict) else None
+    queued: list = list(initial_calls or [])   # tool calls the SERVER runs itself (send a file, ...)
+    turn_made: list = []                       # files made this turn
+    nudges = {"unsent": 0, "stall": 0}
+    auto_sent = False
+    known_urls: set = set()                    # every URL a tool or the history really contained
+    for _m in messages:
+        if isinstance(_m.get("content"), str):
+            known_urls |= filetrack.collect_urls(_m["content"])
 
     def models_info() -> dict:
         return {"models": [{"name": n, "label": _model_label(n)} for n in used_models],
@@ -787,49 +847,53 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
 
     for round_no in range(max_rounds + 1):
         use_tools = None if (forced_final or round_no == max_rounds) else tools
-        gate = TextGate()
-        done = None
-        failure = None
-        round_providers = ([p for p in providers if p.get("name") == sticky] +
-                           [p for p in providers if p.get("name") != sticky]) if sticky else providers
-        send_messages = _flatten_tool_history(messages) if flat_mode else messages
-        for kind, val in stream(round_providers, send_messages, use_tools, temperature=temperature,
-                                max_tokens=max_tokens, reasoning_effort=reasoning_effort):
-            if kind == "text":
-                safe = gate.feed(val)
-                if safe:
-                    yield {"type": "text", "delta": safe}
-            elif kind == "done":
-                done = val
-            elif kind == "fail":
-                failure = val
-        if done is None:
-            if state["tools_called"] and not flat_mode:
-                # Every model refused the follow-up to a tool call. Often that is a model choking on the
-                # tool-call history, not a real outage. Retry with the history as plain text — and keep the
-                # tools ON, so a multi-step job (search, then images, then code, then a file) can carry on.
-                flat_mode = True
-                print(f"[NATIVE] follow-up after a tool call failed — retrying with plain-text history: {failure}")
-                continue
-            yield fail_final(failure or "no answer")
-            return
-        tail = gate.flush()
-        if tail:
-            yield {"type": "text", "delta": tail}
-        provider_name = done.get("provider") or provider_name
-        sticky = done.get("provider") or sticky
-        for n in (done.get("providers") or [done.get("provider")]):
-            if n and n not in used_models:
-                used_models.append(n)
-        round_text = clean_round_text(gate.raw)
-        calls = (done.get("tool_calls") or [])[:1]   # one tool per round: the model speaks between every tool call
-        if not calls:
-            # the model typed its tool call as text instead of really calling it: run it for real
-            typed = parse_text_tool_calls(gate.raw, _known_tool_names(tools))
-            if typed:
-                tname, targs = typed[0]
-                calls = [{"id": f"txt_{len(messages)}_{tname}", "name": tname, "arguments": json.dumps(targs)}]
-                print(f"[NATIVE] model typed a {tname} call as text — running it as a real call")
+        if queued:
+            # the server itself runs this call (e.g. send a finished file) - no model round needed
+            calls, round_text, done = [queued.pop(0)], "", {"provider": provider_name}
+        else:
+            gate = TextGate()
+            done = None
+            failure = None
+            round_providers = ([p for p in providers if p.get("name") == sticky] +
+                               [p for p in providers if p.get("name") != sticky]) if sticky else providers
+            send_messages = _flatten_tool_history(messages) if flat_mode else messages
+            for kind, val in stream(round_providers, send_messages, use_tools, temperature=temperature,
+                                    max_tokens=max_tokens, reasoning_effort=reasoning_effort):
+                if kind == "text":
+                    safe = gate.feed(val)
+                    if safe:
+                        yield {"type": "text", "delta": safe}
+                elif kind == "done":
+                    done = val
+                elif kind == "fail":
+                    failure = val
+            if done is None:
+                if state["tools_called"] and not flat_mode:
+                    # Every model refused the follow-up to a tool call. Often that is a model choking on the
+                    # tool-call history, not a real outage. Retry with the history as plain text — and keep the
+                    # tools ON, so a multi-step job (search, then images, then code, then a file) can carry on.
+                    flat_mode = True
+                    print(f"[NATIVE] follow-up after a tool call failed — retrying with plain-text history: {failure}")
+                    continue
+                yield fail_final(failure or "no answer")
+                return
+            tail = gate.flush()
+            if tail:
+                yield {"type": "text", "delta": tail}
+            provider_name = done.get("provider") or provider_name
+            sticky = done.get("provider") or sticky
+            for n in (done.get("providers") or [done.get("provider")]):
+                if n and n not in used_models:
+                    used_models.append(n)
+            round_text = clean_round_text(gate.raw)
+            calls = (done.get("tool_calls") or [])[:1]   # one tool per round: the model speaks between every tool call
+            if not calls:
+                # the model typed its tool call as text instead of really calling it: run it for real
+                typed = parse_text_tool_calls(gate.raw, _known_tool_names(tools))
+                if typed:
+                    tname, targs = typed[0]
+                    calls = [{"id": f"txt_{len(messages)}_{tname}", "name": tname, "arguments": json.dumps(targs)}]
+                    print(f"[NATIVE] model typed a {tname} call as text — running it as a real call")
 
         if round_text:
             blocks.append({"type": "text", "text": round_text})
@@ -845,6 +909,32 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
                     "Now reply to the user in plain words using what you found. Do not call any more tools."
                     if state["tools_called"] else
                     "Reply to the user directly in plain words. Do not write your reasoning or use any tags.")})
+                continue
+            # SAFETY NETS - the turn is about to end. Two things must never end a turn silently:
+            #  (a) a file was made but never sent  -> ask twice, then send it ourselves
+            #  (b) the model announced its next step but did not do it -> ask twice
+            can_nudge = (not forced_final) and use_tools is not None
+            unsent = (filetrack.unsent_from(userid, turn_made)
+                      if userid and not filetrack.says_dont_send(session_context.get("prompt")) else [])
+            if unsent:
+                if can_nudge and nudges["unsent"] < 2:
+                    nudges["unsent"] += 1
+                    print(f"[NATIVE] turn ended with unsent file(s) {unsent} - nudge {nudges['unsent']}")
+                    messages.append({"role": "assistant", "content": round_text or "Done."})
+                    messages.append({"role": "user", "content": UNSENT_NUDGE.format(
+                        names=", ".join(unsent), paths=json.dumps(unsent))})
+                    continue
+                if not auto_sent:
+                    auto_sent = True
+                    queued.extend(filetrack.build_delivery_calls(userid, unsent))
+                    if queued:
+                        print(f"[NATIVE] model never sent {unsent} - sending it ourselves")
+                        continue
+            elif can_nudge and nudges["stall"] < 2 and announces_next_step(round_text):
+                nudges["stall"] += 1
+                print(f"[NATIVE] turn ended on an announced step - nudge {nudges['stall']}: {round_text[-120:]!r}")
+                messages.append({"role": "assistant", "content": round_text})
+                messages.append({"role": "user", "content": STALL_NUDGE})
                 continue
             break
 
@@ -862,7 +952,9 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
                     raise ValueError("arguments must be a JSON object")
                 bad_args = None
             except Exception as e:
-                args, bad_args = {}, f"Your arguments for {name} were not valid JSON ({e}). Send a complete JSON object."
+                args = {}
+                bad_args = (CUT_OFF_FILE_MSG if name in ("workspace_write", "workspace_append", "save_pasted_text")
+                            else f"Your arguments for {name} were not valid JSON ({e}). Send a complete JSON object.")
 
             if name == "ask_user" and normalize_ask and not bad_args:
                 payload = normalize_ask(args)
@@ -883,11 +975,17 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
                 ok, result = False, bad_args
             else:
                 ok, result = execute(name, args, session_context)
-            chip["ok"] = bool(ok)
-            chip["output"] = tool_output_preview(name, bool(ok), result)
+            ok = bool(ok) and not _result_failed(result)      # {"success": false} is a failure even if nothing crashed
+            chip["ok"] = ok
+            chip["output"] = tool_output_preview(name, ok, result)
             if ok:
                 state["tools_ok"].append(name)
-            yield {"type": "tool_result", "id": cid, "tool": name, "ok": bool(ok), "summary": (result or "")[:300],
+            try:
+                known_urls |= filetrack.collect_urls(result or "")
+                turn_made.extend(filetrack.note_result(userid, name, args, result or "", ok))
+            except Exception as e:                           # bookkeeping must never break a turn
+                print(f"[NATIVE] file tracking skipped: {type(e).__name__}: {e}")
+            yield {"type": "tool_result", "id": cid, "tool": name, "ok": ok, "summary": (result or "")[:300],
                    "output": chip["output"]}
 
             shown_urls = {i.get("image") for i in state["image_results"] if isinstance(i, dict)}
@@ -930,6 +1028,7 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
         if b["type"] != "text":
             continue
         t = repair_mojibake(scrub_internal(strip_markers(b["text"])))
+        t = filetrack.scrub_invented_links(t, known_urls)      # links to our storage that no tool returned = made up
         if i == last_text:
             t, suggestions = parse_suggestions(t)
             if post_process:

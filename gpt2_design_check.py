@@ -249,15 +249,37 @@ def _critic_prompt(kind: str, brief: str, label: str) -> str:
     )
 
 
+_THINK_RE = re.compile(r"<(think|thinking|thought|reasoning)>.*?</\1>", re.S | re.I)
+_FLAT_OBJ_RE = re.compile(r"\{[^{}]*\}", re.S)
+
+
+def _strip_thinking(text: str) -> str:
+    """Reasoning models (the vision model here is one) write their thinking before the answer.
+    Remove closed <think> blocks, text before a lone </think>, and an unclosed <think> tail."""
+    t = _THINK_RE.sub("", text or "")
+    m = list(re.finditer(r"</(?:think|thinking|thought|reasoning)>", t, re.I))
+    if m:
+        t = t[m[-1].end():]
+    o = re.search(r"<(?:think|thinking|thought|reasoning)>", t, re.I)
+    if o:
+        t = t[:o.start()]
+    return t.strip()
+
+
 def _parse_verdict(answer: str) -> Optional[dict]:
-    m = re.search(r"\{.*\}", answer or "", re.S)
-    if not m:
-        return None
-    try:
-        obj = json.loads(m.group(0))
-    except Exception:
-        return None
-    if not isinstance(obj, dict) or not isinstance(obj.get("ok"), bool):
+    """Find the JSON verdict in the reviewer's answer. Tolerant of fences, thinking text and chatter,
+    but never invents a verdict: no valid {"ok": bool, ...} object -> None (= not viewed, NOT a pass)."""
+    text = _strip_thinking(answer or "")
+    obj = None
+    for cand in reversed(_FLAT_OBJ_RE.findall(text)):       # the last valid one wins
+        try:
+            o = json.loads(cand)
+        except Exception:
+            continue
+        if isinstance(o, dict) and isinstance(o.get("ok"), bool):
+            obj = o
+            break
+    if obj is None:
         return None
     issues = [str(i).strip()[:160] for i in (obj.get("issues") or []) if str(i).strip()][:5]
     if obj["ok"] is False and not issues:
@@ -265,15 +287,70 @@ def _parse_verdict(answer: str) -> Optional[dict]:
     return {"ok": obj["ok"], "issues": issues if obj["ok"] is False else []}
 
 
-def _look(kind: str, brief: str, label: str, data_url: str) -> Optional[dict]:
-    """One vision call for ONE image. None = the reviewer could not answer (NOT a pass)."""
+def _look(kind: str, brief: str, label: str, data_url: str, why: Optional[list] = None) -> Optional[dict]:
+    """One vision call for ONE image (one retry if the answer isn't JSON).
+    None = the reviewer could not answer (NOT a pass); the reason is appended to `why` if given."""
+    def _note(msg: str) -> None:
+        print(f"[DESIGN_CHECK] {label}: {msg}")
+        if why is not None:
+            why.append(msg)
+
     try:
         from gpt2_functions import ask_with_vision      # lazy: avoids a circular import at startup
-        res = ask_with_vision(_critic_prompt(kind, brief, label), [data_url], [])
     except Exception as e:
-        print(f"[DESIGN_CHECK] vision call failed: {e}")
+        _note(f"vision module unavailable ({type(e).__name__})")
         return None
-    return _parse_verdict((res or {}).get("answer") or "")
+    prompt = _critic_prompt(kind, brief, label)
+    for attempt in (1, 2):
+        try:
+            res = ask_with_vision(prompt, [data_url], [])
+        except Exception as e:
+            _note(f"vision call crashed ({type(e).__name__}: {str(e)[:80]})")
+            return None
+        answer = (res or {}).get("answer") or ""
+        if not answer.strip():
+            _note("no vision provider returned an answer (all failed, rate-limited or out of tokens)")
+            return None
+        verdict = _parse_verdict(answer)
+        if verdict is not None:
+            return verdict
+        _note(f"answer was not the JSON verdict (try {attempt}): {_strip_thinking(answer)[:100]!r}")
+        prompt = ('Look at the image again. Reply with ONLY this JSON and nothing else, no thinking, no markdown: '
+                  '{"ok": true or false, "issues": ["short fixable issue"]}. ' + _critic_prompt(kind, brief, label))
+    return None
+
+
+# ── "was it looked at?" memory, used by the delivery gate in gpt2_output.output_files ──
+_looked_at: dict = {}
+_looked_lock = threading.Lock()
+GATE_EXTS = (".pdf", ".html", ".htm")
+
+
+def _mark_looked(userid, full: str) -> None:
+    try:
+        mt = os.path.getmtime(full)
+    except OSError:
+        return
+    with _looked_lock:
+        now = time.time()
+        for k in [k for k, (_m, ts) in _looked_at.items() if now - ts > 6 * 3600]:
+            _looked_at.pop(k, None)
+        _looked_at[(userid or "anonymous", os.path.realpath(full))] = (mt, now)
+
+
+def needs_design_check(userid, full: str) -> bool:
+    """True if `full` is a PDF/HTML that has not been through design_check since it last changed.
+    Turn the gate off with DESIGN_CHECK_GATE=0."""
+    if os.environ.get("DESIGN_CHECK_GATE", "1").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    if os.path.splitext(full)[1].lower() not in GATE_EXTS:
+        return False
+    with _looked_lock:
+        seen = _looked_at.get((userid or "anonymous", os.path.realpath(full)))
+    try:
+        return seen is None or os.path.getmtime(full) > seen[0] + 1e-6
+    except OSError:
+        return False
 
 
 # ── the tool ─────────────────────────────────────────────────────────────────
@@ -292,14 +369,15 @@ def design_check(userid: str, path: str, kind: str = "auto", brief: str = "") ->
 
     if not path or not str(path).strip():
         return {"success": False, "error": "path is required"}
-    if not _rate_ok(userid, "design_check", 40):
-        return {"success": False, "error": "design_check limit reached (40 per hour) — try again later."}
     try:
         full = _safe_path(userid, path)
     except Exception as e:
         return {"success": False, "error": str(e)}
     if not os.path.isfile(full):
         return {"success": False, "error": f"'{path}' isn't a file in the workspace."}
+    _mark_looked(userid, full)          # an attempt counts for the delivery gate, even if the check itself fails
+    if not _rate_ok(userid, "design_check", 40):
+        return {"success": False, "error": "design_check limit reached (40 per hour) — try again later."}
     if os.path.getsize(full) > MAX_FILE_BYTES:
         return {"success": False, "error": "file is over 10MB — too big to check."}
 
@@ -374,13 +452,19 @@ def design_check(userid: str, path: str, kind: str = "auto", brief: str = "") ->
             pages_total = 1
 
         pages = []
+        reviewer_problems: list = []
         for label, data in images:
-            verdict = _look(kind, brief, label, _to_data_url(data))
-            pages.append({
+            why: list = []
+            verdict = _look(kind, brief, label, _to_data_url(data), why)
+            page = {
                 "page": label,
                 "ok": None if verdict is None else verdict["ok"],
                 "issues": [] if verdict is None else verdict["issues"],
-            })
+            }
+            if verdict is None and why:
+                page["reason"] = why[-1]
+                reviewer_problems.append(why[-1])
+            pages.append(page)
 
         visual_issues = [f"{p['page']}: {i}" for p in pages if p["ok"] is False for i in p["issues"]]
         unchecked = [p["page"] for p in pages if p["ok"] is None]
@@ -401,6 +485,8 @@ def design_check(userid: str, path: str, kind: str = "auto", brief: str = "") ->
         }
         if unchecked:
             res["not_viewed"] = unchecked
+            if reviewer_problems:
+                res["reviewer_problem"] = reviewer_problems[0]
         if truncated_note:
             res["note"] = truncated_note
         if limits:

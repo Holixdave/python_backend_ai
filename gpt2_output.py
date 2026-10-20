@@ -94,6 +94,17 @@ def output_files(userid: str, files: list) -> dict:
                     full = _find_workspace_file(userid, spec["path"]) or full
                 if not os.path.isfile(full):
                     raise ValueError("not a file in the workspace")
+                # DELIVERY GATE: a PDF/website you built must be LOOKED AT before it reaches the user.
+                # (The model skipped design_check on its own, so this makes it unskippable.) One call
+                # to design_check is enough - even if the check itself fails - and a changed file needs it again.
+                rel_in = str(spec["path"]).replace("\\", "/").lstrip("/")
+                if not rel_in.startswith("uploads/"):
+                    from gpt2_design_check import needs_design_check
+                    if needs_design_check(userid, full):
+                        raise ValueError(
+                            f"NOT SENT YET: '{spec['path']}' has not been looked at. Call design_check on "
+                            f"'{spec['path']}' first, fix only what it lists (max 3 rounds), then call output_files "
+                            "for it again.")
                 if os.path.getsize(full) > MAX_OUTPUT_FILE_BYTES:
                     raise ValueError("over the 10MB delivery limit")
                 with open(full, "rb") as f:
