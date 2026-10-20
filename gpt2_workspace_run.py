@@ -24,8 +24,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
+import re
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Optional
@@ -44,6 +47,37 @@ MEMORY_BYTES = 1024 * 1024 * 1024
 NOBODY = 65534
 _COPY_SKIP = {".git", "__pycache__"}
 _unshare_ok: Optional[bool] = None
+
+
+
+# ── PYTHON COMMAND FIX ──────────────────────────────────────────────────────
+# The model keeps writing `python build_pdf.py`. On Render's native Python runtime (not the
+# Dockerfile image) there is no bare `python` on the scrubbed PATH -> exit 127. We always run
+# the SAME interpreter the server runs on (sys.executable), whatever name the model used.
+_PY_CMD_RE = re.compile(r"(^|&&|\|\||;|\|)(\s*)(python3?|py)(?=\s|$)")
+_PY_SCRIPT_RE = re.compile(r"(?:^|&&|;|\|\|)\s*(?:python3?|py)\s+([^\s;&|]+\.py)\b")
+
+
+def _fix_python_cmd(command: str) -> str:
+    """Rewrite leading python / python3 / py (also after && ; || |) to the server's own interpreter."""
+    exe = shlex.quote(sys.executable)
+    return _PY_CMD_RE.sub(lambda m: m.group(1) + m.group(2) + exe, command)
+
+
+def _precheck_python(command: str, work: str) -> Optional[str]:
+    """If the command runs some_script.py, syntax-check that script first (nothing is executed).
+    Returns a readable error string, or None when fine / not applicable."""
+    for m in _PY_SCRIPT_RE.finditer(command):
+        script = os.path.join(work, m.group(1))
+        if os.path.isfile(script):
+            try:
+                with open(script, "r", encoding="utf-8", errors="replace") as fh:
+                    compile(fh.read(), m.group(1), "exec")      # parse only, never executes
+            except SyntaxError as e:
+                return f"{e.msg} (file {m.group(1)}, line {e.lineno}): {(e.text or '').strip()[:200]}"
+            except Exception:
+                return None
+    return None
 
 
 def _can_unshare() -> bool:
@@ -119,13 +153,22 @@ def workspace_run(userid: str, command: str, cwd: str = "", timeout_s: int = DEF
     try:
         shutil.copytree(src, work, symlinks=False, ignore=shutil.ignore_patterns(*_COPY_SKIP), copy_function=shutil.copy2)
         os.makedirs(home, exist_ok=True)
+        original_command = command
+        command = _fix_python_cmd(command)
+        syntax_err = _precheck_python(original_command, work)
+        if syntax_err:
+            return {
+                "success": False, "exit_code": 1, "timed_out": False, "duration_s": 0,
+                "stdout": "", "stage": "syntax_check", "changed_files": [],
+                "stderr": "SyntaxError (caught before running; fix ONLY this and call again):\n" + syntax_err,
+            }
         before = _snapshot(work)
         if is_root:
             os.chmod(run_dir, 0o755)       # nobody must be able to enter it (parent only holds our copy)
             _chown_tree(run_dir)
 
         env = {
-            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "PATH": os.path.dirname(sys.executable) + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "HOME": home, "LANG": "C.UTF-8", "TMPDIR": home,
             "PYTHONDONTWRITEBYTECODE": "1",
             # one BLAS/OpenMP thread: threads count against RLIMIT_NPROC / RLIMIT_AS
@@ -134,6 +177,13 @@ def workspace_run(userid: str, command: str, cwd: str = "", timeout_s: int = DEF
         }
         if packages_dir:
             env["PYTHONPATH"] = packages_dir
+        # the prompt tells the model to read os.environ['FONTS_DIR']; this scrubbed env lacked it
+        try:
+            from gpt2_sandbox import _fonts_dir
+            if _fonts_dir():
+                env["FONTS_DIR"] = _fonts_dir()
+        except Exception:
+            pass
         if _ffmpeg_exe():
             env["IMAGEIO_FFMPEG_EXE"] = _ffmpeg_exe()
 
@@ -227,6 +277,14 @@ def workspace_run(userid: str, command: str, cwd: str = "", timeout_s: int = DEF
             res["deleted_files"] = [prefix + d for d in deleted[:50]]
         if skipped:
             res["not_synced"] = skipped[:20]
+        if not res["success"]:
+            res["repair_hint"] = ("Read stderr, fix only the failing line in the file, then run the same command again. "
+                                  "Max 3 attempts, then tell the user what failed.")
+        err_l = (err or "").lower()
+        if "modulenotfounderror" in err_l or "no module named" in err_l:
+            res["hint"] = "Import failed: call workspace_run again with packages=[<pip name>] set."
+        elif proc.returncode == 127:
+            res["hint"] = "Command not found. Use python3 for scripts; only common shell tools exist."
         if changed:
             res["next_step"] = "New/changed files are saved in the workspace but NOT shown to the user until you call output_files."
         return res
