@@ -218,7 +218,11 @@ from gpt2_workspace import (
     workspace_copy,
     workspace_edit,
     workspace_edit_by_intent,
+    workspace_append,
+    save_pasted_text,
 )
+from gpt2_design_check import design_check
+from gpt2_codecheck import python_check
 
 # Tools that reach out to the internet on the user's behalf. Every one of
 # these is gated by the user's own web_search toggle (see
@@ -285,6 +289,10 @@ TOOL_REGISTRY = {
     "workspace_edit": workspace_edit,
     "workspace_edit_by_intent": workspace_edit_by_intent,
     "workspace_run": workspace_run,
+    "workspace_append": workspace_append,
+    "save_pasted_text": save_pasted_text,
+    "design_check": design_check,
+    "python_check": python_check,
     "publish_page": publish_page_tool,
 }
 # Short, hand-written purpose lines for the initial manifest only — this is
@@ -325,6 +333,10 @@ TOOL_DESCRIPTIONS = {
     "result_more": "Get the NEXT part of a tool result that ended with '[truncated ... result_id ...]'. Args: result_id, offset (use the offset the note gives you).",
     "workspace_copy": "Copy a file or folder inside the workspace — mainly from uploads/ (where the user's attachments land) into the main workspace so you can edit or run it. The original stays in uploads/. Args: src, dest (optional, defaults to the same name at the top level).",
     "publish_page": "Publish ONE self-contained HTML page (all CSS/JS inline) to a public https link the user can open and share. ONLY call this after the user has said yes to publishing. Args: html (complete page), title (short). Returns the public url.",
+    "workspace_append": "Add text to the END of a workspace file (creates it if missing). Use it to build a LONG file in parts: workspace_write part 1, then workspace_append each next part (each ending at a full paragraph/section/function), deliver=true only on the last part. Never send a long file in one huge call.",
+    "save_pasted_text": "Save text the USER PASTED into a .txt/.md file exactly as they wrote it - the backend copies it, you do NOT retype it. Use whenever the user pastes a long text and asks to package/put/save it in a text file. source='this_message' (default) or 'earlier_message' when they pasted it before. Delivers the file by default.",
+    "design_check": "LOOK at a visual file you built - a website (.html), a .pdf or an image - and get a real verdict: it runs static checks, renders the pages, and shows each to a vision reviewer. Call it after you build a page/PDF/design and again after each fix (max 3 rounds). Returns status passed / needs_fixes / not_visually_verified plus the exact issues to fix.",
+    "python_check": "Check Python file(s) in the workspace for SYNTAX errors (and undefined names when available) WITHOUT running them; path = a .py file or folder. Call after every write/edit of Python, fix the listed lines, call again. A clean result is NOT proof it runs - then run it with workspace_run.",
     "workspace_zip": "Pack a workspace folder (or everything) into ONE .zip and get a download URL (then pass that URL to output_files to show it).",
 }
 

@@ -51,6 +51,7 @@ from firebase_admin import firestore
 # "website" fired on ordinary chat/code/design requests and caused junk searches.
 from search_query import (  # noqa: F401  (re-exported: other modules import these from here)
     SEARCH_TRIGGER_KEYWORDS, is_meaningful_query, needs_web_search, build_search_query,
+    LONG_PROMPT_CHARS, is_long_prompt, instruction_zone,
 )
 
 
@@ -1314,8 +1315,24 @@ DESIGN_KEYWORDS = [
 
 
 def needs_design_guidance(prompt: str) -> bool:
-    t = prompt.lower()
+    t = instruction_zone(prompt).lower()
     return any(k in t for k in DESIGN_KEYWORDS)
+
+
+_LONG_COMPLEX_KEYWORDS = [k for k in CODING_KEYWORDS if k not in ("file", "write", "create")]
+
+
+def _long_prompt_intent(prompt: str) -> dict:
+    """Neutral intent for a long message: never a search, never a knowledge-base topic."""
+    zone = instruction_zone(prompt).lower()
+    return {
+        "search_type": "none",
+        "search_query": "",
+        "complex": any(k in zone for k in _LONG_COMPLEX_KEYWORDS),
+        "topic": "general",
+        "needs_design_guidance": needs_design_guidance(prompt),
+        "source": "long_prompt",
+    }
 
 
 # NEW — compact, opinionated web design reference. Injected into context
@@ -1357,6 +1374,23 @@ five buttons equal visual weight.
 
 RESPONSIVE: Always include at least one breakpoint (e.g. @media
 (max-width: 768px)) — never ship a fixed-width-only layout.
+
+IMAGES: A page with no pictures looks unfinished. Find real photos online with
+search_images (search for the actual subject, e.g. "fresh bread bakery", not "image")
+and use 2-4 of the URLs that tool returned in <img src="..."> — hero, cards,
+gallery. NEVER invent or guess an image URL. Every <img> needs alt text, width and
+height (or aspect-ratio), max-width:100%, object-fit:cover, loading="lazy", and its
+container needs a soft background colour so the page still looks fine if the photo
+fails to load. Don't stretch tiny photos into a full-width hero.
+
+ICONS: Use inline <svg> icons (simple 24x24 stroke icons, stroke="currentColor",
+stroke-width 2, rounded caps) for features, buttons and contact rows — they work
+offline and take the text colour. Emoji are fine as a quick accent. Do not load icon
+fonts or icon libraries from a CDN. One icon style per page.
+
+CHECK BEFORE HANDING OVER: after saving the page, call design_check on it, fix only
+the issues it lists, and check again (max 3 rounds). Tell the user what was checked
+and what could not be (e.g. remote photos and JavaScript are not rendered by the check).
 """.strip()
 
 # NOTE: the intent-classifier system prompt used to be defined right here
@@ -1397,6 +1431,10 @@ def classify_intent(prompt: str, history: Optional[list] = None) -> dict:
     references ("the damn church", "that place") to the real proper noun
     — no backend rules leak into this call, so it stays fast and cheap.
     """
+    if is_long_prompt(prompt):
+        print(f"[INTENT] long prompt ({len(prompt)} chars) -> skipping classifier + keyword rules: topic=general search=none")
+        return _long_prompt_intent(prompt)
+
     context_lines = []
     for msg in (history or [])[-6:]:
         if isinstance(msg.get("content"), str):

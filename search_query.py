@@ -2,6 +2,7 @@
 # string is something worth sending to a search engine. Lives in its own file
 # so tests can import it without Firebase/Groq/etc. gpt2_functions.py imports
 # everything below from here.
+import os
 import re
 from typing import Optional
 
@@ -61,6 +62,8 @@ def is_meaningful_query(query: str, original_prompt: Optional[str] = None) -> bo
 
 
 def needs_web_search(prompt: str) -> bool:
+    if is_long_prompt(prompt):
+        return False                       # pasted text / long spec: never keyword-search it
     t = prompt.lower()
     if not any(k in t for k in SEARCH_TRIGGER_KEYWORDS):
         return False
@@ -88,3 +91,27 @@ def build_search_query(prompt: str) -> str:
     return re.sub(r"\s+", " ", q).strip(" ,.!?-")
 
 
+# LONG PROMPTS: a big pasted text / spec / document must NEVER be classified by keywords. Words like
+# "jamb", "search", "latest" or "html" buried in 5,000 characters of someone's pasted text used to
+# flip the topic to JAMB, trigger a web search, or inject web-design rules into an unrelated task.
+# Above this length the intent step is skipped completely (no classifier call, no keyword fallback):
+# topic=general, search=none. Only the first/last few hundred characters (where the user's actual
+# instruction sits) are looked at, and only for the design/coding flags. 0 = never skip.
+try:
+    LONG_PROMPT_CHARS = int(os.environ.get("LONG_PROMPT_CHARS", "1200"))
+except ValueError:
+    LONG_PROMPT_CHARS = 1200
+_INSTRUCTION_ZONE_CHARS = 400
+
+
+def is_long_prompt(prompt: str) -> bool:
+    return LONG_PROMPT_CHARS > 0 and len(prompt or "") > LONG_PROMPT_CHARS
+
+
+def instruction_zone(prompt: str) -> str:
+    """The part of a message that holds the user's own instruction: all of a short message, or just
+    the start and end of a long one (the middle is pasted material, not an instruction)."""
+    p = prompt or ""
+    if not is_long_prompt(p):
+        return p
+    return p[:_INSTRUCTION_ZONE_CHARS] + "\n" + p[-_INSTRUCTION_ZONE_CHARS:]

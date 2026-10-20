@@ -327,6 +327,119 @@ def workspace_write(userid: str, path: str, content: str, deliver: bool = False)
     return out
 
 
+def workspace_append(userid: str, path: str, content: str, deliver: bool = False) -> dict:
+    """Add more text to the END of a workspace file (creates it if missing). Use it to build a LONG
+    file in parts: workspace_write the first part, then workspace_append each next part, and set
+    deliver=true only on the LAST part. Each part should end at a natural break (a full paragraph,
+    section or function), never mid-sentence."""
+    if not path or path.endswith("/"):
+        return {"success": False, "error": "Give a file path, e.g. 'outputs/notes.txt'."}
+    data = (content or "").encode("utf-8")
+    if not data:
+        return {"success": False, "error": "Nothing to append - content is empty."}
+    full = _safe_path(userid, path)
+    if full == _user_root(userid) or os.path.isdir(full):
+        return {"success": False, "error": "That path is a folder, not a file."}
+    before = os.path.getsize(full) if os.path.isfile(full) else 0
+    if before + len(data) > MAX_FILE_BYTES:
+        return {"success": False, "error": "File would be too large."}
+    if _dir_size(_user_root(userid)) + len(data) > MAX_USER_BYTES:
+        return {"success": False, "error": "Workspace is full - delete something first."}
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "ab") as f:
+        f.write(data)
+    _dirty(userid)
+    out = {"success": True, "path": _rel(userid, full), "bytes_added": len(data), "total_bytes": before + len(data)}
+    if deliver:
+        try:
+            from gpt2_output import output_files   # lazy: gpt2_output imports this module
+            res = output_files(userid, [out["path"]])
+            out["delivered"] = res.get("files") or []
+            if res.get("failed"):
+                out["delivery_failed"] = res["failed"]
+        except Exception as e:
+            out["delivery_failed"] = [{"file": out["path"], "error": str(e)}]
+    return out
+
+
+# Where the user's own pasted text ends and the system's additions begin (see gpt2_test.py:
+# attached-file text and image analysis are appended to the prompt AFTER the user's words).
+_PROMPT_ADDON_MARKERS = ("\n\n[The user attached the following file(s)", "\n\n[Image analysis:")
+_FILE_INSTRUCTION_RE = re.compile(
+    r"\b(?:file|files|txt|text file|\.txt|\.md|markdown|save|package|put (?:this|it|that)|download|"
+    r"pdf|docx|word doc|convert|turn (?:this|it) into|copy (?:this|it))\b", re.I)
+
+
+def _user_words_only(prompt: str) -> str:
+    text = prompt or ""
+    for m in _PROMPT_ADDON_MARKERS:
+        i = text.find(m)
+        if i != -1:
+            text = text[:i]
+    return text.strip()
+
+
+def _split_instruction(text: str) -> tuple:
+    """(instruction_lines_removed, body). If the message starts or ends with a SHORT paragraph that
+    is clearly the user telling the AI what to do with the text ("put this in a txt file"), cut it
+    off so it does not end up inside the saved file."""
+    paras = re.split(r"\n\s*\n", text.strip())
+    removed = []
+    if len(paras) >= 2 and len(paras[0]) <= 300 and _FILE_INSTRUCTION_RE.search(paras[0]):
+        removed.append(paras.pop(0))
+    if len(paras) >= 2 and len(paras[-1]) <= 300 and _FILE_INSTRUCTION_RE.search(paras[-1]):
+        removed.append(paras.pop())
+    if len(paras) == 1:
+        # one block: the instruction may be a single short first/last LINE
+        lines = paras[0].split("\n")
+        if len(lines) >= 3 and len(lines[0]) <= 200 and _FILE_INSTRUCTION_RE.search(lines[0]):
+            removed.append(lines.pop(0))
+        if len(lines) >= 3 and len(lines[-1]) <= 200 and _FILE_INSTRUCTION_RE.search(lines[-1]):
+            removed.append(lines.pop())
+        return removed, "\n".join(lines).strip()
+    return removed, "\n\n".join(paras).strip()
+
+
+def save_pasted_text(userid: str, prompt: str, history: Optional[list] = None, path: str = "outputs/pasted.txt",
+                     source: str = "this_message", deliver: bool = True) -> dict:
+    """Save the text the user PASTED into a file EXACTLY as they wrote it - the backend copies it,
+    you never retype it, so nothing is cut, summarised or reworded. Use this whenever the user
+    pastes a long text and asks to put/package/save it in a text file (.txt or .md).
+
+    Args:
+        path: where to save it, e.g. "outputs/essay.txt" (use a .txt or .md name).
+        source: "this_message" (the text is in the message you are answering) or "earlier_message"
+            (the user pasted it before and now says "put that in a file").
+        deliver: send the file to the user as a download card right away (default true).
+    """
+    if not path or path.endswith("/"):
+        return {"success": False, "error": "Give a file path, e.g. 'outputs/essay.txt'."}
+    if source == "earlier_message":
+        best = ""
+        for msg in reversed(history or []):
+            if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+                body = _user_words_only(msg["content"])
+                if len(body) > len(best):
+                    best = body
+                if len(best) >= 800:
+                    break
+        text = best
+    else:
+        text = _user_words_only(prompt)
+    if not text:
+        return {"success": False, "error": "I couldn't find pasted text to save."}
+    removed, body = _split_instruction(text)
+    if len(body) < 40:
+        return {"success": False, "error": "The message has no long pasted text to save - only an instruction."}
+    res = workspace_write(userid, path, body + "\n", deliver=deliver)
+    if res.get("success"):
+        res["chars"] = len(body)
+        res["words"] = len(body.split())
+        res["instruction_left_out"] = [r[:120] for r in removed]
+        res["note"] = "Saved verbatim from the user's own message (not retyped)."
+    return res
+
+
 def workspace_delete(userid: str, path: str) -> dict:
     """Delete a file or folder from the workspace."""
     full = _safe_path(userid, path)

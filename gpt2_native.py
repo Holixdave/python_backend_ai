@@ -569,6 +569,10 @@ _LABELS = {
     "workspace_unzip": lambda a: f"Unzipping {_short(a.get('path'))}",
     "workspace_zip": lambda a: "Zipping files",
     "workspace_run": lambda a: "Running a command",
+    "workspace_append": lambda a: f"Adding to {_short(a.get('path'))}",
+    "save_pasted_text": lambda a: f"Saving your text to {_short(a.get('path'))}",
+    "design_check": lambda a: f"Checking the design of {_short(a.get('path'))}",
+    "python_check": lambda a: f"Checking the Python in {_short(a.get('path') or 'your workspace')}",
     "workspace_github_clone": lambda a: f"Cloning {_short(a.get('repo'))}",
     "output_files": lambda a: "Sending files",
     "schedule_reminder": lambda a: "Setting a reminder",
@@ -587,7 +591,7 @@ _INPUT_KEYS = ("code", "query", "command", "url", "pattern", "path", "prompt", "
 def tool_input_preview(tool: str, args: dict, cap: int = 6000) -> str:
     """The thing the tool was given (python code, search text, path…) for the tap-to-open card."""
     args = args or {}
-    if tool == "workspace_write":
+    if tool in ("workspace_write", "workspace_append", "save_pasted_text"):
         return _short(args.get("path"), 200)
     if tool == "publish_page":
         return _short(args.get("title"), 200)
@@ -697,7 +701,7 @@ def blocks_from_result(tool: str, args: dict, result_str: str, ok: bool, shown_i
         imgs = [d for d in (data.get("images") or []) if isinstance(d, dict) and d.get("image")]
         if imgs:
             out.append({"kind": "images", "images": imgs})
-    elif tool in ("output_files", "workspace_write") and isinstance(data, dict):
+    elif tool in ("output_files", "workspace_write", "workspace_append", "save_pasted_text") and isinstance(data, dict):
         add_files(data.get("files") or data.get("delivered"))
     elif tool in ("workspace_zip", "remove_background", "create_image") and isinstance(data, dict):
         if data.get("success") and data.get("url"):

@@ -33,3 +33,6 @@ fpdf2
 # PyMuPDF provides `import fitz` (open/render/edit PDFs, extract text and images).
 # Do NOT list a package literally called "fitz": that is an unrelated library and breaks `import fitz`.
 PyMuPDF
+
+# python_check: finds undefined names (optional; syntax checks work without it)
+pyflakes

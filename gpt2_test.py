@@ -521,9 +521,9 @@ from gpt2_tools import (
 # real function call, not static text.
 from prompts import NATIVE_TOOL_HINT, OUTPUT_DISCIPLINE, PREMIUM_MODE_PROMPT
 from gpt2_native import native_enabled, run_native_turn, build_tool_schemas, friendly_label
-from prompts import SEARCH_DISCIPLINE_HINT, FILE_STORES_HINT, OUTPUT_FILES_HINT, SUGGESTION_HINT, TOOL_USE_HINT_TAIL, MEMORY_TRUNCATED_NOTE, INLINE_VISUAL_HINT, NOTE_CALLOUT_HINT
+from prompts import SEARCH_DISCIPLINE_HINT, FILE_STORES_HINT, OUTPUT_FILES_HINT, SUGGESTION_HINT, TOOL_USE_HINT_TAIL, MEMORY_TRUNCATED_NOTE, INLINE_VISUAL_HINT, NOTE_CALLOUT_HINT, CHECK_WORK_HINT, LONG_TEXT_HINT
 
-TOOL_USE_HINT = "\n\n" + build_tool_manifest() + TOOL_USE_HINT_TAIL + SEARCH_DISCIPLINE_HINT + FILE_STORES_HINT + OUTPUT_FILES_HINT
+TOOL_USE_HINT = "\n\n" + build_tool_manifest() + TOOL_USE_HINT_TAIL + SEARCH_DISCIPLINE_HINT + FILE_STORES_HINT + OUTPUT_FILES_HINT + CHECK_WORK_HINT + LONG_TEXT_HINT
 
 
 # ---------------------------------------------------------------------------
@@ -923,7 +923,7 @@ def _ask_gpt2_core(
     use_native = (not copilot_mode) and native_enabled()
     if use_native:
         # Real function calling: no text-protocol manifest — keep only the rules that still apply.
-        current_identity += NATIVE_TOOL_HINT + SEARCH_DISCIPLINE_HINT + FILE_STORES_HINT + OUTPUT_FILES_HINT
+        current_identity += NATIVE_TOOL_HINT + SEARCH_DISCIPLINE_HINT + FILE_STORES_HINT + OUTPUT_FILES_HINT + CHECK_WORK_HINT + LONG_TEXT_HINT
     elif not copilot_mode:
         current_identity += TOOL_USE_HINT
     current_identity += SUGGESTION_HINT
