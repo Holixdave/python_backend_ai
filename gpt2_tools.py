@@ -350,7 +350,7 @@ TOOL_DESCRIPTIONS = {
 # full result set back in, and it got cut off mid-JSON by the token cap).
 SESSION_INJECTED_PARAMS = {"prompt", "history", "userid", "image_urls", "image_results"}
 
-MAX_TOOL_ROUNDS = 20  # raised from 3 — allows deeper multi-step chains (e.g. several rounds of search_web self-correction, or search + verify_image_relevance + search again)
+MAX_TOOL_ROUNDS = 30  # raised from 3 — allows deeper multi-step chains (e.g. several rounds of search_web self-correction, or search + verify_image_relevance + search again)
 
 # ---------------------------------------------------------------------------
 # MARKERS — distinctive on purpose. A bare "name()" or a loose JSON object

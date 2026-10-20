@@ -20,6 +20,12 @@ REAL = "https://abc.supabase.co/storage/v1/object/public/bucket/turn-user/page.h
 FAKE = "https://abc.supabase.co/storage/v1/object/public/bucket/turn-user/made-up.pdf"
 
 
+def _patch(testcase, obj, name, value):
+    old = getattr(obj, name)
+    setattr(obj, name, value)
+    testcase.addCleanup(lambda: setattr(obj, name, old))
+
+
 def call(name, **args):
     return {"id": f"c_{name}_{len(args)}", "name": name, "arguments": json.dumps(args)}
 
@@ -30,10 +36,16 @@ class Harness:
         self.rounds, self.executed, self.seen, self.kws = list(rounds), [], [], []
         self.initial_calls = initial_calls
         self.refuse_forced = False
+        self.fails_left = 0                 # next N model rounds fail like "every model is rate limited"
+        self.prompt = ""
 
     def stream(self, providers, messages, tools, **kw):
         self.seen.append([dict(m) for m in messages])
         self.kws.append(dict(kw))
+        if self.fails_left > 0:
+            self.fails_left -= 1
+            yield ("fail", "openrouter/x: rate limited (429) | openrouter/y: HTTP 404")
+            return
         if kw.get("tool_choice") and self.refuse_forced:
             yield ("fail", "provider refused tool_choice=required")
             return
@@ -62,7 +74,7 @@ class Harness:
         state = {}
         msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}]
         events = list(n.run_native_turn(
-            msgs, [{"name": "fake", "enabled": True}], {"userid": U}, tools=[{"function": {"name": x}} for x in (
+            msgs, [{"name": "fake", "enabled": True}], {"userid": U, "prompt": self.prompt}, tools=[{"function": {"name": x}} for x in (
                 "workspace_write", "output_files", "design_check", "workspace_run")],
             execute=self.execute, describe_call=lambda t, a: {"text": t}, stream=self.stream,
             max_rounds=20, state=state, initial_calls=self.initial_calls))
@@ -152,7 +164,7 @@ class StalledTurns(SetUp):
     def test_nudges_are_capped(self):
         h = Harness([{"text": "Let me create the file now."}] * 6)
         final, _ = h.run()
-        self.assertLessEqual(len(h.seen), 4)                                              # 1 + at most 2 nudges (+ margin)
+        self.assertEqual(len(h.seen), n.MAX_STALL_NUDGES + 1)                              # the first round + exactly the capped nudges
         self.assertTrue(final["answer"])
 
     def test_phrase_detector(self):
@@ -232,6 +244,82 @@ class ForcedChoiceOnTheWire(unittest.TestCase):
         list(n.stream_chat(self._providers()[1:], [{"role": "user", "content": "x"}], tools, temperature=0, max_tokens=50,
                            post=post, sleep=lambda s: None))
         self.assertEqual([c for _u, c in sent], ["auto"])
+
+
+REAL_LOG_SENTENCES = [
+    "I am now analyzing the exact font styles, colors, page structure, and canvas layout of the reference PDF so I can "
+    "build your comprehensive 13+ page Chemistry study guide on Covalent Bonding and Chemical Reactions.",
+    "I am copying the reference PDF from your uploads to the workspace so I can analyze its design and layout.",
+    "Let me check the exact location of the reference file in the workspace.",
+]
+BIG_PROMPT = ("check my upload folder for a PDF file analyze the PDF file use the same design and same format for me "
+              "to create a chemistry pdf on topic covalent bond and another topic reaction. must be 15 pages")
+
+
+class SecondRealCase(SetUp):
+    """From the user's Render log + screenshots: the turn ended on 'I am now analyzing ... so I can build'."""
+    def test_progressive_announcements_are_caught(self):
+        self.assertEqual([t[:30] for t in REAL_LOG_SENTENCES if not n.announces_next_step(t)], [])
+        for ok in ("I am now able to help with that.", "I'm happy to explain more.", "All set - it is in the card."):
+            self.assertFalse(n.announces_next_step(ok), ok)
+
+    def test_a_long_build_can_stall_several_times_and_still_finishes(self):
+        rounds = []
+        for i in range(4):                                       # stall, tool, stall, tool, ...
+            rounds += [{"text": REAL_LOG_SENTENCES[i % 3]}, {"calls": [call("workspace_run")]}]
+        rounds += [{"text": "All done - the PDF is in the card."}]
+        h = Harness([{"calls": [call("workspace_run")]}] + rounds)
+        final, _ = h.run()
+        self.assertEqual(h.executed.count("workspace_run"), 5)
+        self.assertIn("All done", final["answer"])
+
+    def test_unfinished_file_task_is_caught_whatever_the_wording(self):
+        h = Harness([{"calls": [call("workspace_run")]}, {"text": "I have analyzed the reference style."},
+                     {"calls": [call("workspace_write", path="outputs/guide.pdf", content="x")]},
+                     {"text": "The guide is built."}])
+        h.prompt = BIG_PROMPT
+        final, _ = h.run()
+        self.assertIn("workspace_write", h.executed)                                      # it was pushed on to make the file
+
+    def test_questions_and_refusals_are_not_pushed(self):
+        for text in ("Which of the two topics should come first?", "Sorry, I can't open that PDF."):
+            h = Harness([{"calls": [call("workspace_run")]}, {"text": text}])
+            h.prompt = BIG_PROMPT
+            h.run()
+            self.assertEqual(h.executed, ["workspace_run"], text)
+
+
+class RateLimitMidTask(SetUp):
+    def test_waits_and_retries_instead_of_stopping(self):
+        _patch(self, n, "RATE_WAIT_S", 0.0)
+        h = Harness([{"text": "Working on it.", "calls": [call("workspace_run")]},
+                     {"text": "All done - it is ready."}])
+        h.run_first = True
+        # fail the round that follows the tool call, twice, then recover
+        orig = h.stream
+        state = {"seen_tool": False}
+        def stream(providers, messages, tools, **kw):
+            if state["seen_tool"] and h.fails_left == 0 and not state.get("armed"):
+                h.fails_left, state["armed"] = 2, True
+            yield from orig(providers, messages, tools, **kw)
+            state["seen_tool"] = True
+        h.stream = stream
+        final, _ = h.run()
+        self.assertIn("All done", final["answer"])
+        self.assertEqual(h.fails_left, 0)
+
+    def test_gives_up_politely_with_the_partial_kept(self):
+        _patch(self, n, "RATE_WAIT_S", 0.0)
+        h = Harness([{"text": "Starting the build.", "calls": [call("workspace_run")]}])
+        orig = h.stream
+        def stream(providers, messages, tools, **kw):
+            if len(h.seen) >= 1:
+                h.fails_left = 99
+            yield from orig(providers, messages, tools, **kw)
+        h.stream = stream
+        final, _ = h.run()
+        self.assertIn("Starting the build", final["answer"])
+        self.assertIn("continue", final["answer"])                                         # tells the user what to do
 
 
 class DropTheFile(SetUp):

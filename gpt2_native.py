@@ -743,6 +743,32 @@ _INTENT_RE = re.compile(
     r"analy[sz]e|process|apply|put|set ?up)\b", re.I)
 
 
+_PROGRESSIVE_RE = re.compile(
+    r"\bi(?:'m| am) (?:now |currently |just |still |also )?(?:going to )?"
+    r"(?:analy[sz]ing|building|creating|writing|checking|inspecting|copying|running|generating|reading|extracting|"
+    r"preparing|looking|fetching|searching|fixing|converting|starting|compiling|rendering|designing|drafting|"
+    r"putting|setting|saving|packaging|examining|reviewing|gathering|loading|installing|testing)\b", re.I)
+
+_WANTS_FILE_RE = re.compile(
+    r"\b(?:create|make|build|write|generate|design|produce|prepare|draft|compile|give me|need)\b.{0,90}?"
+    r"\b(?:pdf|docx|word doc|powerpoint|pptx|slides?|spreadsheet|excel|xlsx|csv|website|web ?page|landing page|html|"
+    r"zip|poster|flyer|ebook|study guide|guide|report|document)\b", re.I | re.S)
+_CANT_RE = re.compile(r"\b(?:can'?t|cannot|can not|unable|not able|sorry|unfortunately|don'?t have|do not have|"
+                      r"error|failed|blocked)\b", re.I)
+
+
+def looks_unfinished(prompt: str, text: str, made_a_file: bool, tools_used: bool) -> bool:
+    """The user asked for a file/document, work has started (tools used), nothing was produced, and the
+    reply is a short statement - not a question, offer or refusal. The turn ended too early whatever the
+    wording was."""
+    t = (text or "").strip()
+    if made_a_file or not tools_used or not t or len(t) > 500 or t.endswith("?"):
+        return False
+    if _SIGNOFF_RE.search(t) or _CONDITIONAL_RE.search(t) or _CANT_RE.search(t):
+        return False
+    return bool(_WANTS_FILE_RE.search(prompt or ""))
+
+
 def announces_next_step(text: str) -> bool:
     """True if the reply ENDS by announcing an action ("Let's write a script to inspect the PDF.") - a
     turn that stops there did nothing. Sign-offs ("let me know"), questions and offers don't count."""
@@ -755,7 +781,7 @@ def announces_next_step(text: str) -> bool:
         return False
     if last.endswith(":") and not last.lower().startswith(("note", "tip", "example")):
         return True                                   # "Here is the script:" and then nothing
-    return bool(_INTENT_RE.search(last))
+    return bool(_INTENT_RE.search(last) or _PROGRESSIVE_RE.search(last))
 
 
 def _result_failed(result) -> bool:
@@ -766,6 +792,10 @@ def _result_failed(result) -> bool:
         return False
     return isinstance(d, dict) and d.get("success") is False
 
+
+MAX_STALL_NUDGES = 6          # a long build (13-page PDF) can stall several times; each one is pushed on
+RATE_WAIT_S = 8.0              # pause before retrying when every model is rate-limited mid-task
+MAX_RATE_WAITS = 2
 
 UNSENT_NUDGE = ("You made {names} but the user has NOT received it. If they should have it, call output_files now "
                 "with exactly {paths} (for a PDF or website design_check comes first). Do not recreate or rewrite anything.")
@@ -817,6 +847,7 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
     turn_made: list = []                       # files made this turn
     nudges = {"unsent": 0, "stall": 0}
     force_tool_next = False                    # next model round MUST call a tool (set by the 2nd stall nudge)
+    rate_waits = 0
     auto_sent = False
     known_urls: set = set()                    # every URL a tool or the history really contained
     for _m in messages:
@@ -881,6 +912,13 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
                     # no model would take a forced tool call - go on without forcing instead of failing the turn
                     print(f"[NATIVE] forced tool call refused by every model ({failure}) - retrying without forcing")
                     continue
+                if state["tools_called"] and rate_waits < MAX_RATE_WAITS and re.search(
+                        r"429|rate.?limit|cooling|no provider available", str(failure or ""), re.I):
+                    rate_waits += 1
+                    print(f"[NATIVE] every model is rate-limited mid-task - waiting {RATE_WAIT_S:.0f}s then retrying "
+                          f"({rate_waits}/{MAX_RATE_WAITS})")
+                    time.sleep(RATE_WAIT_S)
+                    continue
                 if state["tools_called"] and not flat_mode:
                     # Every model refused the follow-up to a tool call. Often that is a model choking on the
                     # tool-call history, not a real outage. Retry with the history as plain text — and keep the
@@ -943,9 +981,12 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
                     if queued:
                         print(f"[NATIVE] model never sent {unsent} - sending it ourselves")
                         continue
-            elif can_nudge and nudges["stall"] < 2 and announces_next_step(round_text):
+            elif (can_nudge and nudges["stall"] < MAX_STALL_NUDGES
+                  and (announces_next_step(round_text)
+                       or looks_unfinished(session_context.get("prompt"), round_text, bool(turn_made or state["file_results"]),
+                                           bool(state["tools_called"])))):
                 nudges["stall"] += 1
-                # 2nd time in an agentic turn (tools already used): don't ask, REQUIRE a tool call
+                # from the 2nd nudge on, in an agentic turn (tools already used): don't ask, REQUIRE a tool call
                 force_tool_next = nudges["stall"] >= 2 and bool(state["tools_called"])
                 print(f"[NATIVE] turn ended on an announced step - nudge {nudges['stall']}"
                       f"{' (tool call required)' if force_tool_next else ''}: {round_text[-120:]!r} "

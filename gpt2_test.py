@@ -105,18 +105,16 @@ GEMINI_MODELS_CHAIN = [
 # Ordered best -> weakest, based on your test_models.py run. Reasoning/
 # thinking model is included (nemotron-3-nano-omni-30b-a3b-reasoning) —
 # that's OpenRouter's free "thinking" option.
+# Removed after your Render log showed them permanently dead (404): ling-3.0-flash:free (now paid),
+# nemotron-3-nano-30b-a3b:free (now paid), nemotron-nano-9b-v2:free (no endpoints), gpt-oss-20b:free (now paid).
 FREE_MODEL_CHAIN = [
     "nvidia/nemotron-3-ultra-550b-a55b:free",             # biggest, best general reasoning
     "nvidia/nemotron-3-super-120b-a12b:free",             # strong mid-tier
     "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", # dedicated reasoning/thinking model
-    "inclusionai/ling-3.0-flash:free",
     "google/gemma-4-26b-a4b-it:free",
     "cohere/north-mini-code:free",                        # good for code-specific prompts
     "poolside/laguna-s-2.1:free",
-    "nvidia/nemotron-3-nano-30b-a3b:free",
     "poolside/laguna-xs-2.1:free",
-    "nvidia/nemotron-nano-9b-v2:free",
-    "openai/gpt-oss-20b:free",
 ]
 
 def _openrouter_provider(model_name: str) -> dict:
