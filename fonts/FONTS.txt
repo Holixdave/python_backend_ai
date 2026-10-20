@@ -1,0 +1,107 @@
+# Installed fonts. Use the name exactly as written: <Family>-<Style>, e.g. Poppins-SemiBold.
+# Styles: Regular/Italic/Bold/BoldItalic exist for most families; other weights where listed.
+# 'lacks' = characters the family cannot draw. Wrap Paragraph text in pf.markup(text, font) and the
+# missing ones come from a Noto fallback automatically (see pdf_fonts.py).
+
+[sans]
+Poppins: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek
+Roboto: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: yoruba-letters, arrows
+OpenSans: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: naira, yoruba-letters, sub/superscripts, arrows
+Montserrat: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows, greek
+Inter: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: arrows
+Nunito: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows, greek
+NunitoSans: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows, greek
+Raleway: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows, greek
+SourceSans3: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: arrows
+PTSans: Regular, Italic, Bold, BoldItalic   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek
+FiraSans: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: arrows
+Ubuntu: Light, LightItalic, Regular, Italic, Medium, MediumItalic, Bold, BoldItalic   || lacks: naira, yoruba-letters, sub/superscripts, arrows
+NotoSans: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: arrows, maths
+DMSans: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek
+WorkSans: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: arrows, greek
+Quicksand: Light, Regular, Medium, SemiBold, Bold   || lacks: sub/superscripts, arrows, greek
+Lato: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: arrows
+JosefinSans: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: yoruba-letters, sub/superscripts, arrows, greek
+Karla: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek
+Rubik: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek
+Mulish: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows, greek
+Barlow: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek
+Heebo: Light, Regular, Medium, SemiBold, Bold   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek, maths
+Cabin: Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows, greek
+TitilliumWeb: Light, LightItalic, Regular, Italic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek
+Archivo: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows, greek
+Assistant: Light, Regular, Medium, SemiBold, Bold   || lacks: naira, sub/superscripts, arrows, greek
+Arimo: Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: arrows
+LibreFranklin: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows, greek
+AlegreyaSans: Light, LightItalic, Regular, Italic, Medium, MediumItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows
+IBMPlexSans: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: yoruba-letters, sub/superscripts, arrows
+Manrope: Light, Regular, Medium, SemiBold, Bold   || lacks: naira, yoruba-letters, sub/superscripts, arrows
+Outfit: Light, Regular, Medium, SemiBold, Bold   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek, maths
+Urbanist: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: naira, sub/superscripts, arrows, greek
+Lexend: Light, Regular, Medium, SemiBold, Bold   || lacks: sub/superscripts, arrows, greek
+Sora: Light, Regular, Medium, SemiBold, Bold   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek, maths
+SpaceGrotesk: Light, Regular, Medium, SemiBold, Bold   || lacks: sub/superscripts, arrows, greek
+PlusJakartaSans: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: arrows, greek
+Figtree: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek, maths
+PublicSans: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows, greek
+Overpass: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: arrows, greek
+Hind: Light, Regular, Medium, SemiBold, Bold   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek
+Catamaran: Light, Regular, Medium, SemiBold, Bold   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek
+RobotoCondensed: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: yoruba-letters, arrows
+
+[serif]
+Lora: Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek
+Merriweather: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows, greek
+PlayfairDisplay: Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek
+SourceSerif4: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows
+PTSerif: Regular, Italic, Bold, BoldItalic   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek
+NotoSerif: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: arrows, maths
+CrimsonText: Regular, Italic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: naira, sub/superscripts, arrows, greek, maths
+CrimsonPro: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows, greek
+LibreBaskerville: Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: naira, sub/superscripts, arrows, greek, maths
+EBGaramond: Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: arrows
+CormorantGaramond: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows, greek
+DMSerifDisplay: Regular, Italic   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek, maths
+Tinos: Regular, Italic, Bold, BoldItalic   || lacks: arrows
+Spectral: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows, greek
+Cardo: Regular, Italic, Bold   || lacks: naira, arrows
+Alegreya: Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows
+Vollkorn: Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts
+STIXTwoText: Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: naira, arrows, maths
+IBMPlexSerif: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: yoruba-letters, sub/superscripts, arrows, greek
+Bitter: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows, greek
+ZillaSlab: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: yoruba-letters, arrows, greek
+Slabo27px: Regular   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek, maths
+Arvo: Regular, Italic, Bold, BoldItalic   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek, maths
+Domine: Regular, Medium, SemiBold, Bold   || lacks: naira, sub/superscripts, arrows, greek, maths
+Gelasio: Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows, greek
+Newsreader: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: yoruba-letters, sub/superscripts, arrows, greek, maths
+Literata: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows
+RobotoSlab: Light, Regular, Medium, SemiBold, Bold   || lacks: naira, yoruba-letters, sub/superscripts, arrows
+
+[mono]
+RobotoMono: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: naira, yoruba-letters, sub/superscripts, arrows
+FiraCode: Light, Regular, Medium, SemiBold, Bold   || lacks: naira, yoruba-letters, arrows
+JetBrainsMono: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: naira, yoruba-letters, sub/superscripts, arrows
+SourceCodePro: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows
+IBMPlexMono: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: yoruba-letters, sub/superscripts, arrows, greek
+Cousine: Regular, Italic, Bold, BoldItalic   || lacks: sub/superscripts, arrows
+
+[display/handwriting]
+Oswald: Light, Regular, Medium, SemiBold, Bold   || lacks: yoruba-letters, sub/superscripts, arrows, greek
+BebasNeue: Regular   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek
+Anton: Regular   || lacks: sub/superscripts, arrows, greek
+DancingScript: Regular, Medium, SemiBold, Bold   || lacks: yoruba-letters, sub/superscripts, arrows, greek, maths
+Pacifico: Regular   || lacks: yoruba-letters, sub/superscripts, arrows, greek
+Exo2: Light, LightItalic, Regular, Italic, Medium, MediumItalic, SemiBold, SemiBoldItalic, Bold, BoldItalic   || lacks: sub/superscripts, arrows, greek
+Comfortaa: Light, Regular, Medium, SemiBold, Bold   || lacks: yoruba-letters, sub/superscripts, arrows
+Lobster: Regular   || lacks: sub/superscripts, arrows, greek
+Caveat: Regular, Medium, SemiBold, Bold   || lacks: sub/superscripts, arrows, greek, maths
+IndieFlower: Regular   || lacks: yoruba-letters, sub/superscripts, arrows, greek, maths
+AmaticSC: Regular, Bold   || lacks: yoruba-letters, sub/superscripts, arrows, greek
+
+[symbols (fallback for maths/science glyphs)]
+NotoSansMath: Regular   || lacks: naira, yoruba-letters, sub/superscripts
+NotoSansSymbols: Light, Regular, Medium, SemiBold, Bold   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek, maths
+NotoSansSymbols2: Regular   || lacks: naira, yoruba-letters, sub/superscripts, arrows, greek, maths
+
