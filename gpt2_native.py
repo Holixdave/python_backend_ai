@@ -387,7 +387,8 @@ def _flatten_tool_history(messages: list) -> list:
 
 def stream_chat(providers: list, messages: list, tools: Optional[list], *, temperature: float,
                 max_tokens: int, timeout: int = 120, max_retries: int = 2, retry_delay: float = 1.0,
-                reasoning_effort: Optional[str] = None, post: Callable = None, sleep: Callable = time.sleep):
+                reasoning_effort: Optional[str] = None, tool_choice: Optional[str] = None,
+                post: Callable = None, sleep: Callable = time.sleep):
     """
     Generator over ("text", delta) ... then exactly one of
         ("done", {"content": str, "tool_calls": [...], "provider": str, "providers": [str, ...],
@@ -419,7 +420,7 @@ def stream_chat(providers: list, messages: list, tools: Optional[list], *, tempe
                    "max_tokens": max_tokens, "stream": True}
         if tools:
             payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+            payload["tool_choice"] = tool_choice or "auto"
         if reasoning_effort is not None and provider.get("supports_reasoning_effort"):
             payload["reasoning_effort"] = reasoning_effort
             payload["reasoning_format"] = "raw"
@@ -446,6 +447,8 @@ def stream_chat(providers: list, messages: list, tools: Optional[list], *, tempe
                 if resp.status_code != 200:
                     last_error = f"{name}: HTTP {resp.status_code} — {str(resp.text)[:150]}"
                     errors.append(last_error)
+                    if tool_choice == "required" and resp.status_code in (400, 404, 422):
+                        break                               # this model can't force a tool call - try the next, don't blacklist it
                     if resp.status_code >= 500 or resp.status_code in (401, 403):
                         HEALTH.bad(("rate", name), 30 if resp.status_code >= 500 else 300)
                     else:   # 400/404/413/422: this model won't take THIS kind of request — skip it for a while
@@ -729,7 +732,7 @@ def _compact_old_tool_results(messages: list, keep_full: int = 4, old_chars: int
 _SIGNOFF_RE = re.compile(r"\b(?:let me know|let us know|feel free|let'?s (?:chat|talk|connect)|"
                          r"i(?:'ll| will) (?:be )?(?:happy|glad|here|wait|stand by))\b", re.I)
 _CONDITIONAL_RE = re.compile(r"\b(?:if you|when you|should you|would you|do you want|want me to|shall i|"
-                             r"in case|once you|whenever you)\b", re.I)
+                             r"in case|once you|whenever you|say the word|just say|tell me|when you(?:'re| are) ready|up to you)\b", re.I)
 _INTENT_RE = re.compile(
     r"(?:\blet(?:'s| us)\b|\blet me\b|\bi(?:'ll| will| shall)\b|\bi(?:'m| am) going to\b|"
     r"\b(?:now|next|then|first),? (?:i(?:'ll| will)|we(?:'ll| will)|let(?:'s| me))\b|\bgoing to\b)"
@@ -746,10 +749,12 @@ def announces_next_step(text: str) -> bool:
     t = (text or "").strip()
     if not t:
         return False
-    parts = [x for x in re.split(r"(?<=[.!?:])\s+|\n+", t[-500:]) if x.strip()]
+    parts = [x for x in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(\[*_#-])|\n+", t[-600:]) if x.strip()]
     last = parts[-1].strip() if parts else ""
     if not last or last.endswith("?") or _SIGNOFF_RE.search(last) or _CONDITIONAL_RE.search(last):
         return False
+    if last.endswith(":") and not last.lower().startswith(("note", "tip", "example")):
+        return True                                   # "Here is the script:" and then nothing
     return bool(_INTENT_RE.search(last))
 
 
@@ -811,6 +816,7 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
     queued: list = list(initial_calls or [])   # tool calls the SERVER runs itself (send a file, ...)
     turn_made: list = []                       # files made this turn
     nudges = {"unsent": 0, "stall": 0}
+    force_tool_next = False                    # next model round MUST call a tool (set by the 2nd stall nudge)
     auto_sent = False
     known_urls: set = set()                    # every URL a tool or the history really contained
     for _m in messages:
@@ -854,11 +860,14 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
             gate = TextGate()
             done = None
             failure = None
+            tool_choice_now = "required" if (force_tool_next and use_tools) else None
+            force_tool_next = False
+            extra = {"tool_choice": tool_choice_now} if tool_choice_now else {}
             round_providers = ([p for p in providers if p.get("name") == sticky] +
                                [p for p in providers if p.get("name") != sticky]) if sticky else providers
             send_messages = _flatten_tool_history(messages) if flat_mode else messages
             for kind, val in stream(round_providers, send_messages, use_tools, temperature=temperature,
-                                    max_tokens=max_tokens, reasoning_effort=reasoning_effort):
+                                    max_tokens=max_tokens, reasoning_effort=reasoning_effort, **extra):
                 if kind == "text":
                     safe = gate.feed(val)
                     if safe:
@@ -868,6 +877,10 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
                 elif kind == "fail":
                     failure = val
             if done is None:
+                if tool_choice_now:
+                    # no model would take a forced tool call - go on without forcing instead of failing the turn
+                    print(f"[NATIVE] forced tool call refused by every model ({failure}) - retrying without forcing")
+                    continue
                 if state["tools_called"] and not flat_mode:
                     # Every model refused the follow-up to a tool call. Often that is a model choking on the
                     # tool-call history, not a real outage. Retry with the history as plain text — and keep the
@@ -932,7 +945,11 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
                         continue
             elif can_nudge and nudges["stall"] < 2 and announces_next_step(round_text):
                 nudges["stall"] += 1
-                print(f"[NATIVE] turn ended on an announced step - nudge {nudges['stall']}: {round_text[-120:]!r}")
+                # 2nd time in an agentic turn (tools already used): don't ask, REQUIRE a tool call
+                force_tool_next = nudges["stall"] >= 2 and bool(state["tools_called"])
+                print(f"[NATIVE] turn ended on an announced step - nudge {nudges['stall']}"
+                      f"{' (tool call required)' if force_tool_next else ''}: {round_text[-120:]!r} "
+                      f"| raw={len(gate.raw)} chars, kept={len(round_text)}")
                 messages.append({"role": "assistant", "content": round_text})
                 messages.append({"role": "user", "content": STALL_NUDGE})
                 continue

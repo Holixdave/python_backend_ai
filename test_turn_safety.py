@@ -27,11 +27,16 @@ def call(name, **args):
 class Harness:
     """Scripted fake model + fake tool executor."""
     def __init__(self, rounds, initial_calls=None):
-        self.rounds, self.executed, self.seen = list(rounds), [], []
+        self.rounds, self.executed, self.seen, self.kws = list(rounds), [], [], []
         self.initial_calls = initial_calls
+        self.refuse_forced = False
 
     def stream(self, providers, messages, tools, **kw):
         self.seen.append([dict(m) for m in messages])
+        self.kws.append(dict(kw))
+        if kw.get("tool_choice") and self.refuse_forced:
+            yield ("fail", "provider refused tool_choice=required")
+            return
         if not self.rounds:
             yield ("text", "(script ran out)")
             yield ("done", {"provider": "fake", "tool_calls": []})
@@ -137,7 +142,9 @@ class StalledTurns(SetUp):
     def test_signoffs_and_offers_are_left_alone(self):
         for text in ("All done! Let me know if you need anything else.",
                      "I can also add images if you want. Shall I?",
-                     "I'll add more detail if you want me to."):
+                     "I'll add more detail if you want me to.",
+                     "Saved it. Say the word and I will send it.",
+                     "Tell me when you are ready and I will build the PDF."):
             h = Harness([{"text": text}])
             h.run()
             self.assertEqual(len(h.seen), 1, text)
@@ -155,6 +162,76 @@ class StalledTurns(SetUp):
               "I'll be happy to help.", "The file is ready.", "", "Should I create it?"]
         self.assertEqual([t for t in yes if not n.announces_next_step(t)], [])
         self.assertEqual([t for t in no if n.announces_next_step(t)], [])
+
+
+SCREENSHOT = ("Let me run a script to inspect the exact structure, font names, margins, and design setup of the "
+              "reference PDF so we can build an exact equivalent for Chemistry: Chemical Reactions.")
+
+
+class ScreenshotCase(SetUp):
+    """The exact sentences that ended the user's real turns."""
+    def test_real_sentences_are_caught(self):
+        for t in (SCREENSHOT,
+                  "Let's write a python script to inspect the ReportLab structure or layout of the uploaded PDF.",
+                  "I have the structure. Now I'll build the PDF with ReportLab: header, banner, and tables.",
+                  "Here is the script:"):
+            self.assertTrue(n.announces_next_step(t), t)
+        for t in ("The PDF is ready: see the card.", "Note: it is saved in outputs.", "Do you want me to run it?"):
+            self.assertFalse(n.announces_next_step(t), t)
+
+    def test_second_nudge_requires_a_tool_call_after_tools_were_used(self):
+        h = Harness([{"calls": [call("workspace_run")]}, {"text": SCREENSHOT}, {"text": SCREENSHOT},
+                     {"calls": [call("workspace_run")]}, {"text": "Built it - see the card."}])
+        final, _ = h.run()
+        self.assertEqual(h.executed, ["workspace_run", "workspace_run"])
+        self.assertEqual([bool(k.get("tool_choice")) for k in h.kws], [False, False, False, True, False])
+        self.assertEqual(h.kws[3]["tool_choice"], "required")
+        self.assertIn("Built it", final["answer"])
+
+    def test_no_forcing_when_no_tool_was_used_yet(self):
+        h = Harness([{"text": SCREENSHOT}] * 5)
+        h.run()
+        self.assertFalse(any(k.get("tool_choice") for k in h.kws))
+
+    def test_if_no_model_accepts_forcing_the_turn_still_continues(self):
+        h = Harness([{"calls": [call("workspace_run")]}, {"text": SCREENSHOT}, {"text": SCREENSHOT},
+                     {"text": "Okay - here is what I found so far."}])
+        h.refuse_forced = True
+        final, _ = h.run()
+        self.assertTrue(any(k.get("tool_choice") for k in h.kws))                        # it tried
+        self.assertIn("what I found", final["answer"])                                    # and recovered, no crash
+
+
+class ForcedChoiceOnTheWire(unittest.TestCase):
+    class _Resp:
+        def __init__(self, code, lines=(), text=""):
+            self.status_code, self._lines, self.text, self.headers = code, list(lines), text, {}
+        def iter_lines(self, decode_unicode=True):
+            return iter(self._lines)
+        def close(self): pass
+
+    def _providers(self):
+        mk = lambda name: {"name": name, "model": "m", "url": "http://x/" + name, "headers": {}, "enabled": True}
+        return [mk("strict"), mk("ok")]
+
+    def test_required_is_sent_and_a_refusing_model_is_skipped_not_blacklisted(self):
+        sent = []
+        def post(url, headers=None, json=None, timeout=None, stream=None):
+            sent.append((url, json.get("tool_choice")))
+            if url.endswith("strict"):
+                return self._Resp(400, text="tool_choice required not supported")
+            return self._Resp(200, ['data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}', "data: [DONE]"])
+        tools = [{"type": "function", "function": {"name": "t", "parameters": {"type": "object", "properties": {}}}}]
+        out = list(n.stream_chat(self._providers(), [{"role": "user", "content": "x"}], tools, temperature=0, max_tokens=50,
+                                 tool_choice="required", post=post, sleep=lambda s: None))
+        self.assertEqual([c for _u, c in sent], ["required", "required"])
+        self.assertEqual(out[-1][0], "done")
+        self.assertTrue(n.HEALTH.ok(("tools", "strict")) if hasattr(n.HEALTH, "ok") else True)   # not blacklisted
+        # and by default nothing changes: still "auto"
+        sent.clear()
+        list(n.stream_chat(self._providers()[1:], [{"role": "user", "content": "x"}], tools, temperature=0, max_tokens=50,
+                           post=post, sleep=lambda s: None))
+        self.assertEqual([c for _u, c in sent], ["auto"])
 
 
 class DropTheFile(SetUp):
