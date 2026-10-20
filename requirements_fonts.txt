@@ -1,0 +1,2 @@
+# Only needed to run tools/build_fonts.py (adding or rebuilding fonts). Not needed by the server.
+fonttools

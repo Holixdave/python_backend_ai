@@ -29,3 +29,7 @@ scipy
 # PDF creation (reportlab = canvas/layout, fpdf2 = simple documents; import name is `fpdf`)
 reportlab
 fpdf2
+
+# PyMuPDF provides `import fitz` (open/render/edit PDFs, extract text and images).
+# Do NOT list a package literally called "fitz": that is an unrelated library and breaks `import fitz`.
+PyMuPDF

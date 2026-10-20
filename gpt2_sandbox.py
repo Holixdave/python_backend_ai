@@ -446,6 +446,15 @@ def _ffmpeg_exe() -> Optional[str]:
     return exe
 
 
+def _fonts_dir() -> Optional[str]:
+    """Folder of bundled .ttf fonts (see fonts/FONTS.txt). FONTS_DIR env wins (the Dockerfile sets it);
+    otherwise the fonts/ folder next to this file. None when neither exists."""
+    for cand in (os.environ.get("FONTS_DIR"), os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")):
+        if cand and os.path.isdir(cand):
+            return cand
+    return None
+
+
 def _clean_env(extra_pythonpath: Optional[str] = None) -> dict:
     # Deliberately NOT os.environ.copy() — this is the whole point. A
     # subprocess that inherited the real environment gets every API key/
@@ -468,6 +477,9 @@ def _clean_env(extra_pythonpath: Optional[str] = None) -> dict:
         env["IMAGEIO_FFMPEG_EXE"] = ffmpeg      # a path, not a secret
     if os.environ.get("U2NET_HOME"):
         env["U2NET_HOME"] = os.environ["U2NET_HOME"]      # a path to the pre-downloaded background-removal model, not a secret
+    fonts = _fonts_dir()
+    if fonts:
+        env["FONTS_DIR"] = fonts                          # a path to the bundled fonts, not a secret
     if extra_pythonpath:
         # Only ever set to PACKAGE_INSTALL_DIR (our own pip --target dir),
         # never anything caller-supplied — this is not a general env
@@ -630,6 +642,9 @@ def _run_docker(runner: dict, code_path: str, timeout_s: int, packages_dir: Opti
         # so a container can import what was pip-installed on the host
         # without re-downloading anything itself.
         cmd += ["-v", f"{packages_dir}:/packages:ro", "-e", "PYTHONPATH=/packages"]
+    fonts = _fonts_dir()
+    if fonts:
+        cmd += ["-v", f"{fonts}:/fonts:ro", "-e", "FONTS_DIR=/fonts"]     # same bundled fonts as subprocess mode
     cmd += [runner["docker_image"], *runner["docker_cmd"](container_path)]
 
     start = time.time()

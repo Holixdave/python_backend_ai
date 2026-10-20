@@ -18,4 +18,8 @@ RUN python -c "from rembg import new_session; new_session('u2netp')" || echo "mo
 
 COPY . .
 
+# Bundled fonts (fonts/FONTS.txt lists them). gpt2_sandbox.py passes this path to run_code so PDF code
+# can load e.g. Poppins/Lora; see fonts/pdf_fonts.py.
+ENV FONTS_DIR=/app/fonts
+
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000"]
