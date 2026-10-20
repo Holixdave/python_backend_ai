@@ -339,17 +339,73 @@ def _request_kind(tools, messages) -> str:
     return "tools+history" if any(m.get("role") == "tool" for m in messages) else "tools"
 
 
+GOOGLE_HOST = "generativelanguage.googleapis.com"
+# Google's documented placeholder for a tool call that has no real signature (history written by another
+# model, a call the server made itself, a typed call...). Real signatures are always sent back untouched.
+DUMMY_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
+
+
+def _messages_for_provider(messages: list, provider: dict) -> list:
+    """Gemini 3 models return a `thought_signature` (in tool_calls[i].extra_content.google) with every tool
+    call and answer 400 "Function call is missing a thought_signature" on the next round if it is not sent
+    back. Every other API rejects the unknown `extra_content` field. So: Google gets the real signature (or
+    the documented placeholder), everyone else gets it removed. Returns a copy only when something changed."""
+    is_google = GOOGLE_HOST in str((provider or {}).get("url", ""))
+    out = None
+    for i, m in enumerate(messages):
+        tcs = m.get("tool_calls") if isinstance(m, dict) else None
+        if m.get("role") != "assistant" or not tcs:
+            continue
+        new_tcs, changed = [], False
+        for tc in tcs:
+            tc2 = dict(tc)
+            if is_google:
+                ec = tc.get("extra_content")
+                sig = ((ec or {}).get("google") or {}).get("thought_signature") if isinstance(ec, dict) else None
+                if not sig:
+                    tc2["extra_content"] = {"google": {"thought_signature": DUMMY_THOUGHT_SIGNATURE}}
+                    changed = True
+            elif "extra_content" in tc2:
+                tc2.pop("extra_content")
+                changed = True
+            new_tcs.append(tc2)
+        if changed:
+            if out is None:
+                out = list(messages)
+            out[i] = {**m, "tool_calls": new_tcs}
+    return out if out is not None else messages
+
+
+def _match_names(providers: list, names: list) -> list:
+    """Providers matching each name in order. 'google/*' matches every name starting with 'google/'."""
+    picked, seen = [], set()
+    for n in names:
+        for p in providers:
+            nm = p.get("name") or ""
+            hit = nm.startswith(n[:-1]) if n.endswith("*") else nm == n
+            if hit and p.get("enabled") and nm not in seen:
+                seen.add(nm)
+                picked.append(p)
+    return picked
+
+
 def apply_model_pin(providers: list) -> list:
     """MODEL_PIN=name[,name...] (env) restricts the turn to just those models, in that order —
     e.g. MODEL_PIN=groq-gpt-oss-120b for a single-model setup. Unknown/disabled names are ignored."""
     pin = (os.environ.get("MODEL_PIN") or "").strip()
-    if not pin:
-        return providers
-    names = [n.strip() for n in pin.split(",") if n.strip()]
-    chosen = [p for n in names for p in providers if p.get("name") == n and p.get("enabled")]
-    if chosen:
-        return chosen
-    print(f"[NATIVE] MODEL_PIN={pin!r} matches no enabled model — using the normal chain")
+    first = (os.environ.get("MODEL_FIRST") or "").strip()
+    if pin:
+        chosen = _match_names(providers, [n.strip() for n in pin.split(",") if n.strip()])
+        if chosen:
+            return chosen
+        print(f"[NATIVE] MODEL_PIN={pin!r} matches no enabled model — using the normal chain")
+    if first:
+        # MODEL_FIRST=google/gemini-3.5-flash,google/*  -> these go FIRST; everything else stays as the fallback
+        front = _match_names(providers, [n.strip() for n in first.split(",") if n.strip()])
+        if front:
+            names = {p["name"] for p in front}
+            return front + [p for p in providers if p.get("name") not in names]
+        print(f"[NATIVE] MODEL_FIRST={first!r} matches no enabled model — using the normal order")
     return providers
 
 
@@ -402,6 +458,10 @@ def stream_chat(providers: list, messages: list, tools: Optional[list], *, tempe
     post = post or requests.post
     last_error = "No provider available."
     errors: list = []              # every model's failure, so the log shows the whole story
+
+    def _fail(msg: str) -> None:
+        errors.append(msg)
+        print(f"[CHAIN] x {msg[:260]}")
     shown = ""                     # every word the user has seen this round, across providers
     used: list = []                # providers that contributed words / tool calls, in order
     kind = _request_kind(tools, messages)
@@ -416,6 +476,7 @@ def stream_chat(providers: list, messages: list, tools: Optional[list], *, tempe
         if continuing:
             msgs = list(messages) + [{"role": "assistant", "content": shown},
                                      {"role": "user", "content": CONTINUE_PROMPT}]
+        msgs = _messages_for_provider(msgs, provider)
         payload = {"model": provider["model"], "messages": msgs, "temperature": temperature,
                    "max_tokens": max_tokens, "stream": True}
         if tools:
@@ -437,7 +498,7 @@ def stream_chat(providers: list, messages: list, tools: Optional[list], *, tempe
                     if attempt < max_retries and not continuing:
                         sleep(retry_delay * attempt)
                         continue
-                    errors.append(last_error)
+                    _fail(last_error)
                     try:
                         wait = float((getattr(resp, "headers", None) or {}).get("Retry-After") or 60)
                     except (TypeError, ValueError):
@@ -446,7 +507,7 @@ def stream_chat(providers: list, messages: list, tools: Optional[list], *, tempe
                     break
                 if resp.status_code != 200:
                     last_error = f"{name}: HTTP {resp.status_code} — {str(resp.text)[:150]}"
-                    errors.append(last_error)
+                    _fail(last_error)
                     if tool_choice == "required" and resp.status_code in (400, 404, 422):
                         break                               # this model can't force a tool call - try the next, don't blacklist it
                     if resp.status_code >= 500 or resp.status_code in (401, 403):
@@ -486,9 +547,12 @@ def stream_chat(providers: list, messages: list, tools: Optional[list], *, tempe
                             name = fn.get("name")
                             args = fn.get("arguments")
                             if name:                       # a chunk with a name starts a new call
-                                calls.append({"id": tc.get("id") or f"call_{uuid.uuid4().hex[:10]}",
-                                              "name": name, "arguments": args if isinstance(args, str) else
-                                              json.dumps(args or {})})
+                                call_obj = {"id": tc.get("id") or f"call_{uuid.uuid4().hex[:10]}",
+                                            "name": name, "arguments": args if isinstance(args, str) else
+                                            json.dumps(args or {})}
+                                if isinstance(tc.get("extra_content"), dict):   # Gemini 3 thought signature
+                                    call_obj["extra_content"] = tc["extra_content"]
+                                calls.append(call_obj)
                             elif calls and args:
                                 calls[-1]["arguments"] += args if isinstance(args, str) else json.dumps(args)
                 if stitch:
@@ -503,7 +567,7 @@ def stream_chat(providers: list, messages: list, tools: Optional[list], *, tempe
                                     "providers": used})
                     return
                 last_error = f"{name}: empty response"
-                errors.append(last_error)
+                _fail(last_error)
                 HEALTH.bad(("rate", name), 20)
                 break
             except Exception as e:
@@ -518,13 +582,13 @@ def stream_chat(providers: list, messages: list, tools: Optional[list], *, tempe
                         yield ("done", {"content": shown, "tool_calls": good, "provider": provider["name"],
                                         "providers": used})
                         return
-                    errors.append(last_error)
+                    _fail(last_error)
                     HEALTH.bad(("rate", name), 30)
                     break
                 if attempt < max_retries:
                     sleep(retry_delay * attempt)
                     continue
-                errors.append(last_error)
+                _fail(last_error)
                 HEALTH.bad(("rate", name), 30)
                 break
     if shown:                                               # every provider died mid-answer — keep what we have
@@ -829,6 +893,7 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
     build_segments = build_segments or (lambda t: [{"type": "text", "content": t}] if t else [])
 
     providers = apply_model_pin(providers)
+    print("[CHAIN] order this turn: " + (", ".join(p["name"] for p in providers if p.get("enabled"))[:600] or "NO ENABLED MODEL"))
     blocks: list = []                       # ordered, final form
     seen_sources = set()
     provider_name = None
@@ -1000,7 +1065,9 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
         messages.append({
             "role": "assistant", "content": round_text or None,
             "tool_calls": [{"id": c["id"], "type": "function",
-                            "function": {"name": c["name"], "arguments": c["arguments"] or "{}"}} for c in calls],
+                            "function": {"name": c["name"], "arguments": c["arguments"] or "{}"},
+                            **({"extra_content": c["extra_content"]} if isinstance(c.get("extra_content"), dict) else {})}
+                           for c in calls],
         })
         for c in calls:
             name, cid = c["name"], c["id"]

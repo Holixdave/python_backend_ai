@@ -133,7 +133,7 @@ def _gemini_text_provider(model_name: str) -> dict:
     return {
         "name": f"google/{raw_model_id}",
         "enabled": bool(GEMINI_API_KEY),
-        "url": "https://generativelanguage.googleapis.com/v1beta/chat/completions",
+        "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
         "headers": {
             "Content-Type": "application/json",
             "Authorization": "Bearer " + GEMINI_API_KEY
