@@ -11,6 +11,10 @@ import re
 from math_solver import solve_math_with_explanation
 from equation_solver import solve_equation_with_steps
 from gpt2_test import ask_gpt2, ask_gpt2_stream
+from lite_stream import lite_events, should_use_lite, LiteUnavailable  # NEW: lightweight Gemini stream service
+from starlette.concurrency import iterate_in_threadpool
+from fastapi import Header, HTTPException
+import hmac
 
 # ── Backend-side chat memory (NEW) ──────────────────────────────────────
 # Same pattern as the working Zindryx/Gemini backend: a DB-backed history
@@ -266,6 +270,27 @@ async def ask_ai_stream(request: QuestionRequest, db: Session = Depends(get_db))
                 remember_turn(db, request.userid, user_question, eq_answer)
                 return
 
+        # 1b. NEW: plain chat turns -> lightweight Gemini stream service (cheap, fast).
+        # Anything needing tools/files, or any failure BEFORE output, falls through to the full agent below.
+        if should_use_lite(user_question, image_urls, request.fileUrls, request.fileNames):
+            lite_final = None
+            try:
+                async for event in iterate_in_threadpool(lite_events(user_question, chat_history, image_urls, request.fileUrls, request.fileNames)):
+                    if event["type"] == "final":
+                        lite_final = event
+                        yield f"data: {json.dumps({k: v for k, v in event.items() if k != 'provider'}, default=str)}\n\n"
+                    else:
+                        yield f"data: {json.dumps(event, default=str)}\n\n"
+            except LiteUnavailable as e:
+                print(f"[LITE] unavailable, using full agent instead: {e}")
+            if lite_final is not None:
+                memory_reply = _build_memory_reply(lite_final["answer"], [], lite_final.get("images"))
+                # keep a trace of what was attached so follow-ups ("what was in that pdf?") make sense
+                attached = list(request.fileNames or []) + (["image"] * len(image_urls))
+                note = f"\n[Attached: {', '.join(attached)}]" if attached else ""
+                remember_turn(db, request.userid, user_question + note, memory_reply)
+                return
+
         # 2. Real generator from gpt2_test
         final_answer = None
         final_sources = []
@@ -305,6 +330,29 @@ async def ask_ai_stream(request: QuestionRequest, db: Session = Depends(get_db))
 
     # FIXED: Moved 4 spaces to the left out of the inner event_generator block!
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+
+# -------------------------------------------------------
+# POST /tools/search-images — used by the Gemini streaming service
+# (zindryx-ai-backend). When a student asks for pictures, Gemini calls its
+# search_images tool, and that tool calls THIS endpoint, so the exact same
+# image search this app already uses (Google CSE -> SerpAPI -> Serper -> ddgs) runs.
+# Protected by the shared SERVICE_API_KEY.
+# -------------------------------------------------------
+class ImageSearchRequest(BaseModel):
+    query: str
+    max_results: int = 6
+
+
+@app.post("/tools/search-images")
+def tools_search_images(req: ImageSearchRequest, x_service_key: Optional[str] = Header(default=None)):
+    key = os.getenv("SERVICE_API_KEY")
+    if not key or not hmac.compare_digest(x_service_key or "", key):
+        raise HTTPException(status_code=401, detail="Invalid service key")
+    from gpt2_functions import search_images
+    results = search_images(req.query.strip()[:200], max_results=max(1, min(req.max_results, 10))) or []
+    return {"images": results[: max(1, min(req.max_results, 10))]}
 
 
 # -------------------------------------------------------

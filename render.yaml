@@ -75,3 +75,11 @@ services:
         sync: false
       - key: RECRAFT_API_KEY
         sync: false
+
+      # NEW — lightweight Gemini streaming service (see lite_stream.py).
+      # LITE_STREAM_URL: https://zindryx-ai-backend.onrender.com/stream  (unset = feature off)
+      # SERVICE_API_KEY: same random secret as on the Gemini service.
+      - key: LITE_STREAM_URL
+        sync: false
+      - key: SERVICE_API_KEY
+        sync: false
