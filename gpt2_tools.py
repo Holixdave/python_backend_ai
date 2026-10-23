@@ -31,6 +31,8 @@ import json
 import re
 from typing import Optional
 
+import gpt2_approvals
+
 def see_tool_arg(tool_name: str) -> str:
     """
     Meta-tool — lets the AI look up any OTHER registered tool's real source
@@ -214,6 +216,7 @@ from gpt2_workspace import (
     workspace_grep,
     workspace_unzip,
     workspace_github_clone,
+    workspace_github_folder,
     workspace_zip,
     workspace_copy,
     workspace_edit,
@@ -239,6 +242,7 @@ WEB_TOOLS = {
     "fetch_document",
     "remove_background",
     "workspace_github_clone",
+    "workspace_github_folder",
 }
 
 # ---------------------------------------------------------------------------
@@ -283,6 +287,7 @@ TOOL_REGISTRY = {
     "workspace_grep": workspace_grep,
     "workspace_unzip": workspace_unzip,
     "workspace_github_clone": workspace_github_clone,
+    "workspace_github_folder": workspace_github_folder,
     "workspace_zip": workspace_zip,
     "workspace_copy": workspace_copy,
     "output_files": output_files,
@@ -320,6 +325,7 @@ TOOL_DESCRIPTIONS = {
     "run_code": "Actually execute code you wrote (python/javascript/bash) in a sandbox and get back real stdout/stderr/exit_code — use this whenever the user asks you to run/execute/test code, not just to verify build_file's output. Supports an optional packages list (python only) to auto-install third-party imports like numpy/requests before running — no separate pip install step needed. To READ files the user already has, pass input_files=[workspace paths/folders] — they are copied into ./inputs/ for that run (open('inputs/data.csv')); without it the code starts in an EMPTY folder and cannot see any workspace file. For a whole project with its own files/tests use workspace_run. To produce a real file (audio, image, pdf, zip, csv, etc.), write it into the ./outputs/ folder from your code, e.g. open('outputs/tone.wav','wb'); every file saved there lands in your workspace under outputs/ and is listed in `saved_to_workspace` — it is NOT shown to the user until you call output_files with those paths. Never claim the user has a file unless output_files returned it.",
     "ask_user": "Ask the user a quick multiple-choice question in a bottom sheet in their app (2-6 options, optional 'Other' box). Pass questions=[...] (max 3) to ask several related questions in one sheet; if the app can only show one, only the first appears, so put the most important first and ask the next after they answer. Use it when the request is genuinely ambiguous and a wrong guess would waste their time. The turn stops when you call it and their answer comes back as their next message — so write nothing else in that reply.",
     "workspace_github_clone": "Download a WHOLE GitHub repo (owner/name or URL, optional ref/branch) into your workspace — no truncation. Use this instead of fetch_github_file whenever you need more than one small file. Then explore it with workspace_list / workspace_grep / workspace_read.",
+    "workspace_github_folder": "Download ONE FOLDER of a GitHub repo (repo + path inside it, optional ref/branch) into an isolated folder in your workspace. Use this for BIG repos you cannot clone whole - e.g. repo \"googlefonts/noto-emoji\", path \"png/128\". Capped at 1500 files / 60MB; if it is bigger, pick a deeper sub-folder. Then explore it with workspace_list / workspace_grep / workspace_read.",
     "workspace_list": "Show the workspace file tree (or one folder in it) with file sizes. Start here after a clone/unzip to see what exists.",
     "workspace_grep": "Regex-search all text files in the workspace (or a folder) and get file:line matches. Use it to FIND code in a big repo, then workspace_read that range.",
     "workspace_read": "Read a workspace text file by line range (start_line/end_line) with total_lines — read big files in pieces; the result says which start_line to continue from.",
@@ -754,6 +760,13 @@ def execute_tool(tool_name: str, ai_args: dict, session_context: dict):
             "if possible. Do not request search_web or any other internet "
             "tool again this turn."
         )
+
+    # User approval ("OOOR wants to fetch ..." / "OOOR wants to run this command"): decided in code by
+    # gpt2_approvals, fails closed (deny / timeout / cancel = not run). The refusal text goes back to
+    # the model instead of the tool result so it can tell the user and carry on.
+    denied = gpt2_approvals.check(tool_name, ai_args, session_context)
+    if denied:
+        return False, denied
 
     # generate_image is NOT gated: free users generate unlimited images via
     # Pollinations, premium users get the paid providers (see

@@ -704,6 +704,133 @@ def workspace_github_clone(userid: str, repo: str, ref: Optional[str] = None, de
     return res
 
 
+# ── GitHub: ONE FOLDER of a repo (for repos too big to clone) ────────────────
+FOLDER_DIR = "github_folders"           # every folder pull lands under here, whatever the model asks for
+MAX_FOLDER_FILES = 1500
+MAX_FOLDER_BYTES = 60 * 1024 * 1024
+_FOLDER_WORKERS = 8
+
+
+def _gh_get_json(url: str, headers: dict):
+    resp = requests.get(url, headers=headers, timeout=30)
+    if resp.status_code == 404:
+        return None, "not found (or private and the server token can't see it)"
+    if resp.status_code in (401, 403):
+        return None, f"GitHub refused access ({resp.status_code}) - likely a rate limit or a private repo"
+    resp.raise_for_status()
+    return resp.json(), None
+
+
+def workspace_github_folder(userid: str, repo: str, path: str, ref: Optional[str] = None,
+                            dest: Optional[str] = None) -> dict:
+    """
+    Download ONE FOLDER of a GitHub repo (not the whole repo) into the workspace. Use this when the
+    repo is big - e.g. repo "googlefonts/noto-emoji", path "png/128". repo: "owner/name" or a github.com
+    URL. path: the folder inside the repo. ref: branch/tag/commit (default = default branch).
+    The folder is fetched file by file, zipped, and unpacked into its own isolated folder under
+    github_folders/ - you cannot choose a location outside it. Capped at 1500 files / 60MB; if the
+    folder is bigger, ask for a deeper sub-folder. Then use workspace_list / workspace_grep / workspace_read.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from urllib.parse import quote
+
+    if not _rate_ok(userid, "folder", 20):
+        return {"success": False, "error": "Folder download limit reached (20 per hour) - try again later."}
+    slug = _parse_repo(repo)
+    if not slug:
+        return {"success": False, "error": "repo must look like 'owner/name' or a github.com URL."}
+    parts = [p for p in (path or "").replace("\\", "/").strip("/").split("/") if p]
+    if not parts or any(p in (".", "..") for p in parts):
+        return {"success": False, "error": "path must be a folder inside the repo, like 'png/128'."}
+    if ref and not re.match(r"^[A-Za-z0-9._/-]{1,100}$", ref):
+        return {"success": False, "error": "Invalid ref."}
+    folder = "/".join(parts)
+    ref_name = ref or "HEAD"
+
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "workspace-bot"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    api = f"https://api.github.com/repos/{slug}/git/trees"
+
+    try:
+        # walk down to the folder's own tree (so the recursive listing is only that folder, and a
+        # huge repo can't push us past GitHub's truncation limit)
+        data, err = _gh_get_json(f"{api}/{quote(ref_name, safe='')}", headers)
+        if err:
+            return {"success": False, "error": f"{slug}@{ref_name}: {err}."}
+        sha = data["sha"]
+        for part in parts:
+            data, err = _gh_get_json(f"{api}/{sha}", headers)
+            if err:
+                return {"success": False, "error": f"{slug}: {err}."}
+            hit = next((e for e in data.get("tree", []) if e.get("path") == part), None)
+            if hit is None:
+                return {"success": False, "error": f"'{folder}' doesn't exist in {slug}@{ref_name} (no '{part}')."}
+            if hit.get("type") != "tree":
+                return {"success": False, "error": f"'{folder}' is a file, not a folder - use fetch_github_file."}
+            sha = hit["sha"]
+        data, err = _gh_get_json(f"{api}/{sha}?recursive=1", headers)
+        if err:
+            return {"success": False, "error": f"{slug}: {err}."}
+        if data.get("truncated"):
+            return {"success": False, "error": f"'{folder}' is too big to list - ask for a deeper sub-folder."}
+
+        entries, skipped = [], []
+        for e in data.get("tree", []):
+            if e.get("type") != "blob":
+                continue
+            if e.get("mode") == "120000":                       # symlink
+                skipped.append(f"{e.get('path')} (symlink)")
+                continue
+            if int(e.get("size") or 0) > MAX_FILE_BYTES:
+                skipped.append(f"{e.get('path')} (too big)")
+                continue
+            entries.append(e)
+        if not entries:
+            return {"success": False, "error": f"'{folder}' has no files."}
+        if len(entries) > MAX_FOLDER_FILES:
+            return {"success": False, "error": f"'{folder}' has {len(entries)} files (limit {MAX_FOLDER_FILES}) - ask for a deeper sub-folder."}
+        total = sum(int(e.get("size") or 0) for e in entries)
+        if total > MAX_FOLDER_BYTES:
+            return {"success": False, "error": f"'{folder}' is {total // (1024 * 1024)}MB (limit {MAX_FOLDER_BYTES // (1024 * 1024)}MB) - ask for a deeper sub-folder."}
+
+        raw_headers = {"User-Agent": "workspace-bot"}
+        if GITHUB_TOKEN:
+            raw_headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+        base = f"https://raw.githubusercontent.com/{slug}/{quote(ref_name, safe='/')}/{quote(folder)}"
+
+        def pull(entry):
+            r = requests.get(f"{base}/{quote(entry['path'])}", headers=raw_headers, timeout=30)
+            r.raise_for_status()
+            return entry["path"], r.content
+
+        buf = io.BytesIO()
+        got = 0
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf, ThreadPoolExecutor(_FOLDER_WORKERS) as pool:
+            for rel, blob in pool.map(pull, entries):
+                got += len(blob)
+                if got > MAX_FOLDER_BYTES:                       # sizes in the listing can lie
+                    return {"success": False, "error": "Folder grew past the size limit while downloading - stopped."}
+                zf.writestr(rel, blob)
+    except Exception as e:
+        return {"success": False, "error": f"GitHub folder download failed: {type(e).__name__}: {e}"}
+
+    # isolated landing spot: always under github_folders/, one sanitized name, replaces an older pull
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename((dest or "").strip("/\\")) or
+                  f"{slug.replace('/', '__')}__{folder.replace('/', '-')}")[:120] or "folder"
+    target = f"{FOLDER_DIR}/{name}"
+    old = _safe_path(userid, target)
+    if os.path.isdir(old) and not os.path.islink(old):
+        shutil.rmtree(old)
+    res = _extract_zip_bytes(userid, buf.getvalue(), target, strip_top=False)
+    if res.get("success"):
+        res.update({"repo": slug, "ref": ref or "default branch", "folder": folder})
+        if skipped:
+            res["skipped"] = skipped[:20]
+        res["tree"] = workspace_list(userid, res["extracted_to"], depth=2).get("tree", "")
+    return res
+
+
 # ── hand results back ────────────────────────────────────────────────────────
 def workspace_zip(userid: str, path: str = "", zip_name: str = "workspace.zip") -> dict:
     """

@@ -31,6 +31,7 @@ import json
 import re
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -41,6 +42,7 @@ from google.api_core.exceptions import AlreadyExists
 from pydantic import BaseModel, Field
 
 import firebase_config  # noqa: F401 (initialises firebase_admin before firestore.client())
+import gpt2_approvals
 from database import SessionLocal
 from gpt2_functions import is_friendly_failure, premium_from_user_doc
 from gpt2_test import ask_gpt2_stream
@@ -172,6 +174,61 @@ def _charge(uid: str, chars: int) -> Optional[dict]:
     except Exception as e:
         print(f"[AI-JOB] charge failed for {uid!r}: {e}")
         return None
+
+
+# ── asking the user ("OOOR wants to fetch ..." / "OOOR wants to run this command") ───────────
+# The turn runs in a worker thread, so asking is simple: write the question onto the reply doc
+# (the app already listens to it), then wait for the app's answer in `approvalDecision`, or for
+# the timeout. Anything but an explicit Allow means NOT approved (see gpt2_approvals.py).
+APPROVAL_POLL_SECONDS = 1.5
+_DECISIONS = {gpt2_approvals.ALLOW, gpt2_approvals.ALLOW_ADD, gpt2_approvals.DENY}
+
+
+def _make_approver(ref, state: dict):
+    def ask(spec: dict) -> str:
+        approval_id = uuid.uuid4().hex[:16]
+        timeout_s = max(10, int(spec.get("timeoutS") or gpt2_approvals.FETCH_TIMEOUT_S))
+        now = _now_ms()
+        card = {
+            "id": approval_id, "kind": spec.get("kind"), "tool": spec.get("tool"),
+            "title": spec.get("title"), "target": spec.get("target"), "why": spec.get("why"),
+            "risk": spec.get("risk", "normal"), "allowAdd": bool(spec.get("allowAdd")),
+            "status": "pending", "createdAt": now, "expiresAt": now + timeout_s * 1000,
+        }
+        try:
+            ref.update({"approval": card, "approvalDecision": firestore.DELETE_FIELD, "updatedAt": now})
+        except Exception as e:
+            print(f"[AI-JOB] couldn't post approval request: {e}")
+            return gpt2_approvals.DENY
+
+        def close(status: str, result: str) -> str:
+            _safe_update(ref, {"approval.status": status, "updatedAt": _now_ms()})
+            print(f"[AI-JOB] approval {approval_id} ({card['kind']}) -> {status}")
+            return result
+
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            if state["cancel"]:
+                return close("cancelled", gpt2_approvals.CANCELLED)
+            try:
+                snap = ref.get()
+                if not snap.exists:
+                    return gpt2_approvals.CANCELLED
+                data = snap.to_dict() or {}
+            except Exception as e:
+                print(f"[AI-JOB] approval poll error: {e}")
+                time.sleep(APPROVAL_POLL_SECONDS)
+                continue
+            answer = data.get("approvalDecision")
+            if isinstance(answer, dict) and answer.get("id") == approval_id:     # only THIS request's answer counts
+                decision = answer.get("decision")
+                if decision in _DECISIONS:
+                    approved = decision in (gpt2_approvals.ALLOW, gpt2_approvals.ALLOW_ADD)
+                    return close("approved" if approved else "denied", decision)
+            time.sleep(APPROVAL_POLL_SECONDS)
+        return close("expired", gpt2_approvals.TIMEOUT)
+
+    return ask
 
 
 # ── POST /ai-job ────────────────────────────────────────────────────────────
@@ -310,6 +367,7 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
     state = {"cancel": False}
     stop = threading.Event()
     threading.Thread(target=_heartbeat, args=(ref, state, stop), daemon=True).start()
+    approver_token = gpt2_approvals.set_approver(_make_approver(ref, state))
 
     last_write = 0.0
 
@@ -488,4 +546,6 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
                            "error": "Something went wrong. Please try again.", "updatedAt": _now_ms()})
     finally:
         stop.set()
+        gpt2_approvals.reset_approver(approver_token)
+        _safe_update(ref, {"approval": firestore.DELETE_FIELD, "approvalDecision": firestore.DELETE_FIELD})
         db.close()

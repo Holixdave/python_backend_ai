@@ -643,6 +643,7 @@ _LABELS = {
     "design_check": lambda a: f"Checking the design of {_short(a.get('path'))}",
     "python_check": lambda a: f"Checking the Python in {_short(a.get('path') or 'your workspace')}",
     "workspace_github_clone": lambda a: f"Cloning {_short(a.get('repo'))}",
+    "workspace_github_folder": lambda a: f"Downloading {_short(a.get('path'))} from {_short(a.get('repo'))}",
     "output_files": lambda a: "Sending files",
     "schedule_reminder": lambda a: "Setting a reminder",
     "save_user_note": lambda a: "Saving a note",
