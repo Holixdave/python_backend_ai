@@ -27,6 +27,7 @@
 # a volume, etc.). The default (/tmp) is wiped on redeploy/restart.
 # ─────────────────────────────────────────────────────────────────────────────
 
+import difflib
 import hashlib
 import io
 import os
@@ -310,11 +311,12 @@ def workspace_write(userid: str, path: str, content: str, deliver: bool = False)
         return {"success": False, "error": "Can't overwrite the workspace root."}
     if _dir_size(_user_root(userid)) + len(data) > MAX_USER_BYTES:
         return {"success": False, "error": "Workspace is full — delete something first."}
+    existed = os.path.isfile(full)
     os.makedirs(os.path.dirname(full), exist_ok=True)
     with open(full, "wb") as f:
         f.write(data)
     _dirty(userid)
-    out = {"success": True, "path": _rel(userid, full), "bytes": len(data)}
+    out = {"success": True, "path": _rel(userid, full), "bytes": len(data), "created": not existed}
     if os.path.splitext(full)[1].lower() in (".txt", ".md", ".html", ".htm", ".csv", ".json", ".py", ".js", ".css"):
         out.update(_text_stats(full))
     if deliver:
@@ -915,7 +917,27 @@ def workspace_edit(userid: str, path: str, find_text: str, replace_text: str, re
         f.write(data)
     _dirty(userid)
     return {"success": True, "path": _rel(userid, full), "replacements": n if replace_all else 1,
-            "first_change_at_line": first_line}
+            "first_change_at_line": first_line,
+            "diff": _edit_diff(find_text, replace_text, first_line, n if replace_all else 1)}
+
+
+def _edit_diff(find_text: str, replace_text: str, first_line: int, places: int = 1, max_lines: int = 40) -> str:
+    """What an edit changed, the way an editor shows it: '- ' removed line, '+ ' added line, '  ' unchanged
+    context, after a '@@ line N @@' header. Shown to the user in the tool sheet (red / green)."""
+    old = find_text.split("\n")
+    new = replace_text.split("\n") if replace_text != "" else []
+    head = f"@@ line {first_line}" + (f" · {places} places" if places > 1 else "") + " @@"
+    out = [head]
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+        if tag == "equal":
+            out += ["  " + l for l in old[i1:i2]]
+        else:
+            out += ["- " + l for l in old[i1:i2]]
+            out += ["+ " + l for l in new[j1:j2]]
+    if len(out) > max_lines + 1:
+        extra = len(out) - (max_lines + 1)
+        out = out[:max_lines + 1] + [f"  … {extra} more lines"]
+    return "\n".join(out)
 
 
 # ── edit by plain-English intent ─────────────────────────────────────────────

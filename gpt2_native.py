@@ -675,6 +675,13 @@ def tool_input_preview(tool: str, args: dict, cap: int = 6000) -> str:
 def tool_output_preview(tool: str, ok: bool, result_str: str, cap: int = 1500) -> str:
     """Short, human-readable result line(s) for the tap-to-open card."""
     data = _loads(result_str)
+    # Edits: show WHAT changed (path + a +/- diff) instead of a raw result blob, so nothing is edited blind.
+    if tool in ("workspace_edit", "workspace_edit_by_intent") and ok and isinstance(data, dict) and data.get("diff"):
+        return f"{data.get('path', '')}\n{data['diff']}"[:4000]
+    # Writes: say whether the file was created or an existing one was updated.
+    if tool in ("workspace_write", "workspace_append", "save_pasted_text") and ok and isinstance(data, dict) and data.get("path"):
+        updated = tool == "workspace_append" or data.get("created") is False
+        return f"{'Updated' if updated else 'Created'} {data['path']}"
     if tool == "run_code" and isinstance(data, dict):
         out = (data.get("stdout") or "").strip()
         err = (data.get("stderr") or "").strip()
