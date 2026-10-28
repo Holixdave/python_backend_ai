@@ -34,6 +34,7 @@ Saved/final `blocks` (ordered):
 Everything model-/network-specific is injected, so it is unit-tested offline
 (tests/test_native.py) with a fake model.
 """
+from gpt2_filediff import format_changes as filediff_format
 import inspect
 import json
 import os
@@ -682,11 +683,15 @@ def tool_output_preview(tool: str, ok: bool, result_str: str, cap: int = 1500) -
     if tool in ("workspace_write", "workspace_append", "save_pasted_text") and ok and isinstance(data, dict) and data.get("path"):
         updated = tool == "workspace_append" or data.get("created") is False
         return f"{'Updated' if updated else 'Created'} {data['path']}"
-    if tool == "run_code" and isinstance(data, dict):
+    if tool in ("run_code", "workspace_run") and isinstance(data, dict):
         out = (data.get("stdout") or "").strip()
         err = (data.get("stderr") or "").strip()
-        text = out if ok and out else (err or out)
-        return text[:cap]
+        text = (out if ok and out else (err or out))[:cap]
+        # Files the script created or changed, as a +/- diff block the tool card renders (not edited blind).
+        changes = data.get("changes") or [e["change"] for e in (data.get("saved_to_workspace") or [])
+                                          if isinstance(e, dict) and e.get("change")]
+        block = filediff_format(changes)
+        return f"{text}\n\n{block}" if (text and block) else (text or block)
     if isinstance(data, list):
         return f"{len(data)} result{'s' if len(data) != 1 else ''}"
     if isinstance(data, dict):

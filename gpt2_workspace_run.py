@@ -23,6 +23,7 @@
 # the shared sandbox package dir (same one run_code uses) before the command.
 # ─────────────────────────────────────────────────────────────────────────────
 
+import gpt2_filediff as filediff
 import os
 import re
 import shlex
@@ -232,6 +233,8 @@ def workspace_run(userid: str, command: str, cwd: str = "", timeout_s: int = DEF
         after = _snapshot(work)
         src_real = os.path.realpath(src)
         changed, deleted, skipped = [], [], []
+        changes = []   # per-file diffs for the tool card (small text files only)
+        prefix = (cwd.strip("/") + "/") if cwd.strip("/") else ""
         room = MAX_USER_BYTES - _dir_size(_user_root(userid))
         for rel, meta in after.items():
             if before.get(rel) == meta:
@@ -247,24 +250,32 @@ def workspace_run(userid: str, command: str, cwd: str = "", timeout_s: int = DEF
                 skipped.append(f"{rel} (unsafe path)")
                 continue
             os.makedirs(os.path.dirname(dest), exist_ok=True)
+            existed = os.path.isfile(dest)
+            old_text = filediff.read_text(dest) if existed else None
             shutil.copyfile(os.path.join(work, rel), dest)
             room -= meta[0]
             changed.append(rel)
+            if len(changes) < filediff.MAX_FILES_SHOWN + 2:
+                new_text = filediff.read_text(dest)
+                if new_text is not None and (not existed or old_text is not None):
+                    changes.append(filediff.change_entry(prefix + rel, old_text if existed else None, new_text))
         for rel in before:
             if rel not in after:
                 dest = os.path.realpath(os.path.join(src_real, rel))
                 if dest.startswith(src_real + os.sep) and os.path.isfile(dest) and not os.path.islink(dest):
                     os.remove(dest)
                     deleted.append(rel)
+                    if len(changes) < filediff.MAX_FILES_SHOWN + 2:
+                        changes.append({"path": prefix + rel, "status": "deleted", "added": 0, "removed": 0, "diff": ""})
         if changed or deleted:
             _dirty(userid)
 
-        prefix = (cwd.strip("/") + "/") if cwd.strip("/") else ""
         res = {
             "success": proc.returncode == 0 and not timed_out,
             "exit_code": proc.returncode, "timed_out": timed_out, "duration_s": duration,
             "stdout": _truncate(out, MAX_STREAM_CHARS), "stderr": _truncate(err, MAX_STREAM_CHARS),
             "changed_files": [prefix + c for c in changed[:50]],
+            "changes": changes,
             "isolation": {
                 "runs_as": "nobody" if is_root else "server user (server isn't root, so no user switch)",
                 "network_isolated": isolate_net,

@@ -26,6 +26,7 @@
 # execution without owning a Docker host at all.
 # ─────────────────────────────────────────────────────────────────────────────
 
+import gpt2_filediff as filediff
 import importlib.metadata
 import mimetypes
 import os
@@ -703,9 +704,22 @@ def _collect_outputs_into_workspace(run_dir: str, userid: Optional[str], unchang
                 if (unchanged.get(f"{OUTPUT_SUBDIR}/{name}") == hashlib.sha256(data).hexdigest()
                         and int(os.path.getmtime(path)) == 1_000_000_000):
                     continue   # a copy of an existing workspace file the code never changed
+            # What did this overwrite? (for the "changed files" diff in the tool card)
+            old_text, existed = None, False
+            try:
+                from gpt2_workspace import _safe_path
+                prev = _safe_path(userid, f"{OUTPUT_SUBDIR}/{safe_name}")
+                if os.path.isfile(prev):
+                    existed, old_text = True, filediff.read_text(prev)
+            except Exception:
+                pass
             saved = workspace_write_bytes(userid, f"{OUTPUT_SUBDIR}/{safe_name}", data)
             if saved.get("success"):
-                results.append({"path": saved["path"], "size": size})
+                entry = {"path": saved["path"], "size": size}
+                new_text = filediff.text_of_bytes(data)
+                if new_text is not None and (not existed or old_text is not None) and len(results) < filediff.MAX_FILES_SHOWN + 2:
+                    entry["change"] = filediff.change_entry(saved["path"], old_text if existed else None, new_text)
+                results.append(entry)
         except Exception as e:
             print(f"[SANDBOX] couldn't save output {name!r}: {e}")
     return results
