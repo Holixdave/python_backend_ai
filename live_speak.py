@@ -14,12 +14,18 @@
 #     so the app can fill the AI chat afterwards with the exact same bubbles, files,
 #     images and code results a typed message would have produced.
 #
+# v2 (streaming): the answer is spoken AS IT IS WRITTEN. The model's `text` deltas are cut into short sentences
+# and sent one by one as `speak` events, so the first sentence is heard while the rest is still being made.
+# Tool / file / image / code progress is forwarded live (tool_call, tool_result, block) so the phone can show
+# what is being built while it is being built.
+#
 # Event shapes (each is one "data: <json>\n\n" line):
-#   {"type": "speak", "text": "...", "kind": "ack|tool|wait|answer|error"}   -- say this out loud
+#   {"type": "speak", "text": "...", "kind": "ack|tool|wait|answer|ask|error", "n": 3}  -- say this out loud AND show it as a caption
+#   {"type": "tool_call" | "tool_result" | "block" | "ask_user", ...}        -- identical to /ai-query-stream (live progress)
 #   {"type": "status" | "think" | "think_end" | "final", ...}                -- identical to /ai-query-stream
 #   {"type": "done"}                                                          -- always last
 #
-# Request body: same QuestionRequest as /ai-query-stream (query, userid, imageUrls, ...).
+# Request body: same QuestionRequest as /ai-query-stream (query, userid, imageUrls, ...) plus the voice fields below.
 # ──────────────────────────────────────────────────────────────────────────────
 import asyncio
 import json
@@ -46,8 +52,31 @@ LIVE_SPEAK_PROMPT = (
     "then kept in their chat. Be conversational and concise: lead with the answer in plain sentences, "
     "keep it short unless they asked for depth, and do not pad. If you build a file, create an image or run "
     "code, say in one short sentence what you made — the full result is saved in their chat, so never read "
-    "code, file contents or links out loud."
+    "code, file contents, tables, long lists or links out loud.\n"
+    "SPEECH-RECOGNITION RULES: the user's words were typed by a speech recogniser, so some words, names or numbers "
+    "may be WRONG. If the request is unclear, or one word looks mis-heard (a name, a subject, a number, a term "
+    "that does not fit), do NOT guess and do NOT build anything: ask ONE short confirming question first "
+    "(for example: \"Did you mean the Lekki Headmaster?\"). Once they confirm, carry on straight away.\n"
+    "SPEAKING RULES: start with the answer in one or two short sentences, then stop unless they asked for more; "
+    "offer the rest in one short line (\"Want the details?\"). Never read a whole long answer aloud: say the key "
+    "point and tell them the rest is on their screen."
 )
+
+
+def _turn_note(req) -> str:
+    """Extra per-turn rules from what the phone knows about this turn."""
+    notes = []
+    if getattr(req, "interrupted", False):
+        heard = (req.spokenSoFar or "").strip()
+        notes.append(
+            "The user INTERRUPTED your last spoken reply. "
+            + (f"They only heard this much of it: \"{heard[-300:]}\". " if heard else "")
+            + "Do not repeat what they already heard; answer what they just said, straight away, in one or two sentences."
+        )
+    conf = getattr(req, "heardConfidence", None)
+    if conf is not None and conf < 0.6:
+        notes.append("The recogniser was NOT confident about this sentence: confirm what you understood before acting on it.")
+    return ("\n" + " ".join(notes)) if notes else ""
 
 # What the AI says when it starts a tool. Same wording every time keeps it feeling natural.
 _TOOL_PHRASES = {
@@ -126,6 +155,104 @@ def _to_speech(answer: str, has_extras: bool, max_chars: int = 700) -> str:
     return t + suffix
 
 
+SPOKEN_BUDGET = 380        # chars of ANSWER spoken per turn; the rest is only in the chat
+_BOUNDARY = re.compile(r'(?<=[.!?])["\')\]]*\s+|\n+')
+_MIN_SENTENCE = 22         # glue tiny pieces ("Yes." / "e.g.") onto the next sentence
+
+
+def _clean_sentence(t: str) -> str:
+    """Markdown / links / emoji out of ONE sentence so a voice can read it."""
+    t = re.sub(r"`([^`]*)`", r"\1", t)
+    t = re.sub(r"<[^>]+>", " ", t)
+    t = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", t)
+    t = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", t)
+    t = re.sub(r"https?://\S+", " ", t)
+    t = re.sub(r"^\s{0,3}#{1,6}\s*", "", t)
+    t = re.sub(r"^\s*[-*•]\s+", "", t)
+    t = re.sub(r"^\s*\d+[.)]\s+", "", t)
+    t = re.sub(r"(\*\*|__|\*|_|~~)", "", t)
+    t = _EMOJI_RE.sub(" ", t)
+    t = re.sub(r"\s{2,}", " ", t).strip()
+    return t
+
+
+class _SpeechSplitter:
+    """Cuts the model's streamed text into short spoken sentences, skipping fenced code, and stops at a budget."""
+
+    def __init__(self, budget: int = SPOKEN_BUDGET):
+        self.raw = ""          # not yet classified (fence detection)
+        self.text = ""         # prose waiting for a sentence end
+        self.in_code = False
+        self.had_code = False
+        self.spoken = 0
+        self.over = False      # budget reached: the rest is chat-only
+        self.sent = 0
+        self.budget = budget
+
+    def _take(self, sentence: str, out: list):
+        if self.over:
+            return
+        c = _clean_sentence(sentence)
+        if not c or not re.search(r"[A-Za-z0-9]", c):
+            return
+        c = c.rstrip(":;,— -")
+        if c[-1:] not in (".", "!", "?"):
+            c += "."
+        out.append(c)
+        self.sent += 1
+        self.spoken += len(c)
+        if self.spoken >= self.budget:
+            self.over = True
+
+    def feed(self, delta: str) -> list:
+        out: list = []
+        self.raw += delta
+        while True:
+            if self.in_code:
+                j = self.raw.find("```")
+                if j < 0:
+                    self.raw = self.raw[-2:] if self.raw.endswith("`") else ""
+                    break
+                self.raw = self.raw[j + 3:]
+                self.in_code = False
+            else:
+                j = self.raw.find("```")
+                if j < 0:
+                    hold = 0
+                    while hold < 2 and self.raw.endswith("`" * (hold + 1)):
+                        hold += 1
+                    self.text += self.raw[: len(self.raw) - hold]
+                    self.raw = self.raw[len(self.raw) - hold:]
+                    break
+                self.text += self.raw[:j]
+                self.raw = self.raw[j + 3:]
+                self.in_code = True
+                self.had_code = True
+        pos = 0
+        while True:
+            m = _BOUNDARY.search(self.text, pos)
+            if not m:
+                break
+            piece = self.text[: m.start()]
+            if (len(piece.strip()) < _MIN_SENTENCE or re.search(r"(?i)\b(e\.g|i\.e|vs|etc|approx|no)$", piece.strip())) and "\n" not in m.group(0):
+                pos = m.end()          # too short: keep gathering
+                continue
+            self._take(piece, out)
+            self.text = self.text[m.end():]
+            pos = 0
+        return out
+
+    def flush(self) -> list:
+        out: list = []
+        if not self.in_code:
+            self.text += self.raw
+        self.raw = ""
+        if self.text.strip():
+            self._take(self.text, out)
+        self.text = ""
+        return out
+
+
 def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj, default=str)}\n\n"
 
@@ -151,6 +278,11 @@ class LiveRequest(BaseModel):
     fileUrls: List[str] = Field(default_factory=list)
     fileNames: List[str] = Field(default_factory=list)
     userid: Optional[str] = None
+    # ── voice fields (all optional: an old app that does not send them still works) ──
+    voice: bool = True                       # the text was SPOKEN by the user
+    interrupted: bool = False                # the user cut the previous spoken reply short
+    spokenSoFar: Optional[str] = None        # what the user actually heard of that reply
+    heardConfidence: Optional[float] = None  # 0..1 from the speech recogniser, when it gives one
 
 
 _EQ_FAIL = ("could not", "no solution", "unable to solve", "invalid equation", "error")
@@ -222,7 +354,7 @@ async def ai_live_stream(request: LiveRequest, db: Session = Depends(get_db)):
                 for ev in ask_gpt2_stream(
                     question, history=history, image_urls=image_urls or None,
                     file_urls=request.fileUrls or None, file_names=request.fileNames or None,
-                    userid=request.userid, extra_system_prompt=LIVE_SPEAK_PROMPT,
+                    userid=request.userid, extra_system_prompt=LIVE_SPEAK_PROMPT + _turn_note(request),
                 ):
                     loop.call_soon_threadsafe(q.put_nowait, ev)
             except Exception as e:  # noqa: BLE001
@@ -237,6 +369,16 @@ async def ai_live_stream(request: LiveRequest, db: Session = Depends(get_db)):
         waits = 0
         thought = False
         final_event = None
+        splitter = _SpeechSplitter()
+        n_spoken = 0
+        streamed = False       # did any answer text arrive as deltas?
+        extras_seen = False    # file / image / code made this turn
+        told_rest = False
+
+        def speak(text, kind="answer"):
+            nonlocal n_spoken
+            n_spoken += 1
+            return _sse({"type": "speak", "text": text, "kind": kind, "n": n_spoken})
 
         while True:
             try:
@@ -274,6 +416,23 @@ async def ai_live_stream(request: LiveRequest, db: Session = Depends(get_db)):
                     yield _sse({"type": "speak", "text": "Let me think this through.", "kind": "ack"})
             elif kind == "think_end":
                 yield _sse({"type": "think_end"})
+            elif kind == "text":
+                delta = ev.get("delta") or ev.get("text") or ""
+                if delta:
+                    streamed = True
+                    for sent in splitter.feed(delta):
+                        yield speak(sent)
+                    if splitter.over and not told_rest:
+                        told_rest = True
+            elif kind in ("tool_call", "tool_result", "block", "ask_user"):
+                if kind == "block" and ev.get("kind") in ("images", "file", "code"):
+                    extras_seen = True
+                yield _sse(ev)
+                if kind == "tool_call":
+                    phrase = _tool_phrase(ev)
+                    if phrase and phrase not in said and not streamed:
+                        said.add(phrase)
+                        yield speak(phrase, "tool")
             elif kind == "final":
                 final_event = ev
                 files = ev.get("files") or ([ev["file"]] if ev.get("file") else [])
@@ -281,9 +440,19 @@ async def ai_live_stream(request: LiveRequest, db: Session = Depends(get_db)):
                     [f for f in files if isinstance(f, dict) and f.get("success")]
                     or ev.get("images") or ev.get("codes")
                 )
-                spoken = _to_speech(ev.get("answer", ""), has_extras)
-                if spoken:
-                    yield _sse({"type": "speak", "text": spoken, "kind": "answer"})
+                has_extras = has_extras or extras_seen or splitter.had_code
+                if streamed:
+                    # Answer was spoken live; say only what is left, then point at the chat.
+                    for sent in splitter.flush():
+                        yield speak(sent)
+                    if told_rest:
+                        yield speak("The rest is in your chat.", "answer")
+                    elif has_extras:
+                        yield speak("I've put the details in your chat.", "answer")
+                else:
+                    spoken = _to_speech(ev.get("answer", ""), has_extras, max_chars=SPOKEN_BUDGET)
+                    if spoken:
+                        yield speak(spoken)
                 yield _sse({
                     "type": "final", "answer": ev["answer"], "segments": ev.get("segments", []),
                     "suggestions": ev.get("suggestions", []), "sources": ev.get("sources", []),

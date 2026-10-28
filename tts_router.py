@@ -81,7 +81,7 @@ def _synthesize(text: str, voice_id: str) -> bytes:
         client.text_to_speech.convert(
             voice_id=voice_id,
             text=text,
-            model_id="eleven_turbo_v2",
+            model_id="eleven_flash_v2_5",
             output_format="mp3_44100_128",
         )
     )
