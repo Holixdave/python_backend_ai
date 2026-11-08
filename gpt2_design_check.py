@@ -491,6 +491,11 @@ def design_check(userid: str, path: str, kind: str = "auto", brief: str = "") ->
             res["note"] = truncated_note
         if limits:
             res["not_tested"] = limits
+        # Pictures of what was looked at, for the app's Thought sheet. The loop removes this key before the
+        # model sees the result (it is for the user, not for the model).
+        views = _publish_views(userid, images, pages)
+        if views:
+            res["_viewed_images"] = views
 
         if status == "needs_fixes":
             if attempt >= MAX_ROUNDS:
@@ -510,6 +515,45 @@ def design_check(userid: str, path: str, kind: str = "auto", brief: str = "") ->
     except Exception as e:
         print(f"[DESIGN_CHECK] failed: {type(e).__name__}: {e}")
         return {"success": False, "error": f"design_check failed: {type(e).__name__}: {str(e)[:200]}"}
+
+
+def _view_jpeg(img_bytes: bytes) -> tuple:
+    """A small JPEG of a rendered page for the Thought sheet (never the full-size render)."""
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        im.thumbnail((720, 1280))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=72, optimize=True)
+        return buf.getvalue(), "image/jpeg", "jpg"
+    except Exception:
+        return img_bytes, "image/png", "png"
+
+
+def _publish_views(userid: str, images: list, pages: list) -> list:
+    """
+    Uploads what the reviewer looked at so the app can SHOW it in the Thought sheet.
+    [{"label", "url", "ok"}] — ok is True (no problems), False (problems found) or None (could not be looked at).
+    Best effort: an upload that fails just leaves that page out; it never fails the check.
+    """
+    out = []
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        from gpt2_functions import _upload_bytes_to_supabase
+        stamp = int(time.time() * 1000)
+
+        def one(i_item):
+            i, (label, data) = i_item
+            body, ctype, ext = _view_jpeg(data)
+            url = _upload_bytes_to_supabase(userid or "anonymous", f"design_views/{stamp}_{i}.{ext}", body, ctype)
+            page = pages[i] if i < len(pages) else {}
+            return {"label": label, "url": url, "ok": page.get("ok")} if url else None
+
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            out = [v for v in ex.map(one, list(enumerate(images))) if v]
+    except Exception as e:
+        print(f"[DESIGN_CHECK] could not publish page views: {type(e).__name__}: {e}")
+    return out
 
 
 # ── self-test (run on the server: python3 gpt2_design_check.py --selftest) ──

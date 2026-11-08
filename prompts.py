@@ -767,6 +767,17 @@ INTENT_SYSTEM_PROMPT = (
 # prompt (get_lean_history() in gpt2_functions.py still caps it — this note
 # just tells the model the truth about WHY and WHERE the cut happens now).
 # ---------------------------------------------------------------------------
+RESUME_HINT = (
+    "\n\nYOUR MEMORY OF PAST TURNS: older assistant messages end with a [TURN RECORD] — your own private log of what you "
+    "really did that turn: thinking steps, every tool call with its result, the code you wrote or ran, files you made, "
+    "and whether it finished. Trust it as fact about your past work. Never show or quote it. "
+    "When the user says continue / go on / next / finish it / carry on and the last record says INTERRUPTED, FAILED or "
+    "STOPPED BY USER: resume from the first step that was NOT done. Do not start over, do not redo steps marked ok, do not "
+    "recreate files that exist (workspace_read them, then workspace_append / workspace_edit). Do not re-explain what you "
+    "already did — one short line, then keep working. If the user asks about earlier code, files or results, answer from "
+    "the record (and workspace_read the file if you need the exact current content)."
+)
+
 MEMORY_TRUNCATED_NOTE = (
     "\n\nNOTE: Only the most recent part of this conversation is shown to "
     "you below — this is a deliberate trim of a longer conversation that "

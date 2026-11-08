@@ -1,5 +1,6 @@
 from chat_repository import get_recent_messages, save_message
 from firestore_repository import save_message_to_firestore, get_recent_messages_from_firestore
+from turn_memory import build_history
 
 # How many turns get pulled from the DB per request. This is intentionally
 # bigger than the 6-message window get_lean_history() ultimately sends to
@@ -8,10 +9,10 @@ from firestore_repository import save_message_to_firestore, get_recent_messages_
 # any future summarization step a wider, real window of what actually
 # happened, since it's now a cheap DB read instead of a payload the
 # frontend had to carry on every request.
-MEMORY_WINDOW = 40
+MEMORY_WINDOW = 600   # rows pulled from the DB; turn_memory.build_history() decides what fits the prompt
 
 
-def build_memory(db, user_id: str) -> list:
+def build_memory(db, user_id: str, query: str = "") -> list:
     """
     Loads this user's persistent chat history from the backend DB and
     shapes it into the exact same [{"role": ..., "content": ...}, ...]
@@ -26,10 +27,8 @@ def build_memory(db, user_id: str) -> list:
     rows = get_recent_messages(db, user_id, limit=MEMORY_WINDOW)
 
     if rows:
-        return [
-            {"role": row.role, "content": row.message}
-            for row in rows
-        ]
+        return build_history(
+            [{"role": row.role, "content": row.message} for row in rows], query=query)
 
     # FALLBACK: Postgres/SQLite came back empty for this user_id. On Render
     # this happens right after a redeploy wipes the DB (or a fresh SQLite
@@ -45,10 +44,8 @@ def build_memory(db, user_id: str) -> list:
         print(f"[MEMORY] Postgres empty for user_id={user_id!r}, "
               f"recovered {len(firestore_rows)} message(s) from Firestore")
 
-    return [
-        {"role": row.get("role"), "content": row.get("message")}
-        for row in firestore_rows
-    ]
+    return build_history(
+        [{"role": row.get("role"), "content": row.get("message")} for row in firestore_rows], query=query)
 
 
 def remember_turn(db, user_id: str, user_message: str, assistant_reply: str):

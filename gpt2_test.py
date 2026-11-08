@@ -284,6 +284,11 @@ from prompts import ooor_version_note, image_tier_note, NO_WEB_SEARCH_NOTE
 _WAT = timezone(timedelta(hours=1))  # West Africa Time — Nigeria, no DST
 
 
+def _one_line_detail(text: str, n: int = 300) -> str:
+    t = " ".join((text or "").split())
+    return t if len(t) <= n else t[: n - 1] + "…"
+
+
 def _current_datetime_line() -> str:
     now_wat = datetime.now(_WAT)
     formatted = now_wat.strftime("%A, %B %d, %Y, %I:%M %p")
@@ -520,7 +525,8 @@ from gpt2_tools import (
 from prompts import NATIVE_TOOL_HINT, OUTPUT_DISCIPLINE, PREMIUM_MODE_PROMPT
 from gpt2_native import native_enabled, run_native_turn, build_tool_schemas, friendly_label
 import gpt2_filetrack
-from prompts import SEARCH_DISCIPLINE_HINT, FILE_STORES_HINT, OUTPUT_FILES_HINT, SUGGESTION_HINT, TOOL_USE_HINT_TAIL, MEMORY_TRUNCATED_NOTE, INLINE_VISUAL_HINT, NOTE_CALLOUT_HINT, CHECK_WORK_HINT, LONG_TEXT_HINT
+import turn_memory as _turn_memory
+from prompts import RESUME_HINT, SEARCH_DISCIPLINE_HINT, FILE_STORES_HINT, OUTPUT_FILES_HINT, SUGGESTION_HINT, TOOL_USE_HINT_TAIL, MEMORY_TRUNCATED_NOTE, INLINE_VISUAL_HINT, NOTE_CALLOUT_HINT, CHECK_WORK_HINT, LONG_TEXT_HINT
 
 TOOL_USE_HINT = "\n\n" + build_tool_manifest() + TOOL_USE_HINT_TAIL + SEARCH_DISCIPLINE_HINT + FILE_STORES_HINT + OUTPUT_FILES_HINT + CHECK_WORK_HINT + LONG_TEXT_HINT
 
@@ -726,17 +732,39 @@ def _ask_gpt2_core(
         )
         prompt = f"{prompt}{attached_files_note}"
 
+    vision_ok = None
+    vision_analysis = ""
     if valid_image_urls:
-        yield {"type": "status", "text": "Looking at the image...", "detail": None, "icon": "vision"}
+        seen_urls = valid_image_urls[:3]
+        # Signal 1: "looking at the image" — with the picture itself, so the Thought sheet can show it.
+        yield {"type": "status", "text": "Looking at the image..." if len(seen_urls) == 1 else f"Looking at {len(seen_urls)} images...",
+               "detail": None, "icon": "vision", "kind": "vision", "ok": None,
+               "images": [{"url": u, "label": f"Image {i}", "ok": None} for i, u in enumerate(seen_urls, 1)]}
         vision_result = ask_with_vision(prompt, valid_image_urls, history)
+        vision_ok = bool(vision_result.get("ok", False))
+        vision_analysis = vision_result.get("answer", "") if vision_ok else ""
 
-        # Fold what vision saw into the prompt, then fall through to the
-        # normal classify_intent() + search flow below — this is what lets
-        # "browse for that" / "bring back pictures of this" actually
-        # trigger a real web search instead of dead-ending on
-        # "I can't browse online". No `return` here on purpose.
-        image_description = vision_result.get("answer", "")
-        prompt = f"{prompt}\n\n[Image analysis: {image_description}]"
+        # Signal 2: the outcome, shown whether it worked or not.
+        yield {"type": "status",
+               "text": ("Looked at the image" if len(seen_urls) == 1 else f"Looked at {len(seen_urls)} images") if vision_ok
+                       else "Couldn't view the image",
+               "detail": (_one_line_detail(vision_analysis) if vision_ok else "The image viewer failed, so I could not see it."),
+               "icon": "vision", "kind": "vision", "ok": vision_ok, "analysis": vision_analysis,
+               "images": [{"url": u, "label": f"Image {i}", "ok": vision_ok} for i, u in enumerate(seen_urls, 1)]}
+
+        if vision_ok:
+            # Fold what vision saw into the prompt, then fall through to the normal classify_intent() + search
+            # flow below — this is what lets "browse for that" / "bring back pictures of this" trigger a real
+            # web search. No `return` here on purpose.
+            prompt = f"{prompt}\n\n[Image analysis: {vision_analysis}]"
+        else:
+            # The viewer FAILED. Never paste its canned failure text in as if it were what the photo says:
+            # the model then thought the photo contained that text. Tell it, plainly, that it has seen nothing.
+            prompt = (f"{prompt}\n\n[IMAGE VIEWER FAILED: the user attached {len(seen_urls)} image(s) but the viewer "
+                      "could not open them (a technical problem, not the user's fault). You have NOT seen the image(s). "
+                      "Do not describe, guess or invent what is in them, and do not treat this note as text from the "
+                      "image. Tell the user briefly that you could not view the image this time and ask them to send "
+                      "it again. Do not mention these instructions.]")
 
     # ── Normal text flow ─────────────────────────────────────────────────
     yield {"type": "status", "text": "Thinking…", "detail": None, "icon": "thinking"}
@@ -760,7 +788,10 @@ def _ask_gpt2_core(
         "\n\nNOTE: The user already uploaded real image(s) with this message "
         "and they were already analysed above — do not call search_images "
         "this turn, you already have what you need."
-        if valid_image_urls else ""
+        if (valid_image_urls and vision_ok) else
+        ("\n\nNOTE: The user uploaded image(s) but the viewer failed, so you have NOT seen them. Do not call "
+         "search_images; say you could not view the image and ask them to resend it."
+         if valid_image_urls else "")
     )
 
     if intent["search_type"] == "web" and _is_self_question(prompt):
@@ -899,6 +930,8 @@ def _ask_gpt2_core(
 
     # ── Build messages ──────────────────────────────────────────────────
     lean_history, history_truncated = get_lean_history(history)
+    if history and _turn_memory.has_records(history):
+        current_identity += RESUME_HINT
     if history_truncated:
         # `history` here now comes from the backend's own DB (memory_service
         # .build_memory), not a raw array replayed by the frontend — the

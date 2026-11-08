@@ -48,6 +48,7 @@ from gpt2_functions import is_friendly_failure, premium_from_user_doc
 from gpt2_test import ask_gpt2_stream
 from leak_guard import scrub_internal
 from memory_service import build_memory, remember_turn
+import turn_memory
 
 router = APIRouter()
 
@@ -432,12 +433,30 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
     final = None
     question = None
     memory_reply = None
+    actions: list = []          # every tool the AI ran this turn (with code) — saved to memory
+    vision = {"ok": None, "analysis": ""}
     contextual = _contextual_query(req, query)
+
+    def remember(status: str, answer_text: str, note: str = ""):
+        """Saves this turn to memory — finished OR NOT. A turn that failed or was cut off used to be forgotten
+        completely, so "continue" had nothing to continue from."""
+        try:
+            user_side = contextual + turn_memory.attachment_note(
+                req.imageUrls, req.fileNames, vision["analysis"], vision["ok"])
+            files = [b.get("file") for b in live_blocks if b.get("type") == "file" and b.get("file")]
+            record = turn_memory.build_record(status, actions, steps, files, note)
+            remember_turn(db, uid, user_side, (answer_text or "").strip() + record)
+        except Exception as e:
+            print(f"[AI-JOB] could not save turn to memory: {type(e).__name__}: {e}")
+
+    def partial_text() -> str:
+        return "\n\n".join(scrub_internal(b.get("text") or "") for b in live_blocks
+                            if b.get("type") == "text" and (b.get("text") or "").strip()).strip()
     # The premium directive is a SYSTEM-prompt rule now (premium_mode below). It must never be
     # glued onto the user's message: the model then treats it as user text and repeats it.
     model_query = contextual
     try:
-        history = build_memory(db, uid)
+        history = build_memory(db, uid, query)
         print(f"[AI-JOB] start {req.aiMessageId} uid={uid!r} premium={premium} q={query[:80]!r}")
 
         # Math-first short-circuit (same as /ai-query-stream). Lazy import: main.py owns these helpers.
@@ -465,12 +484,34 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
                 etype = event.get("type")
                 if apply_stream_event(event):
                     continue
-                if etype == "status":
-                    steps.append({
+                if etype == "memory_action":
+                    actions.append({k: v for k, v in event.items() if k != "type"})
+                elif etype == "status":
+                    step = {
                         "text": event.get("text") or "", "detail": event.get("detail"),
-                        "icon": event.get("icon"), "kind": "status", "tool": event.get("tool"),
-                    })
-                    push_steps(force=bool(event.get("tool")) or event.get("icon") in ("image", "sandbox"))
+                        "icon": event.get("icon"), "kind": event.get("kind") or "status", "tool": event.get("tool"),
+                    }
+                    if event.get("kind") == "vision":
+                        # "Looking at …" (ok=None) first, then the result REPLACES it, so the sheet shows one
+                        # step per look, with the picture(s) and whether it worked.
+                        step["images"] = [{"url": i.get("url"), "label": i.get("label") or "", "ok": i.get("ok")}
+                                          for i in (event.get("images") or []) if isinstance(i, dict) and i.get("url")]
+                        step["ok"] = event.get("ok")
+                        if event.get("analysis") is not None or event.get("ok") is not None:
+                            if event.get("tool") is None:        # the user's own attachment (not a tool)
+                                vision["ok"] = event.get("ok")
+                                vision["analysis"] = event.get("analysis") or vision["analysis"]
+                        pending = next((i for i in range(len(steps) - 1, -1, -1)
+                                        if steps[i].get("kind") == "vision" and steps[i].get("ok") is None
+                                        and steps[i].get("tool") == step["tool"]), None)
+                        if pending is not None and event.get("ok") is not None:
+                            steps[pending] = step
+                        else:
+                            steps.append(step)
+                        push_steps(force=True)
+                    else:
+                        steps.append(step)
+                        push_steps(force=bool(event.get("tool")) or event.get("icon") in ("image", "sandbox"))
                 elif etype == "think":
                     steps.append({
                         "text": scrub_internal(event.get("text") or ""), "detail": None,
@@ -485,6 +526,8 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
 
         if state["cancel"]:
             print(f"[AI-JOB] {req.aiMessageId} cancelled by user")
+            if actions or live_blocks:
+                remember("STOPPED BY USER", partial_text(), "The user pressed Stop before I finished.")
             try:
                 ref.delete()
             except Exception as e:
@@ -507,12 +550,13 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
                 q["questions"] = question["questions"]
                 q["total"] = question.get("total") or len(question["questions"])
             ref.set(_clean({"status": "asking", "question": q, "text": "", "updatedAt": _now_ms()}), merge=True)
-            remember_turn(db, uid, contextual, q["question"] or "")
+            remember("finished", f"(I asked the user a question and am waiting for the answer: {q['question'] or ''})")
             print(f"[AI-JOB] asking {req.aiMessageId}: {q['question']!r}")
             return
 
         if final is None or is_friendly_failure(final.get("answer")):
             msg = (final or {}).get("answer") or "Something went wrong. Please try again."
+            remember("FAILED", partial_text(), "The turn failed before the answer was written (server or model error).")
             _safe_update(ref, {"status": "error", "text": msg, "error": msg, "updatedAt": _now_ms()})
             return
 
@@ -537,11 +581,14 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
             memory_reply = _build_memory_reply(final.get("answer"), final.get("sources", []), final.get("images", []))
         except Exception:
             memory_reply = final.get("answer")
-        remember_turn(db, uid, contextual, memory_reply)
+        status = turn_memory.status_of(final)
+        remember(status, memory_reply, "The model ran out of steam mid-task; the user was told to send continue." if status != "finished" else "")
         print(f"[AI-JOB] done {req.aiMessageId}")
 
     except Exception as e:
         print(f"[AI-JOB] crashed {req.aiMessageId}: {type(e).__name__}: {e}")
+        if actions or live_blocks:
+            remember("FAILED", partial_text(), f"The server crashed mid-turn ({type(e).__name__}).")
         _safe_update(ref, {"status": "error", "text": "Something went wrong. Please try again.",
                            "error": "Something went wrong. Please try again.", "updatedAt": _now_ms()})
     finally:

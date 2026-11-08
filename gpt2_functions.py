@@ -1836,10 +1836,20 @@ _VISION_REFUSAL_PHRASES = [
 
 
 def _looks_like_vision_refusal(answer: Optional[str]) -> bool:
-    if not answer:
+    """
+    A refusal is a SHORT "I can't see the image" reply, or one that OPENS with such a phrase.
+    It used to match the phrase ANYWHERE, so a real description of a photo that contains text
+    (a sign, a screenshot, a page that says "unable to view ...") was thrown away as a failed
+    look and the user got a failure instead of the description.
+    """
+    if not answer or not answer.strip():
         return True
-    a = answer.lower()
-    return any(p in a for p in _VISION_REFUSAL_PHRASES)
+    a = answer.strip().lower()
+    has_phrase = any(p in a[:200] for p in _VISION_REFUSAL_PHRASES)
+    if len(a) < 300:
+        return any(p in a for p in _VISION_REFUSAL_PHRASES)
+    # a long answer is a refusal only if it OPENS like one ("I'm sorry, but I can't view the image ...")
+    return has_phrase and bool(re.match(r"\s*(i\b|i'm|sorry|unfortunately|apologies|as an ai|my apologies)", a))
 
 
 def _vision_messages(prompt: str, image_urls: list, history: list) -> list:
@@ -1880,7 +1890,7 @@ def ask_with_vision(prompt: str, image_urls: list, history: list = []) -> dict:
             [provider], messages, temperature=0.5, max_tokens=1024
         )
         if answer and not _looks_like_vision_refusal(answer):
-            return {"answer": answer, "sources": [], "provider": used_provider}
+            return {"answer": answer, "sources": [], "provider": used_provider, "ok": True}
         if answer:
             print(f"[VISION] {provider['name']} returned a refusal-like answer on the "
                   f"full {len(image_urls)}-image batch — trying next provider")
@@ -1909,9 +1919,31 @@ def ask_with_vision(prompt: str, image_urls: list, history: list = []) -> dict:
                 "answer": "\n\n".join(descriptions),
                 "sources": [],
                 "provider": "vision-per-image-fallback",
+                "ok": True,
             }
 
-    return {"answer": _friendly_failure_message(), "sources": [], "provider": None}
+    # Nothing could look at the image. "ok": False is the real signal: callers must NOT treat "answer" as
+    # something the image said (it is only a canned busy message, and used to be pasted into the prompt as if the
+    # photo contained that text).
+    return {"answer": _friendly_failure_message(), "sources": [], "provider": None, "ok": False}
+
+
+def analyze_image(prompt: str, image_urls: list, history: list = None) -> dict:
+    """Look at the image(s) the user sent and answer a question about what is in them.
+
+    Args:
+        prompt: what to find out about the image (the user's question).
+    """
+    urls = [u for u in (image_urls or []) if isinstance(u, str) and u.startswith(("http://", "https://"))][:3]
+    res = ask_with_vision(prompt, urls, history or [])
+    views = [{"url": u, "label": f"Image {i}", "ok": bool(res.get("ok"))} for i, u in enumerate(urls, 1)]
+    if not res.get("ok"):
+        return {"success": False,
+                "error": ("The image viewer failed (a technical problem, not the user's fault). You have NOT seen the "
+                          "image. Do not describe it or guess what it shows. Tell the user briefly that you could not "
+                          "view it right now and ask them to send it again."),
+                "_viewed_images": views}
+    return {"success": True, "answer": res["answer"], "provider": res.get("provider"), "_viewed_images": views}
 
 
 _UNSURE_PHRASES = [

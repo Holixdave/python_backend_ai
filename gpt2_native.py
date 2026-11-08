@@ -47,6 +47,7 @@ from typing import Callable, Optional
 import requests
 
 import gpt2_filetrack as filetrack
+import turn_memory
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 
@@ -705,6 +706,16 @@ def tool_output_preview(tool: str, ok: bool, result_str: str, cap: int = 1500) -
     return (result_str or "")[:cap]
 
 
+def _look_label(tool: str, args: dict):
+    """(while looking, when done, when it could not look) — for tools that LOOK at something; else None."""
+    if tool == "design_check":
+        what = os.path.basename(str((args or {}).get("path") or "")) or "the design"
+        return (f"Looking at {_short(what, 40)}", f"Checked {_short(what, 40)}", f"Couldn't look at {_short(what, 40)}")
+    if tool == "analyze_image":
+        return ("Looking at the image", "Looked at the image", "Couldn't view the image")
+    return None
+
+
 def friendly_label(tool: str, args: dict) -> str:
     fn = _LABELS.get(tool)
     try:
@@ -1109,11 +1120,43 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
             yield {"type": "tool_call", "id": cid, "tool": name, "args": info.get("args", args),
                    "text": chip["text"], "icon": chip["icon"], "call": info.get("call"), "input": chip["input"]}
 
+            # "Looking at ..." signal: when the AI LOOKS at something (its own design, an image), the app
+            # shows a step for it, and shows the picture once there is one.
+            look = _look_label(name, args)
+            if look:
+                yield {"type": "status", "text": look[0], "detail": None, "icon": "vision", "kind": "vision",
+                       "ok": None, "images": [], "tool": name}
+
             if bad_args:
                 ok, result = False, bad_args
             else:
                 ok, result = execute(name, args, session_context)
             ok = bool(ok) and not _result_failed(result)      # {"success": false} is a failure even if nothing crashed
+
+            # Pictures of what was looked at belong to the USER's Thought sheet, not to the model: take them out
+            # of the result before anything else sees it.
+            viewed = []
+            data0 = _loads(result) if isinstance(result, str) else None
+            if isinstance(data0, dict) and "_viewed_images" in data0:
+                viewed = [v for v in (data0.pop("_viewed_images") or []) if isinstance(v, dict) and v.get("url")]
+                result = json.dumps(data0, default=str)
+            if look:
+                verdict = (data0 or {}).get("status") if isinstance(data0, dict) else None
+                detail, look_ok = "", True
+                if not ok:
+                    done_text, look_ok = look[2], False
+                    detail = str((data0 or {}).get("error") or "")[:300] if isinstance(data0, dict) else ""
+                elif verdict == "passed":
+                    done_text = look[1] + " — looks fine"
+                elif verdict == "needs_fixes":
+                    done_text, look_ok = look[1] + " — found problems to fix", False
+                    detail = "; ".join(str(i) for i in (data0.get("issues") or [])[:4])
+                elif verdict == "not_visually_verified":
+                    done_text, look_ok, detail = look[2], False, "The reviewer could not look at the pages."
+                else:
+                    done_text = look[1]
+                yield {"type": "status", "text": done_text, "detail": detail or None, "icon": "vision", "kind": "vision",
+                       "ok": look_ok, "images": viewed, "tool": name}
             chip["ok"] = ok
             chip["output"] = tool_output_preview(name, ok, result)
             if ok:
@@ -1125,6 +1168,12 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
                 print(f"[NATIVE] file tracking skipped: {type(e).__name__}: {e}")
             yield {"type": "tool_result", "id": cid, "tool": name, "ok": ok, "summary": (result or "")[:300],
                    "output": chip["output"]}
+            # For the backend's memory (turn_memory.py): what was done, with the code, so a later "continue" or
+            # "show me that code" works. Not shown in the app.
+            try:
+                yield {"type": "memory_action", **turn_memory.action_from_call(name, args, ok, chip["output"] or "")}
+            except Exception as e:
+                print(f"[NATIVE] memory action skipped: {type(e).__name__}: {e}")
 
             shown_urls = {i.get("image") for i in state["image_results"] if isinstance(i, dict)}
             new_blocks = blocks_from_result(name, args, result, ok, shown_urls)
