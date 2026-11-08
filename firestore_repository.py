@@ -69,3 +69,45 @@ def get_recent_messages_from_firestore(user_id: str, limit: int = 40) -> list:
     except Exception as e:
         print(f"[FIRESTORE] get_recent_messages failed for user_id={user_id!r}: {e}")
         return []
+
+
+# ── backfill: the app's own chat (users/{uid}/chat_history), for messages from before the backend saved history ──
+def get_app_chat_before(user_id: str, before, limit: int = 2000) -> list:
+    """Messages the APP stored at users/{uid}/chat_history older than `before` (aware or naive-UTC datetime, or None
+    for no cut-off). Each: {"sender", "text", "status", "timestamp"(aware datetime), "imageUrls", "fileNames", "builtFileNames"}."""
+    if not user_id:
+        return []
+    try:
+        q = _client().collection("users").document(user_id).collection("chat_history").order_by("timestamp")
+        out = []
+        for d in q.limit(limit).stream():
+            m = d.to_dict() or {}
+            ts = m.get("timestamp")
+            if before is not None and ts is not None:
+                cut = before if getattr(before, "tzinfo", None) else before.replace(tzinfo=ts.tzinfo)
+                if ts >= cut:
+                    break
+            out.append({
+                "sender": m.get("sender"), "text": m.get("text") or "", "status": m.get("status"), "timestamp": ts,
+                "imageUrls": m.get("imageUrls") or [], "fileNames": m.get("fileNames") or [],
+                "builtFileNames": m.get("builtFileNames") or [],
+            })
+        return out
+    except Exception as e:
+        print(f"[FIRESTORE] get_app_chat_before failed for user_id={user_id!r}: {e}")
+        return []
+
+
+def backfill_done(user_id: str) -> bool:
+    try:
+        return bool((_client().collection("users").document(user_id).get().to_dict() or {}).get("memoryBackfilled"))
+    except Exception as e:
+        print(f"[FIRESTORE] backfill_done check failed for user_id={user_id!r}: {e}")
+        return True          # can't tell -> don't risk a duplicate backfill
+
+
+def mark_backfill_done(user_id: str):
+    try:
+        _client().collection("users").document(user_id).set({"memoryBackfilled": True}, merge=True)
+    except Exception as e:
+        print(f"[FIRESTORE] mark_backfill_done failed for user_id={user_id!r}: {e}")

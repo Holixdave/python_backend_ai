@@ -151,12 +151,16 @@ def _is_internal(sentence: str) -> bool:
     return any(m in low for m in _MARKERS) or bool(_INTERNAL_NAME_RE.search(sentence))
 
 
+from turn_memory import strip_memory_notes
+
+
 def scrub_internal(text: str) -> str:
     """Drop reasoning blocks, bracketed directives and any sentence that quotes or describes
     internal instructions, tool names or config names. Fenced code is never touched (a user's
     own code may legitimately contain these words)."""
     if not text:
         return text
+    text = strip_memory_notes(text)      # before the fence split: the copied note contains ``` code of its own
     if "```" in text:
         parts = text.split("```")
         # even index = prose, odd index = inside a fence (an unclosed last fence is still code)

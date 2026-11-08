@@ -1,3 +1,6 @@
+from datetime import datetime
+
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from db_models import ChatHistory
@@ -43,7 +46,7 @@ def get_recent_messages(
     rows = (
         db.query(ChatHistory)
         .filter(ChatHistory.user_id == user_id)
-        .order_by(ChatHistory.id.desc())
+        .order_by(ChatHistory.created_at.desc(), ChatHistory.id.desc())   # created_at first: backfilled old rows are inserted later but are OLDER
         .limit(limit)
         .all()
     )
@@ -51,3 +54,34 @@ def get_recent_messages(
     rows.reverse()
 
     return rows
+
+
+def get_first_messages(db: Session, user_id: str, n: int = 10):
+    """The very first rows of this user's history (oldest first)."""
+    if not user_id:
+        return []
+    return (
+        db.query(ChatHistory)
+        .filter(ChatHistory.user_id == user_id)
+        .order_by(ChatHistory.created_at.asc(), ChatHistory.id.asc())
+        .limit(n)
+        .all()
+    )
+
+
+def earliest_created_at(db: Session, user_id: str):
+    if not user_id:
+        return None
+    return db.query(func.min(ChatHistory.created_at)).filter(ChatHistory.user_id == user_id).scalar()
+
+
+def insert_backfill(db: Session, user_id: str, rows: list) -> int:
+    """rows: [{"role", "message", "created_at": naive-UTC datetime}] — older messages from before the backend
+    saved history. Keeps their ORIGINAL time so they sort before everything already saved."""
+    if not user_id or not rows:
+        return 0
+    for r in rows:
+        db.add(ChatHistory(user_id=user_id, role=r["role"], message=r["message"],
+                           created_at=r.get("created_at") or datetime.utcnow()))
+    db.commit()
+    return len(rows)

@@ -445,7 +445,7 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
                 req.imageUrls, req.fileNames, vision["analysis"], vision["ok"])
             files = [b.get("file") for b in live_blocks if b.get("type") == "file" and b.get("file")]
             record = turn_memory.build_record(status, actions, steps, files, note)
-            remember_turn(db, uid, user_side, (answer_text or "").strip() + record)
+            remember_turn(db, uid, user_side, turn_memory.strip_memory_notes(answer_text or "").strip() + record)
         except Exception as e:
             print(f"[AI-JOB] could not save turn to memory: {type(e).__name__}: {e}")
 

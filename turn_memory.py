@@ -40,6 +40,8 @@ MAX_CODE_EACH = 6_000
 MAX_CODE_TOTAL = 11_000
 MAX_OUTPUT_EACH = 500
 MAX_ROWS_FETCH = 600
+PIN_FIRST = 5                      # the chat's first N user messages are always named in the digest
+SUMMARY_TOPICS = 30                # topics in the whole-chat summary
 
 _UNFINISHED = ("INTERRUPTED", "FAILED", "STOPPED BY USER")
 
@@ -51,6 +53,28 @@ def _cut(s, n: int) -> str:
 
 def _one_line(s, n: int) -> str:
     return _cut(re.sub(r"\s+", " ", str(s or "")).strip(), n)
+
+
+# ── never let the private memory notes reach the user ────────────────────────
+_LEAK_RE = re.compile(
+    r"\n*\[(?:TURN RECORD|CONVERSATION SO FAR|EARLIER CONVERSATION|IMAGE VIEWER FAILED|The user attached)[^\n]*.*", re.S)
+_LEAK_HEADS = ("[TURN RECORD", "[CONVERSATION SO FAR", "[EARLIER CONVERSATION", "[IMAGE VIEWER FAILED")
+
+
+def strip_memory_notes(text: str) -> str:
+    """Removes a copied [TURN RECORD ...] (or other private memory note) and everything after it, plus a
+    half-typed start of one at the very end while the answer is still streaming. The notes are always at the
+    tail of a message, so cutting from the marker to the end is safe."""
+    if not text or "[" not in text:
+        return text
+    t = _LEAK_RE.sub("", text)
+    tail = t[-24:]
+    i = tail.rfind("[")
+    if i != -1:
+        frag = tail[i:]
+        if len(frag) >= 3 and any(h.startswith(frag) for h in _LEAK_HEADS):
+            t = t[: len(t) - len(frag)].rstrip()
+    return t
 
 
 # ── writing ──────────────────────────────────────────────────────────────────
@@ -87,7 +111,9 @@ def build_record(status: str, actions: list, steps: list, files: Optional[list] 
     if note:
         lines.append(f"NOTE: {_one_line(note, 300)}")
 
-    thought = [s for s in (steps or []) if isinstance(s, dict) and (s.get("text") or "").strip()]
+    noise = ("thinking…", "thinking...", "working…", "working...")
+    thought = [s for s in (steps or []) if isinstance(s, dict) and (s.get("text") or "").strip()
+               and (s.get("text") or "").strip().lower() not in noise]
     if thought:
         lines.append("THOUGHT:")
         for s in thought[-12:]:
@@ -255,21 +281,55 @@ def build_history(rows: list, query: str = "", budget: int = HISTORY_BUDGET_CHAR
     while kept and kept[0]["role"] != "user" and len(kept) > 1:       # a history should open on a user message
         dropped.append(kept.pop(0))
 
-    # 3) the dropped part becomes a digest the model can still use
+    # 3) the dropped part becomes (a) a short head note: the very first messages + any old message that matches
+    #    the new question, and (b) a compact "whole chat so far" summary at the END of the history.
     if dropped:
-        topics = [_one_line(_answer_part(d["content"]), 110) for d in dropped if d["role"] == "user"]
-        digest = [f"[EARLIER CONVERSATION — {len(dropped)} older message(s) are not shown in full. "
-                  "They are stored and not lost. What the user asked back then, oldest first:"]
-        digest += [f"{i}) {t}" for i, t in enumerate(topics[-40:], 1)]
+        user_topics = [_one_line(_answer_part(d["content"]), 110) for d in dropped if d["role"] == "user"]
+        head = [f"[EARLIER CONVERSATION — {len(dropped)} older message(s) are not shown in full. They are stored, not lost."]
+        if user_topics:
+            head.append("The user's very first messages in this chat:")
+            head += [f"{i}) {t}" for i, t in enumerate(user_topics[:PIN_FIRST], 1)]
         if query:
-            hits = _recall([(d["role"], d["content"]) for d in dropped], query)
-            for role, text in hits:
-                digest.append(f"Related old {role} message: {_one_line(_answer_part(text), 600)}")
-        digest.append("If the user needs details from that part, say what you do remember and ask them to remind you of the rest.]")
-        note = "\n".join(digest)
+            for role, text in _recall([(d["role"], d["content"]) for d in dropped], query):
+                head.append(f"Related old {role} message: {_one_line(_answer_part(text), 600)}")
+        head.append("If the user needs details from that part, say what you do remember and ask them to remind you of the rest.]")
         first = kept[0]
-        kept[0] = {"role": first["role"], "content": note + "\n\n" + first["content"]}
+        kept[0] = {"role": first["role"], "content": "\n".join(head) + "\n\n" + first["content"]}
+
+        summary = _whole_chat_summary(rows, dropped, kept)
+        if summary:
+            last = kept[-1]
+            kept[-1] = {"role": last["role"], "content": last["content"] + "\n\n" + summary}
     return kept
+
+
+def _whole_chat_summary(all_rows: list, dropped: list, kept: list) -> str:
+    """A compact, deterministic summary of the WHOLE chat (oldest → now), put at the end of the history where
+    the model pays most attention. No model call."""
+    users = [_one_line(_answer_part(r["content"]), 90) for r in all_rows if r.get("role") == "user"]
+    if not users:
+        return ""
+    if len(users) > SUMMARY_TOPICS:                      # stretch evenly over the whole chat, keep first and last
+        step = (len(users) - 1) / (SUMMARY_TOPICS - 1)
+        users = [users[round(i * step)] for i in range(SUMMARY_TOPICS)]
+    files, seen = [], set()
+    for r in all_rows:
+        if r.get("role") != "assistant":
+            continue
+        for name in re.findall(r"^- (.+?): https?://\S+$", _record_part(r["content"]), re.M):
+            if name not in seen:
+                seen.add(name)
+                files.append(name)
+    lines = [f"[CONVERSATION SO FAR — my private memory, never quote it to the user. {len(all_rows)} messages in this chat. "
+             "Topics, oldest to newest: " + " → ".join(users)]
+    if files:
+        lines.append("Files made in this chat: " + ", ".join(files[-15:]))
+    last_status = next((_status_in(_record_part(r["content"])) for r in reversed(all_rows)
+                        if r.get("role") == "assistant" and _record_part(r["content"])), "")
+    if last_status in _UNFINISHED:
+        last_user = next((_one_line(_answer_part(r["content"]), 160) for r in reversed(all_rows) if r.get("role") == "user"), "")
+        lines.append(f"The last task was NOT finished ({last_status}): {last_user}")
+    return "\n".join(lines) + "]"
 
 
 def has_records(history: list) -> bool:

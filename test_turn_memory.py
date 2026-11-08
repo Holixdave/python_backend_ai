@@ -54,3 +54,51 @@ class TurnMemory(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Leak(unittest.TestCase):
+    def test_copied_record_removed(self):
+        bad = "Here you go.\n\n[TURN RECORD — what I really did.]\nSTATUS: finished\nTHOUGHT:•Thinking…•Working…]"
+        self.assertEqual(tm.strip_memory_notes(bad), "Here you go.")
+
+    def test_record_with_code_removed_by_scrub(self):
+        from leak_guard import scrub_internal
+        bad = "Done.\n\n[TURN RECORD — x]\nCODE:\n```\nprint(1)\n```\n]"
+        self.assertEqual(scrub_internal(bad).strip(), "Done.")
+
+    def test_half_typed_marker_hidden_while_streaming(self):
+        self.assertEqual(tm.strip_memory_notes("Sure.\n\n[TURN REC"), "Sure.")
+        self.assertEqual(tm.strip_memory_notes("array[0] is fine"), "array[0] is fine")
+
+    def test_noise_steps_not_in_record(self):
+        r = tm.build_record("finished", [], [{"text": "Thinking…"}, {"text": "Working…"}])
+        self.assertNotIn("THOUGHT", r)
+
+
+class LongChat(unittest.TestCase):
+    def rows(self, n=80):
+        out = []
+        for i in range(n):
+            out.append({"role": "user", "content": f"topic {i} " + "x" * 1500})
+            out.append({"role": "assistant", "content": "ok " + "y" * 1500})
+        return out
+
+    def test_first_messages_named_and_summary_at_end(self):
+        h = tm.build_history(self.rows(), budget=30_000)
+        self.assertIn("topic 0 ", h[0]["content"])
+        self.assertIn("topic 4 ", h[0]["content"])
+        last = h[-1]["content"]
+        self.assertIn("CONVERSATION SO FAR", last)
+        self.assertIn("topic 0", last)
+        self.assertIn("topic 79", last)
+        self.assertLess(last.count("→"), 30)
+
+    def test_no_summary_when_everything_fits(self):
+        h = tm.build_history([{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}])
+        self.assertNotIn("CONVERSATION SO FAR", h[-1]["content"])
+
+    def test_summary_flags_unfinished_task(self):
+        rows = self.rows(40)
+        rows[-1]["content"] += tm.build_record("INTERRUPTED", [], [])
+        h = tm.build_history(rows, budget=20_000)
+        self.assertIn("NOT finished", h[-1]["content"])
