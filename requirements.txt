@@ -36,3 +36,4 @@ PyMuPDF
 
 # python_check: finds undefined names (optional; syntax checks work without it)
 pyflakes
+PyJWT

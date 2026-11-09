@@ -28,6 +28,7 @@ from copilot_router import router as copilot_router  # NEW: /v1/chat/completions
 from ai_jobs import router as ai_jobs_router  # NEW: /ai-job — replies written to Firestore, survive app close
 from offline_board import router as offline_board_router  # NEW: /offline-board — leaderboard for signed-out phones
 from live_speak import router as live_speak_router  # NEW: /ai-live-stream — live speak session (spoken status + answer)
+from livekit_router import router as livekit_router  # NEW: /livekit/config + /livekit/token — group-call media server tickets
 app = FastAPI(
     title="UTME26 AI Backend",
     description="Brilliant AI Study Assistant"
@@ -37,6 +38,7 @@ app.include_router(copilot_router)
 app.include_router(ai_jobs_router)
 app.include_router(live_speak_router)
 app.include_router(offline_board_router)
+app.include_router(livekit_router)
 # Creates the chat_history table on startup if it doesn't exist yet —
 # same as the working app's main.py does with Base.metadata.create_all.
 Base.metadata.create_all(bind=engine)
