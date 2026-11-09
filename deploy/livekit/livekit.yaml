@@ -1,0 +1,20 @@
+# LiveKit server config. Replace APIKEY / SECRET (make the secret long and random) and the domain.
+port: 7880
+rtc:
+  tcp_port: 7881            # fallback when UDP is blocked
+  port_range_start: 50000   # media (UDP)
+  port_range_end: 51000
+  use_external_ip: true
+keys:
+  APIKEY_CHANGE_ME: SECRET_CHANGE_ME_AT_LEAST_32_RANDOM_CHARACTERS
+room:
+  max_participants: 40      # the server itself refuses the 41st person
+  empty_timeout: 120
+turn:
+  enabled: true             # relay for phones behind strict networks
+  domain: lk.yourdomain.com
+  udp_port: 3478
+  tls_port: 5349
+  external_tls: false
+logging:
+  level: info

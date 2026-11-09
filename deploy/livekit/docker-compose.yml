@@ -1,0 +1,17 @@
+services:
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --config /etc/livekit.yaml
+    restart: unless-stopped
+    network_mode: host          # media needs the real public IP and the UDP range
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+  caddy:                        # free HTTPS (wss://) in front of LiveKit
+    image: caddy:2
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+volumes:
+  caddy_data:
