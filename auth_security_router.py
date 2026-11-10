@@ -11,6 +11,8 @@ Firestore collections written here (Admin SDK only — add `allow read, write: i
   appeals/{banId}                 {uid, text, status, createdAt}
 and on users/{uid}: banned, bannedReason, bannedAt, banUntil (absent = permanent), banId, bannedBy, resolvable.
 
+Reset codes: POST /auth/send-reset-code /auth/verify-reset-code  (resetCodes/{uid}, server-only; needs SMTP_PASS etc. like the notifier)
+
 Env: FIREBASE_WEB_API_KEY  (the "Web API key" of the Firebase project; used to send the reset email and to check an old password)
 """
 import hashlib
@@ -84,8 +86,11 @@ def _mask(email: str) -> str:
     return local[0] + "•" * min(6, max(2, len(local) - 2)) + local[-1] + "@" + dom
 
 
-def _email_key(email: str) -> str:
-    return hashlib.sha256(email.strip().lower().encode()).hexdigest()
+def _email_key(email: str, device: str = "") -> str:
+    """Lock key = this email on THIS phone. Someone failing logins on their own phone locks only their phone, never the
+    real owner on theirs. (A client that sends no device id falls back to the old email-only key.)"""
+    base = email.strip().lower() + ("|" + device.strip()[:80] if device and device.strip() else "")
+    return hashlib.sha256(base.encode()).hexdigest()
 
 
 def _web_key() -> str:
@@ -93,6 +98,140 @@ def _web_key() -> str:
     if not k:
         raise HTTPException(status_code=503, detail="Server is not set up for this yet")
     return k
+
+
+class DeviceReq(BaseModel):
+    deviceId: str
+
+
+class QueryReq(BaseModel):
+    query: str
+
+
+# ── 2-step (email code) accounts: a code is needed before ANY password reset ──
+import hmac, smtplib, ssl
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.utils import formataddr
+
+RESET_CODE_SECONDS = 10 * 60
+RESET_TOKEN_SECONDS = 15 * 60
+RESET_MAX_ATTEMPTS = 5
+
+
+def _twofa_on(prof: dict) -> bool:
+    tf = prof.get("twoFactor") or {}
+    return isinstance(tf, dict) and tf.get("enabled") is True
+
+
+def _send_mail(to_email: str, subject: str, text: str, html_body: str) -> bool:
+    """Same SMTP settings as the notifier service (SMTP_SERVER / SMTP_PORT / SMTP_USER / SMTP_PASS / SENDER_NAME)."""
+    server_host = os.getenv("SMTP_SERVER", "mail.chadivavirtuals.name.ng")
+    port = int(os.getenv("SMTP_PORT", "465"))
+    user = os.getenv("SMTP_USER", "auth@chadivavirtuals.name.ng")
+    pw = os.getenv("SMTP_PASS", "")
+    if not pw:
+        return False
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = formataddr((os.getenv("SENDER_NAME", "ZINDRYX"), user))
+        msg["To"] = to_email
+        msg.attach(MIMEText(text, "plain", "utf-8"))
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
+        if port == 465:
+            srv = smtplib.SMTP_SSL(server_host, port, timeout=15, context=ssl.create_default_context())
+        else:
+            srv = smtplib.SMTP(server_host, port, timeout=15)
+            srv.starttls(context=ssl.create_default_context())
+        try:
+            srv.login(user, pw)
+            srv.sendmail(user, [to_email], msg.as_string())
+        finally:
+            try:
+                srv.quit()
+            except Exception:
+                pass
+        return True
+    except Exception as e:
+        print(f"[auth] smtp error: {e}")
+        return False
+
+
+def _h(uid: str, v: str) -> str:
+    return hashlib.sha256(f"{uid}:{v}".encode()).hexdigest()
+
+
+def _require_reset_token(uid: str, prof: dict, token: str):
+    """2-step accounts must present the token that /auth/verify-reset-code gave out."""
+    if not _twofa_on(prof):
+        return
+    d = _db().collection("resetCodes").document(uid).get().to_dict() or {}
+    ok = (
+        token
+        and d.get("tokenHash")
+        and hmac.compare_digest(_h(uid, token), d["tokenHash"])
+        and d.get("tokenExpires") is not None
+        and d["tokenExpires"] > _now()
+    )
+    if not ok:
+        raise HTTPException(status_code=403, detail="Enter the code we email you first.")
+
+
+class ResetCodeReq(BaseModel):
+    query: str
+    code: str = ""
+
+
+@router.post("/send-reset-code")
+def send_reset_code(req: QueryReq, request: Request):
+    _limit("rc-ip:" + _ip(request), 10, 3600)
+    hit = _lookup(req.query)
+    if not hit or not hit[1]:
+        raise HTTPException(status_code=404, detail="No account found")
+    uid, email, prof = hit
+    if not _twofa_on(prof):
+        return {"needed": False}
+    _limit("rc-uid:" + uid, 4, 3600)
+    ref = _db().collection("resetCodes").document(uid)
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    ref.set({"codeHash": _h(uid, code), "codeExpires": _now() + timedelta(seconds=RESET_CODE_SECONDS), "attempts": 0})
+    name = (prof.get("name") or prof.get("displayName") or "there").strip()[:60]
+    name = name.replace("<", "").replace(">", "")
+    mins = RESET_CODE_SECONDS // 60
+    ok = _send_mail(
+        email, "Your ZINDRYX password reset code",
+        f"Hi {name},\n\nYour password reset code is: {code}\n\nIt expires in {mins} minutes. If you didn't ask for this, ignore this email and consider changing your password.\n\n- ZINDRYX",
+        f'<div style="font-family:Arial,sans-serif;padding:20px;background:#f4f4f7"><div style="max-width:480px;margin:0 auto;background:#fff;padding:24px;border-radius:12px">'
+        f'<h2 style="color:#7c3aed;margin-top:0">ZINDRYX Security</h2><p>Hi {name}, use this code to reset your password:</p>'
+        f'<div style="background:#f3e8ff;color:#7c3aed;font-size:28px;font-weight:bold;text-align:center;padding:12px;border-radius:8px;letter-spacing:4px;margin:20px 0">{code}</div>'
+        f'<p style="font-size:12px;color:#666">Expires in {mins} minutes. If you did not request this, ignore this email.</p></div></div>',
+    )
+    if not ok:
+        ref.delete()
+        raise HTTPException(status_code=502, detail="Couldn't send the code. Try again.")
+    return {"needed": True, "sent": True, "maskedEmail": _mask(email)}
+
+
+@router.post("/verify-reset-code")
+def verify_reset_code(req: ResetCodeReq, request: Request):
+    _limit("vc-ip:" + _ip(request), 30, 3600)
+    hit = _lookup(req.query)
+    if not hit:
+        raise HTTPException(status_code=404, detail="No account found")
+    uid, _, prof = hit
+    ref = _db().collection("resetCodes").document(uid)
+    d = ref.get().to_dict() or {}
+    if not d.get("codeHash") or d.get("codeExpires") is None or d["codeExpires"] < _now():
+        raise HTTPException(status_code=400, detail="That code has expired. Ask for a new one.")
+    if int(d.get("attempts", 0)) >= RESET_MAX_ATTEMPTS:
+        raise HTTPException(status_code=429, detail="Too many wrong codes. Ask for a new one.")
+    if not hmac.compare_digest(_h(uid, req.code.strip()), d["codeHash"]):
+        ref.update({"attempts": firestore.Increment(1)})
+        raise HTTPException(status_code=400, detail="That code isn't right.")
+    token = secrets.token_urlsafe(24)
+    ref.set({"tokenHash": _h(uid, token), "tokenExpires": _now() + timedelta(seconds=RESET_TOKEN_SECONDS)})
+    return {"ok": True, "token": token}
 
 
 # ── find an account by email OR username ────────────────────────────────
@@ -124,10 +263,6 @@ def _lookup(query: str):
     return None
 
 
-class QueryReq(BaseModel):
-    query: str
-
-
 @router.post("/find-account")
 def find_account(req: QueryReq, request: Request):
     _limit("find:" + _ip(request), 25, 600)
@@ -141,16 +276,23 @@ def find_account(req: QueryReq, request: Request):
         "username": (prof.get("username") or "").strip(),
         "photoUrl": prof.get("photoUrl") or "",
         "maskedEmail": _mask(email),
+        "twoFactor": _twofa_on(prof),
     }
 
 
+class SendResetReq(BaseModel):
+    query: str
+    resetToken: str = ""
+
+
 @router.post("/send-reset")
-def send_reset(req: QueryReq, request: Request):
+def send_reset(req: SendResetReq, request: Request):
     _limit("reset-ip:" + _ip(request), 10, 3600)
     hit = _lookup(req.query)
     if not hit or not hit[1]:
         raise HTTPException(status_code=404, detail="No account found")
-    uid, email, _ = hit
+    uid, email, prof = hit
+    _require_reset_token(uid, prof, req.resetToken)
     _limit("reset-uid:" + uid, 3, 3600)
     r = requests.post(
         f"https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={_web_key()}",
@@ -166,6 +308,8 @@ class OldPwReq(BaseModel):
     query: str
     oldPassword: str
     newPassword: str
+    deviceId: str = ""
+    resetToken: str = ""
 
 
 @router.post("/reset-with-old")
@@ -174,10 +318,11 @@ def reset_with_old(req: OldPwReq, request: Request):
     hit = _lookup(req.query)
     if not hit or not hit[1]:
         raise HTTPException(status_code=404, detail="No account found")
-    uid, email, _ = hit
+    uid, email, prof = hit
+    _require_reset_token(uid, prof, req.resetToken)
     if len(req.newPassword) < 6:
         raise HTTPException(status_code=400, detail="The new password must be at least 6 characters.")
-    st = _lock_state(email)
+    st = _lock_state(email, req.deviceId)
     if st["locked"]:
         return {"ok": False, "locked": True, **st}
     r = requests.post(
@@ -187,16 +332,16 @@ def reset_with_old(req: OldPwReq, request: Request):
     )
     if r.status_code != 200:
         # a wrong old password counts like a wrong login
-        st = _record_fail(email)
+        st = _record_fail(email, req.deviceId)
         return {"ok": False, "wrongPassword": True, **st}
     fb_auth.update_user(uid, password=req.newPassword)
-    _clear_fails(email)
+    _clear_fails(email, req.deviceId)
     return {"ok": True}
 
 
 # ── login attempt lockout ───────────────────────────────────────────────
-def _lock_state(email: str) -> dict:
-    snap = _db().collection("loginAttempts").document(_email_key(email)).get()
+def _lock_state(email: str, device: str = "") -> dict:
+    snap = _db().collection("loginAttempts").document(_email_key(email, device)).get()
     d = snap.to_dict() or {}
     if d.get("permanent"):
         return {"locked": True, "permanent": True, "untilMs": 0}
@@ -206,8 +351,8 @@ def _lock_state(email: str) -> dict:
     return {"locked": False, "permanent": False, "untilMs": 0}
 
 
-def _record_fail(email: str) -> dict:
-    ref = _db().collection("loginAttempts").document(_email_key(email))
+def _record_fail(email: str, device: str = "") -> dict:
+    ref = _db().collection("loginAttempts").document(_email_key(email, device))
     d = ref.get().to_dict() or {}
     last = d.get("lastFailAt")
     count = int(d.get("count", 0))
@@ -239,8 +384,8 @@ def _record_fail(email: str) -> dict:
     }
 
 
-def _clear_fails(email: str):
-    ref = _db().collection("loginAttempts").document(_email_key(email))
+def _clear_fails(email: str, device: str = ""):
+    ref = _db().collection("loginAttempts").document(_email_key(email, device))
     d = ref.get().to_dict() or {}
     if d.get("permanent"):
         return  # a permanent lock is lifted by support only
@@ -249,12 +394,13 @@ def _clear_fails(email: str):
 
 class EmailReq(BaseModel):
     email: str
+    deviceId: str = ""
 
 
 @router.post("/login-precheck")
 def login_precheck(req: EmailReq, request: Request):
     _limit("pre:" + _ip(request), 60, 600)
-    return _lock_state(req.email)
+    return _lock_state(req.email, req.deviceId)
 
 
 @router.post("/login-failed")
@@ -262,15 +408,15 @@ def login_failed(req: EmailReq, request: Request):
     _limit("fail-ip:" + _ip(request), 40, 600)
     if "@" not in req.email:
         return {"locked": False}
-    return _record_fail(req.email)
+    return _record_fail(req.email, req.deviceId)
 
 
 @router.post("/login-ok")
-def login_ok(authorization: str | None = Header(default=None)):
+def login_ok(req: DeviceReq | None = None, authorization: str | None = Header(default=None)):
     tok = _uid(authorization)
     email = tok.get("email")
     if email:
-        _clear_fails(email)
+        _clear_fails(email, req.deviceId if req else "")
     return {"ok": True}
 
 
@@ -361,8 +507,6 @@ def resolve(authorization: str | None = Header(default=None)):
 
 
 # ── device limits ───────────────────────────────────────────────────────
-class DeviceReq(BaseModel):
-    deviceId: str
 
 
 def _device_ref(device_id: str):
