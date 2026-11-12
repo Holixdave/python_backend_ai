@@ -41,6 +41,8 @@ app.include_router(live_speak_router)
 app.include_router(offline_board_router)
 app.include_router(livekit_router)
 app.include_router(auth_security_router)
+from step_images import router as step_images_router
+app.include_router(step_images_router)
 # Creates the chat_history table on startup if it doesn't exist yet —
 # same as the working app's main.py does with Base.metadata.create_all.
 Base.metadata.create_all(bind=engine)

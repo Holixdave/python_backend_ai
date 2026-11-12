@@ -736,10 +736,15 @@ def _ask_gpt2_core(
     vision_analysis = ""
     if valid_image_urls:
         seen_urls = valid_image_urls[:3]
+        try:
+            import step_images
+            _shown = step_images.thumb_urls(seen_urls)          # thumbnails served by this server, nothing stored
+        except Exception:
+            _shown = {u: u for u in seen_urls}
         # Signal 1: "looking at the image" — with the picture itself, so the Thought sheet can show it.
         yield {"type": "status", "text": "Looking at the image..." if len(seen_urls) == 1 else f"Looking at {len(seen_urls)} images...",
                "detail": None, "icon": "vision", "kind": "vision", "ok": None,
-               "images": [{"url": u, "label": f"Image {i}", "ok": None} for i, u in enumerate(seen_urls, 1)]}
+               "images": [{"url": _shown.get(u, u), "label": f"Image {i}", "ok": None} for i, u in enumerate(seen_urls, 1)]}
         vision_result = ask_with_vision(prompt, valid_image_urls, history)
         vision_ok = bool(vision_result.get("ok", False))
         vision_analysis = vision_result.get("answer", "") if vision_ok else ""
@@ -750,7 +755,7 @@ def _ask_gpt2_core(
                        else "Couldn't view the image",
                "detail": (_one_line_detail(vision_analysis) if vision_ok else "The image viewer failed, so I could not see it."),
                "icon": "vision", "kind": "vision", "ok": vision_ok, "analysis": vision_analysis,
-               "images": [{"url": u, "label": f"Image {i}", "ok": vision_ok} for i, u in enumerate(seen_urls, 1)]}
+               "images": [{"url": _shown.get(u, u), "label": f"Image {i}", "ok": vision_ok} for i, u in enumerate(seen_urls, 1)]}
 
         if vision_ok:
             # Fold what vision saw into the prompt, then fall through to the normal classify_intent() + search

@@ -1936,7 +1936,12 @@ def analyze_image(prompt: str, image_urls: list, history: list = None) -> dict:
     """
     urls = [u for u in (image_urls or []) if isinstance(u, str) and u.startswith(("http://", "https://"))][:3]
     res = ask_with_vision(prompt, urls, history or [])
-    views = [{"url": u, "label": f"Image {i}", "ok": bool(res.get("ok"))} for i, u in enumerate(urls, 1)]
+    try:
+        import step_images
+        _shown = step_images.thumb_urls(urls)
+    except Exception:
+        _shown = {u: u for u in urls}
+    views = [{"url": _shown.get(u, u), "label": f"Image {i}", "ok": bool(res.get("ok"))} for i, u in enumerate(urls, 1)]
     if not res.get("ok"):
         return {"success": False,
                 "error": ("The image viewer failed (a technical problem, not the user's fault). You have NOT seen the "

@@ -532,27 +532,18 @@ def _view_jpeg(img_bytes: bytes) -> tuple:
 
 def _publish_views(userid: str, images: list, pages: list) -> list:
     """
-    Uploads what the reviewer looked at so the app can SHOW it in the Thought sheet.
-    [{"label", "url", "ok"}] — ok is True (no problems), False (problems found) or None (could not be looked at).
-    Best effort: an upload that fails just leaves that page out; it never fails the check.
+    The pictures the reviewer looked at, for the app's Thought sheet: [{"label", "url", "ok"}].
+    Kept in this server's memory for a few hours (see step_images.py) - nothing is uploaded to storage.
     """
     out = []
     try:
-        from concurrent.futures import ThreadPoolExecutor
-        from gpt2_functions import _upload_bytes_to_supabase
-        stamp = int(time.time() * 1000)
-
-        def one(i_item):
-            i, (label, data) = i_item
-            body, ctype, ext = _view_jpeg(data)
-            url = _upload_bytes_to_supabase(userid or "anonymous", f"design_views/{stamp}_{i}.{ext}", body, ctype)
+        import step_images
+        for i, (label, data) in enumerate(images):
+            url = step_images.store(data)
             page = pages[i] if i < len(pages) else {}
-            return {"label": label, "url": url, "ok": page.get("ok")} if url else None
-
-        with ThreadPoolExecutor(max_workers=4) as ex:
-            out = [v for v in ex.map(one, list(enumerate(images))) if v]
+            out.append({"label": label, "url": url, "ok": page.get("ok")})
     except Exception as e:
-        print(f"[DESIGN_CHECK] could not publish page views: {type(e).__name__}: {e}")
+        print(f"[DESIGN_CHECK] could not keep page views: {type(e).__name__}: {e}")
     return out
 
 
