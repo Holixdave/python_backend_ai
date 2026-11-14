@@ -118,6 +118,7 @@ def tts_voices():
 @router.post("/tts-synthesize")
 def tts_synthesize(req: SynthesizeRequest, authorization: Optional[str] = Header(None)):
     uid = _get_uid(authorization)
+    print(f"[TTS] voiceId={req.voiceId!r} text_len={len(req.text.strip())}", flush=True)
 
     if not _user_can_use_online_voice(uid):
         raise HTTPException(status_code=403, detail="Online voices require Premium")
