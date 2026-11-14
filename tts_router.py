@@ -75,7 +75,7 @@ def _user_can_use_online_voice(uid: str) -> bool:
     if not doc.exists:
         return False
     data = doc.to_dict() or {}
-    return bool(data.get("pro_status", False)) and data.get("plan", "free") in ("pro", "max")
+    return bool(data.get("isPremium", False))
 
 
 def _synthesize(text: str, voice_id: str) -> bytes:
@@ -120,7 +120,7 @@ def tts_synthesize(req: SynthesizeRequest, authorization: Optional[str] = Header
     uid = _get_uid(authorization)
 
     if not _user_can_use_online_voice(uid):
-        raise HTTPException(status_code=403, detail="Online voices require Pro or Max")
+        raise HTTPException(status_code=403, detail="Online voices require Premium")
 
     if req.voiceId not in {v["id"] for v in VOICE_CATALOGUE}:
         raise HTTPException(status_code=400, detail="Unknown voiceId")
