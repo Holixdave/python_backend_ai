@@ -18,6 +18,8 @@
 # pip install elevenlabs        (firebase-admin is already in your project)
 
 import os
+import subprocess
+import tempfile
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException
@@ -38,6 +40,18 @@ VOICE_CATALOGUE = [
     {"id": "VR6AewLTigWG4xSOukaG", "name": "Arnold", "gender": "male", "locale": "en-US", "preview_text": "Arnold speaking."},
     {"id": "EXAVITQu4vr4xnSDxMaL", "name": "Bella", "gender": "female", "locale": "en-US", "preview_text": "Hi, I'm Bella."},
 ]
+
+
+# Maps each existing voice id (what the app sends) to a free Piper voice.
+# Same ids/names as before, so the Flutter app needs NO change.
+PIPER_VOICE_FOR = {
+    "pNInz6obpgDQGcFmaJgB": "en_US-ryan-medium",   # Adam
+    "ErXwobaYiN019PkySvjV": "en_US-joe-medium",    # Antoni
+    "VR6AewLTigWG4xSOukaG": "en_GB-alan-medium",   # Arnold
+    "EXAVITQu4vr4xnSDxMaL": "en_US-amy-medium",    # Bella
+}
+PIPER_BIN = os.getenv("PIPER_BIN", "/opt/piper/piper")
+PIPER_MODEL_DIR = os.getenv("PIPER_MODEL_DIR", "/app/models")
 
 
 class SynthesizeRequest(BaseModel):
@@ -66,25 +80,32 @@ def _user_can_use_online_voice(uid: str) -> bool:
 
 def _synthesize(text: str, voice_id: str) -> bytes:
     """
-    The ONLY provider-specific code. To move to your own voice server
-    (or Google/Azure), replace the body of this function — routes and
-    checks above/below stay exactly the same. Must return MP3 bytes.
+    Self-hosted Piper TTS (free, no API key). Piper makes a WAV; ffmpeg
+    (already in the Dockerfile) converts it to MP3 so the app still gets
+    audio/mpeg exactly like before.
     """
-    api_key = os.getenv("ELEVENLABS_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=503, detail="Online voices are not configured on the server")
+    voice = PIPER_VOICE_FOR[voice_id]
+    model = os.path.join(PIPER_MODEL_DIR, f"{voice}.onnx")
+    if not os.path.exists(model):
+        raise HTTPException(status_code=503, detail="Voice model not installed on the server")
 
-    from elevenlabs.client import ElevenLabs  # lazy: missing package can't crash startup
-
-    client = ElevenLabs(api_key=api_key)
-    return b"".join(
-        client.text_to_speech.convert(
-            voice_id=voice_id,
-            text=text,
-            model_id="eleven_flash_v2_5",
-            output_format="mp3_44100_128",
+    with tempfile.TemporaryDirectory() as tmp:
+        wav = os.path.join(tmp, "out.wav")
+        p = subprocess.run(
+            [PIPER_BIN, "--model", model, "--config", model + ".json",
+             "--output_file", wav, "--sentence_silence", "0.2"],
+            input=text.encode("utf-8"), capture_output=True, timeout=45,
         )
-    )
+        if p.returncode != 0:
+            raise RuntimeError("piper: " + p.stderr.decode("utf-8", "ignore")[:200])
+        m = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", wav,
+             "-codec:a", "libmp3lame", "-b:a", "96k", "-f", "mp3", "pipe:1"],
+            capture_output=True, timeout=30,
+        )
+        if m.returncode != 0 or not m.stdout:
+            raise RuntimeError("ffmpeg: " + m.stderr.decode("utf-8", "ignore")[:200])
+        return m.stdout
 
 
 @router.get("/tts-voices")
