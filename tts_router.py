@@ -50,6 +50,7 @@ PIPER_VOICE_FOR = {
     "VR6AewLTigWG4xSOukaG": "en_GB-alan-medium",   # Arnold
     "EXAVITQu4vr4xnSDxMaL": "en_US-amy-medium",    # Bella
 }
+FALLBACK_VOICE = "en_US-lessac-medium"  # used if a voice crashes Piper
 PIPER_BIN = os.getenv("PIPER_BIN", "/opt/piper/piper")
 PIPER_MODEL_DIR = os.getenv("PIPER_MODEL_DIR", "/app/models")
 
@@ -78,17 +79,10 @@ def _user_can_use_online_voice(uid: str) -> bool:
     return bool(data.get("isPremium", False))
 
 
-def _synthesize(text: str, voice_id: str) -> bytes:
-    """
-    Self-hosted Piper TTS (free, no API key). Piper makes a WAV; ffmpeg
-    (already in the Dockerfile) converts it to MP3 so the app still gets
-    audio/mpeg exactly like before.
-    """
-    voice = PIPER_VOICE_FOR[voice_id]
+def _run_piper(voice: str, text: str) -> bytes:
     model = os.path.join(PIPER_MODEL_DIR, f"{voice}.onnx")
     if not os.path.exists(model):
-        raise HTTPException(status_code=503, detail="Voice model not installed on the server")
-
+        raise RuntimeError(f"voice file missing: {voice}")
     with tempfile.TemporaryDirectory() as tmp:
         wav = os.path.join(tmp, "out.wav")
         p = subprocess.run(
@@ -106,6 +100,22 @@ def _synthesize(text: str, voice_id: str) -> bytes:
         if m.returncode != 0 or not m.stdout:
             raise RuntimeError("ffmpeg: " + m.stderr.decode("utf-8", "ignore")[:200])
         return m.stdout
+
+
+def _synthesize(text: str, voice_id: str) -> bytes:
+    """
+    Self-hosted Piper TTS (free, no API key). Piper makes a WAV; ffmpeg
+    converts it to MP3 so the app still gets audio/mpeg. If the chosen
+    voice crashes Piper, retry once with the fallback voice.
+    """
+    voice = PIPER_VOICE_FOR[voice_id]
+    try:
+        return _run_piper(voice, text)
+    except Exception as e:
+        print(f"[TTS] voice {voice} failed ({e}); retrying with {FALLBACK_VOICE}", flush=True)
+        if voice == FALLBACK_VOICE:
+            raise
+        return _run_piper(FALLBACK_VOICE, text)
 
 
 @router.get("/tts-voices")

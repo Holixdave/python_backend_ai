@@ -10,6 +10,7 @@ RUN apt-get update \
 # Free self-hosted TTS: Piper binary + 4 voices (replaces ElevenLabs).
 RUN curl -fsSL "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz" | tar -xz -C /opt
 RUN mkdir -p /app/models && for v in \
+      en/en_US/lessac/medium/en_US-lessac-medium \
       en/en_US/ryan/medium/en_US-ryan-medium \
       en/en_US/joe/medium/en_US-joe-medium \
       en/en_GB/alan/medium/en_GB-alan-medium \
