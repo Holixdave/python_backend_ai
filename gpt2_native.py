@@ -77,6 +77,15 @@ _ITEM_TYPES = {
         "required": ["op", "xy"]},
     ("ask_user", "options"): _OPTION,
     ("ask_user", "questions"): _QUESTION,
+    ("draft_message", "variants"): {"type": "object", "properties": {
+        "label": {"type": "string"}, "subject": {"type": "string"}, "body": {"type": "string"}},
+        "required": ["label", "body"]},
+    ("show_recipe", "ingredients"): {"type": "object", "properties": {
+        "id": {"type": "string"}, "name": {"type": "string"}, "amount": {"type": "number"},
+        "unit": {"type": "string"}}, "required": ["name", "amount"]},
+    ("show_recipe", "steps"): {"type": "object", "properties": {
+        "title": {"type": "string"}, "content": {"type": "string"}, "timer_seconds": {"type": "integer"}},
+        "required": ["title", "content"]},
 }
 
 
@@ -654,6 +663,20 @@ _LABELS = {
     "get_study_notes": lambda a: "Checking your study notes",
     "get_user_profile": lambda a: "Checking your profile",
     "result_more": lambda a: "Reading more",
+    "search_places": lambda a: f"Finding {_short(a.get('query'))}" + (f" near {_short(a.get('near'))}" if a.get("near") else ""),
+    "get_sports": lambda a: f"Checking {_short(a.get('league'))} {a.get('data_type') or 'scores'}",
+    "get_election_results": lambda a: "Checking election results",
+    "draft_message": lambda a: "Drafting a message",
+    "show_recipe": lambda a: f"Writing the recipe for {_short(a.get('title'))}",
+    "create_doc": lambda a: f"Creating the document {_short(a.get('title'))}",
+    "list_docs": lambda a: "Looking at your documents",
+    "read_doc": lambda a: "Reading your document",
+    "update_doc": lambda a: "Updating your document",
+    "share_doc": lambda a: "Setting up sharing",
+    "export_doc": lambda a: f"Exporting your document as {a.get('format') or 'docx'}",
+    "mcp_list_servers": lambda a: "Checking your connected apps",
+    "mcp_list_tools": lambda a: f"Looking at what {_short(a.get('server'))} can do",
+    "mcp_call_tool": lambda a: f"Using {_short(a.get('server'))}: {_short(a.get('tool'))}",
 }
 
 
@@ -771,6 +794,8 @@ def blocks_from_result(tool: str, args: dict, result_str: str, ok: bool, shown_i
         return []
     data = _loads(result_str)
     out = []
+    if isinstance(data, dict) and isinstance(data.get("card"), dict):      # places / scores / recipe / drafts / doc / election cards
+        out.append({"kind": "card", "card": data["card"]})
 
     def add_files(files):
         imgs, others = [], []
@@ -796,7 +821,7 @@ def blocks_from_result(tool: str, args: dict, result_str: str, ok: bool, shown_i
             out.append({"kind": "images", "images": imgs})
     elif tool in ("output_files", "workspace_write", "workspace_append", "save_pasted_text") and isinstance(data, dict):
         add_files(data.get("files") or data.get("delivered"))
-    elif tool in ("workspace_zip", "remove_background", "create_image") and isinstance(data, dict):
+    elif tool in ("workspace_zip", "remove_background", "create_image", "export_doc") and isinstance(data, dict):
         if data.get("success") and data.get("url"):
             add_files([{"filename": data.get("filename"), "url": data["url"]}])
     elif tool == "run_code" and isinstance(data, dict):
@@ -950,7 +975,7 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
     def fail_final(reason, mid_answer=False):
         # Words, tool results or images already produced this turn are KEPT — never wipe a good partial answer.
         kept = [b for b in blocks if not (b["type"] == "text" and not b["text"].strip())]
-        has_content = any(b["type"] in ("text", "images", "file", "code") for b in kept)
+        has_content = any(b["type"] in ("text", "images", "file", "code", "card") for b in kept)
         if has_content:
             print(f"[NATIVE] giving up (partial kept): {reason}")
             for b in kept:
@@ -958,12 +983,13 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
                     b["text"] = repair_mojibake(scrub_internal(strip_markers(b["text"])))
                     b["segments"] = build_segments(b["text"])
             note = BUSY_NOTE if mid_answer else STEP_NOTE
-            kept.append({"type": "text", "text": note, "segments": build_segments(note)})
+            kept.append({"type": "text", "text": note, "segments": build_segments(note), "continueNote": True})
             ans = "\n\n".join(b["text"] for b in kept if b["type"] == "text").strip()
             return {"type": "final", "answer": ans, "blocks": kept, "segments": build_segments(ans),
                     "sources": state["sources"], "images": state["image_results"],
                     "files": state["file_results"], "file": (state["file_results"] or [None])[-1],
-                    "codes": state["code_results"], "suggestions": [], "provider": provider_name, **models_info()}
+                    "codes": state["code_results"], "suggestions": [], "provider": provider_name, **models_info(),
+                    "continue_flag": turn_memory.continue_flag("cut_off" if mid_answer else "step_failed")}
         msg = on_failure() if on_failure else "Something went wrong. Please try again."
         print(f"[NATIVE] giving up: {reason}")
         return {"type": "final", "answer": msg, "blocks": [{"type": "text", "text": msg, "segments": build_segments(msg)}],
@@ -1201,6 +1227,8 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
                 elif kind == "code":
                     state["code_results"].append(b["code"])
                     blocks.append({"type": "code", "code": b["code"]})
+                elif kind == "card":
+                    blocks.append({"type": "card", "card": b["card"]})
                 yield {"type": "block", **b}
 
             messages.append({"role": "tool", "tool_call_id": cid, "name": name, "content": result or ""})
@@ -1224,7 +1252,7 @@ def run_native_turn(messages: list, providers: list, session_context: dict, *,
         b["segments"] = build_segments(t)
     blocks = [b for b in blocks if b["type"] != "text" or b["text"].strip()]
     answer = "\n\n".join(b["text"] for b in blocks if b["type"] == "text").strip()
-    if not answer and not any(b["type"] in ("images", "file", "code") for b in blocks):
+    if not answer and not any(b["type"] in ("images", "file", "code", "card") for b in blocks):
         yield fail_final("empty answer")
         return
     yield {"type": "final", "answer": answer, "blocks": blocks, "segments": build_segments(answer),

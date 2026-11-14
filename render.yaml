@@ -58,6 +58,23 @@ services:
       - key: ELEVENLABS_API_KEY
         sync: false
 
+      # NEW — card tools. Every one is optional: a PAID provider is used only when its key is set, and each
+      # tool has a FREE fallback (so leaving these blank loses nothing but quality).
+      - key: GOOGLE_PLACES_API_KEY   # search_places: Google Places first; else Photon/Nominatim (OpenStreetMap)
+        sync: false
+      - key: API_FOOTBALL_KEY        # get_sports: API-Football for soccer first; else ESPN public feed
+        sync: false
+      - key: AP_ELECTIONS_API_KEY    # get_election_results: AP feed first (US); else labelled web search
+        sync: false
+      # NEW — MCP connected apps. MCP_TOKEN_KEY is REQUIRED to save any app token (no key => tokens refused).
+      # Generate one:  python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - key: MCP_TOKEN_KEY
+        sync: false
+      - key: MCP_ALLOWED_HOSTS       # optional comma list, e.g. mcp.notion.com,mcp.slack.com — recommended in production
+        sync: false
+      - key: PUBLIC_BASE_URL         # optional; share links use it (falls back to Render's RENDER_EXTERNAL_URL)
+        sync: false
+
       # NEW — premium image-generation provider chain (gpt2_functions.py:
       # _build_image_provider_chain). Every one of these is optional and
       # independent: whichever keys are actually set here become the

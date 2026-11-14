@@ -359,6 +359,8 @@ def _build_done_payload(final: dict, steps: list, charge: Optional[dict]) -> dic
         "updatedAt": _now_ms(),
         "charge": charge,
     }
+    if final.get("continue_flag"):
+        payload["continueFlag"] = final["continue_flag"]      # app: draw a small divider + text after the last block
     return _clean(payload)
 
 
@@ -424,6 +426,8 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
                 live_blocks.append({"type": "sources", "sources": event.get("sources") or []})
             elif kind == "code":
                 live_blocks.append({"type": "code", "code": event.get("code") or {}})
+            elif kind == "card":
+                live_blocks.append({"type": "card", "card": event.get("card") or {}})
             push_blocks(force=True)
         else:
             return False
@@ -557,7 +561,10 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
         if final is None or is_friendly_failure(final.get("answer")):
             msg = (final or {}).get("answer") or "Something went wrong. Please try again."
             remember("FAILED", partial_text(), "The turn failed before the answer was written (server or model error).")
-            _safe_update(ref, {"status": "error", "text": msg, "error": msg, "updatedAt": _now_ms()})
+            err = {"status": "error", "text": msg, "error": msg, "updatedAt": _now_ms()}
+            if actions or live_blocks:                       # something was already shown/done, so "continue" can resume it
+                err["continueFlag"] = turn_memory.continue_flag("failed")
+            _safe_update(ref, err)
             return
 
         # Charge server-side (free users only), once, only for a real answer.
@@ -589,8 +596,11 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
         print(f"[AI-JOB] crashed {req.aiMessageId}: {type(e).__name__}: {e}")
         if actions or live_blocks:
             remember("FAILED", partial_text(), f"The server crashed mid-turn ({type(e).__name__}).")
-        _safe_update(ref, {"status": "error", "text": "Something went wrong. Please try again.",
-                           "error": "Something went wrong. Please try again.", "updatedAt": _now_ms()})
+        crash = {"status": "error", "text": "Something went wrong. Please try again.",
+                 "error": "Something went wrong. Please try again.", "updatedAt": _now_ms()}
+        if actions or live_blocks:
+            crash["continueFlag"] = turn_memory.continue_flag("failed")
+        _safe_update(ref, crash)
     finally:
         stop.set()
         gpt2_approvals.reset_approver(approver_token)

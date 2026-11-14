@@ -183,8 +183,23 @@ def attachment_note(image_urls=None, file_names=None, vision_analysis: str = "",
     return ("\n\n" + "\n".join(parts)) if parts else ""
 
 
+# The flag the app uses to draw a small divider line + text at the END of a reply that stopped early.
+# reason: "cut_off" (every model died mid-answer) | "step_failed" (a step produced nothing) | "failed" (server error).
+_CONTINUE_TEXT = {
+    "cut_off": "Cut off here · send \"continue\" to pick up",
+    "step_failed": "Hit a problem here · send \"continue\" to retry",
+    "failed": "Stopped by an error · send \"continue\" to retry",
+}
+
+
+def continue_flag(reason: str) -> dict:
+    return {"show": True, "reason": reason, "text": _CONTINUE_TEXT.get(reason, _CONTINUE_TEXT["failed"])}
+
+
 def status_of(final: Optional[dict]) -> str:
     """finished vs INTERRUPTED, from the final event (the loop adds a 'send continue' sentence when it gave up)."""
+    if (final or {}).get("continue_flag"):
+        return "INTERRUPTED"
     ans = (final or {}).get("answer") or ""
     if "Send \"continue\"" in ans or "Send 'continue'" in ans:
         return "INTERRUPTED"

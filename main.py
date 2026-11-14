@@ -30,6 +30,8 @@ from offline_board import router as offline_board_router  # NEW: /offline-board 
 from live_speak import router as live_speak_router  # NEW: /ai-live-stream — live speak session (spoken status + answer)
 from auth_security_router import router as auth_security_router  # NEW: /auth/* — find/reset password, login lockout, bans, device limits
 from livekit_router import router as livekit_router  # NEW: /livekit/config + /livekit/token — group-call media server tickets
+from collab_docs import build_router as build_docs_router  # NEW: /documents/* — editable, shareable docs (separate from user_doc_manager)
+from mcp_connect import build_router as build_mcp_router  # NEW: /mcp/servers — connect external apps through MCP
 app = FastAPI(
     title="UTME26 AI Backend",
     description="Brilliant AI Study Assistant"
@@ -40,6 +42,8 @@ app.include_router(ai_jobs_router)
 app.include_router(live_speak_router)
 app.include_router(offline_board_router)
 app.include_router(livekit_router)
+app.include_router(build_docs_router())
+app.include_router(build_mcp_router())
 app.include_router(auth_security_router)
 from step_images import router as step_images_router
 app.include_router(step_images_router)
@@ -325,7 +329,7 @@ async def ask_ai_stream(request: QuestionRequest, db: Session = Depends(get_db))
                 final_answer = event["answer"]
                 final_sources = event.get("sources", [])
                 final_images = event.get("images", [])
-                yield f"data: {json.dumps({'type': 'final', 'answer': event['answer'], 'segments': event.get('segments', []), 'suggestions': event.get('suggestions', []), 'blocks': event.get('blocks', []), 'sources': event.get('sources', []), 'images': event.get('images', []), 'file': event.get('file'), 'files': event.get('files', []), 'codes': event.get('codes', []), 'models': event.get('models', []), 'model_count': event.get('model_count', 0)}, default=str)}\n\n"
+                yield f"data: {json.dumps({'type': 'final', 'answer': event['answer'], 'segments': event.get('segments', []), 'suggestions': event.get('suggestions', []), 'blocks': event.get('blocks', []), 'sources': event.get('sources', []), 'images': event.get('images', []), 'file': event.get('file'), 'files': event.get('files', []), 'codes': event.get('codes', []), 'models': event.get('models', []), 'model_count': event.get('model_count', 0), 'continue_flag': event.get('continue_flag')}, default=str)}\n\n"
 
         # NEW: persist the completed turn once the stream is done — the
         # "final" event above always carries the full answer text plus

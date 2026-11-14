@@ -288,6 +288,18 @@ def needs_approval(tool: str, args: dict, ctx: dict) -> Optional[dict]:
                 "target": str(args.get("command") or "")[:600], "why": "; ".join(reasons),
                 "risk": "high", "timeoutS": COMMAND_TIMEOUT_S}
 
+    if tool == "mcp_call_tool":
+        server, name = str(args.get("server") or "")[:60], str(args.get("tool") or "")[:80]
+        try:
+            import mcp_connect
+            if mcp_connect.is_read_only(ctx.get("userid") or "", server, name):
+                return None                   # the app itself declared this tool read-only
+        except Exception:
+            pass                              # can't tell => ask
+        return {"kind": "mcp", "tool": tool, "title": f"OOOR wants to use {server or 'a connected app'}",
+                "target": f"{server} › {name}  {str(args.get('arguments_json') or '')[:400]}",
+                "why": "This acts on your account in another app.", "risk": "high", "timeoutS": COMMAND_TIMEOUT_S}
+
     url = fetch_target(tool, args)
     if url is None:
         return None       # not a link tool, or no usable link in the args (the tool reports that itself)
@@ -304,7 +316,8 @@ def needs_approval(tool: str, args: dict, ctx: dict) -> Optional[dict]:
 
 
 def _deny_message(spec: dict, decision: str) -> str:
-    what = "run that command" if spec["kind"] == "command" else f"fetch {spec['target']}"
+    what = ("run that command" if spec["kind"] == "command"
+            else "use that connected app" if spec["kind"] == "mcp" else f"fetch {spec['target']}")
     if decision == TIMEOUT:
         return (f"NOT DONE: the user did not respond in time, so OOOR did not {what}. Nothing was approved. "
                 "Do not call this tool again this turn. Tell the user plainly that you didn't do it because "

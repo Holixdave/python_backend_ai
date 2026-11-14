@@ -37,3 +37,6 @@ PyMuPDF
 # python_check: finds undefined names (optional; syntax checks work without it)
 pyflakes
 PyJWT
+
+# MCP connected apps: encrypts saved tokens (firebase-admin already pulls it in; listed so it is explicit)
+cryptography
