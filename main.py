@@ -32,6 +32,7 @@ from auth_security_router import router as auth_security_router  # NEW: /auth/* 
 from livekit_router import router as livekit_router  # NEW: /livekit/config + /livekit/token — group-call media server tickets
 from collab_docs import build_router as build_docs_router  # NEW: /documents/* — editable, shareable docs (separate from user_doc_manager)
 from mcp_connect import build_router as build_mcp_router  # NEW: /mcp/servers — connect external apps through MCP
+from voice_router import router as voice_router  # NEW: /voice/transcribe — server-side dictation (Whisper + cleanup)
 app = FastAPI(
     title="UTME26 AI Backend",
     description="Brilliant AI Study Assistant"
@@ -44,6 +45,7 @@ app.include_router(offline_board_router)
 app.include_router(livekit_router)
 app.include_router(build_docs_router())
 app.include_router(build_mcp_router())
+app.include_router(voice_router)
 app.include_router(auth_security_router)
 from step_images import router as step_images_router
 app.include_router(step_images_router)

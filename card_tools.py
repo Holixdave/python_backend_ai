@@ -16,7 +16,10 @@ from typing import Any, Callable, Optional
 
 import requests
 
-UA = "OOOR-backend/1.0 (study assistant; https://github.com/Holixdave/python_backend_ai)"
+# Sent to every provider we call (OpenStreetMap/Nominatim and Photon ask for a real contact; MCP servers see it too).
+CONTACT = "zindryx@gmail.com"
+APP_VERSION = "1.1.6"        # keep in step with versionName in the Android app's build.gradle.kts
+UA = f"ZindryxBackend/{APP_VERSION} (study assistant; contact: {CONTACT})"
 TIMEOUT_S = 8
 
 

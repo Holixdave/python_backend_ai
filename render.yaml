@@ -75,6 +75,14 @@ services:
       - key: PUBLIC_BASE_URL         # optional; share links use it (falls back to Render's RENDER_EXTERNAL_URL)
         sync: false
 
+      # NEW — voice dictation (/voice/transcribe). Uses your existing GROQ_API_KEY; all three below are optional.
+      - key: VOICE_STT_MODEL         # default whisper-large-v3 (most accurate); whisper-large-v3-turbo is the built-in fallback
+        sync: false
+      - key: VOICE_DEFAULT_LANG      # default en. The app can send "auto" for mixed-language users
+        sync: false
+      - key: VOICE_POLISH_MODEL      # default openai/gpt-oss-120b (the model you already run); Gemini flash is the fallback
+        sync: false
+
       # NEW — premium image-generation provider chain (gpt2_functions.py:
       # _build_image_provider_chain). Every one of these is optional and
       # independent: whichever keys are actually set here become the
