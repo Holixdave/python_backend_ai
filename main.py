@@ -1,5 +1,6 @@
 # main.py
 from fastapi import FastAPI, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -37,6 +38,12 @@ app = FastAPI(
     title="UTME26 AI Backend",
     description="Brilliant AI Study Assistant"
 )
+# NEW: the OOOR website (browser) calls this API from another origin, so CORS must allow it.
+WEB_ORIGINS = [o.strip() for o in os.getenv("WEB_ORIGINS", "https://chadivavirtuals.name.ng").split(",") if o.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=WEB_ORIGINS, allow_methods=["*"], allow_headers=["*"],
+                   expose_headers=["Content-Disposition"], max_age=600)
+from web_files_router import router as web_files_router  # NEW: /web/files/* raw files from the Render disk
+app.include_router(web_files_router)
 app.include_router(tts_router)
 app.include_router(copilot_router)
 app.include_router(ai_jobs_router)
@@ -260,8 +267,15 @@ async def ask_ai(request: QuestionRequest, db: Session = Depends(get_db)):
 #   {"type": "final", "answer": "...", "sources": [...], "files": [...], "codes": [...]} -- once, last
 # -------------------------------------------------------
 @app.post("/ai-query-stream")
-async def ask_ai_stream(request: QuestionRequest, db: Session = Depends(get_db)):
+async def ask_ai_stream(request: QuestionRequest, db: Session = Depends(get_db), authorization: Optional[str] = Header(default=None)):
     user_question = request.query.strip()
+    # NEW: when the website sends a Firebase ID token, trust ONLY the uid inside it (the body's userid can be faked).
+    if authorization and authorization.lower().startswith("bearer "):
+        try:
+            from firebase_admin import auth as _fb_auth
+            request.userid = _fb_auth.verify_id_token(authorization.split(" ", 1)[1].strip())["uid"]
+        except Exception:
+            raise HTTPException(status_code=401, detail="Session expired. Sign in again.")
 
     # NEW: history loaded from backend DB memory, same as /ai-query above.
     chat_history = build_memory(db, request.userid)
