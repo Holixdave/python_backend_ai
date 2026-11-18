@@ -15,6 +15,7 @@ psycopg2-binary
 beautifulsoup4
 rembg
 pillow
+elevenlabs
 
 pypdf
 python-docx

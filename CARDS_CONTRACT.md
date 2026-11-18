@@ -99,3 +99,18 @@ Error bodies: `{"detail": {"code": "...", "message": "..."}}` (e.g. `blocked_add
 * MCP works over **Streamable HTTP with a bearer/API-key token**. Not supported: OAuth login flows, the old HTTP+SSE
   transport. Tested against a local fake server, not against Notion/Slack/Drive.
 * SSRF guard checks DNS before every call but cannot fully stop DNS rebinding — set `MCP_ALLOWED_HOSTS` in production.
+
+## 7. Push notifications (ai_push.py)
+
+Data-only FCM to `users/{uid}.fcmToken`, same wire rules as the chat pushes (strings only, each value ≤ 600 chars, priority high).
+Common keys: `notifType`, `jobId`, `recipientId` (the phone ignores a push for another account), `title`, `body`, `bigText`, `sentAt`.
+
+| notifType | extra keys | buttons on the phone |
+|---|---|---|
+| `ai_reply` | `suggestions` (JSON `[{"l": label, "t": text}]`, max 3), `canContinue` | suggestion 1, suggestion 2, Open chat (Continue first if cut off) |
+| `ai_error` | `suggestions`, `canContinue` | Continue (if it can resume), Open chat |
+| `ai_question` | `question`, `options` (JSON, max 2) | option 1, option 2, Skip |
+| `ai_approval` | `approvalId`, `approvalKind`, `risk`, `expiresAt` | Approve, Deny, View command |
+| `ai_clear` | `approvalId`, `status` | removes that approval notification |
+
+Switch a user off: `users/{uid}.aiPushEnabled = false`. The phone shows nothing while the AI chat is on screen.

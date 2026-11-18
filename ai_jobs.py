@@ -42,6 +42,7 @@ from google.api_core.exceptions import AlreadyExists
 from pydantic import BaseModel, Field
 
 import firebase_config  # noqa: F401 (initialises firebase_admin before firestore.client())
+import ai_push
 import gpt2_approvals
 from database import SessionLocal
 from gpt2_functions import is_friendly_failure, premium_from_user_doc
@@ -201,9 +202,11 @@ def _make_approver(ref, state: dict):
         except Exception as e:
             print(f"[AI-JOB] couldn't post approval request: {e}")
             return gpt2_approvals.DENY
+        ai_push.notify_approval(ref.parent.parent.id, ref.id, card)      # push: "OOOR needs your approval" (fire-and-forget)
 
         def close(status: str, result: str) -> str:
             _safe_update(ref, {"approval.status": status, "updatedAt": _now_ms()})
+            ai_push.notify_approval_closed(ref.parent.parent.id, ref.id, approval_id, status)   # drop the stale notification
             print(f"[AI-JOB] approval {approval_id} ({card['kind']}) -> {status}")
             return result
 
@@ -555,6 +558,7 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
                 q["total"] = question.get("total") or len(question["questions"])
             ref.set(_clean({"status": "asking", "question": q, "text": "", "updatedAt": _now_ms()}), merge=True)
             remember("finished", f"(I asked the user a question and am waiting for the answer: {q['question'] or ''})")
+            ai_push.notify_question(uid, req.aiMessageId, q)
             print(f"[AI-JOB] asking {req.aiMessageId}: {q['question']!r}")
             return
 
@@ -565,6 +569,7 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
             if actions or live_blocks:                       # something was already shown/done, so "continue" can resume it
                 err["continueFlag"] = turn_memory.continue_flag("failed")
             _safe_update(ref, err)
+            ai_push.notify_error(uid, req.aiMessageId, msg, err.get("continueFlag"))
             return
 
         # Charge server-side (free users only), once, only for a real answer.
@@ -590,6 +595,7 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
             memory_reply = final.get("answer")
         status = turn_memory.status_of(final)
         remember(status, memory_reply, "The model ran out of steam mid-task; the user was told to send continue." if status != "finished" else "")
+        ai_push.notify_reply(uid, req.aiMessageId, final, payload.get("continueFlag"))      # push: the answer is ready
         print(f"[AI-JOB] done {req.aiMessageId}")
 
     except Exception as e:
@@ -601,6 +607,7 @@ def _run_job(uid: str, req: JobRequest, query: str, premium: bool, model_name: s
         if actions or live_blocks:
             crash["continueFlag"] = turn_memory.continue_flag("failed")
         _safe_update(ref, crash)
+        ai_push.notify_error(uid, req.aiMessageId, crash["text"], crash.get("continueFlag"))
     finally:
         stop.set()
         gpt2_approvals.reset_approver(approver_token)
